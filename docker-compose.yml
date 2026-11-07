@@ -1,0 +1,15 @@
+services:
+  api:
+    build: ./backend
+    environment:
+      ASPNETCORE_URLS: http://+:5080
+      ConnectionStrings__Telemetry: Data Source=/data/telemetry.db
+      Telemetry__ApiKey: ${TELEMETRY_API_KEY:-[development-key-removed]}
+    ports: ["127.0.0.1:5080:5080"]
+    volumes: ["telemetry-data:/data"]
+  dashboard:
+    build: ./dashboard
+    ports: ["127.0.0.1:5173:80"]
+    depends_on: [api]
+volumes:
+  telemetry-data:

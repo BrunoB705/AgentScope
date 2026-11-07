@@ -5,11 +5,12 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $MyInvocation.MyCommand.Path
 $runtime = Join-Path $env:LOCALAPPDATA 'AgentObservabilityPlatform'
 $targets = @(
-    @{ Name = 'dashboard'; Port = 5173; Pattern = '(?i)(^|[\\/])vite(\.js)?(?:\s|$)' },
+    @{ Name = 'dashboard'; Port = 5173; Pattern = '(?i)(^|[\\/])vite(\.js)?(?:["\s]|$)' },
     @{ Name = 'api'; Port = 5080; Pattern = '(?i)AgentObservability\.Api\.dll' }
 )
 $stopped = @{}
 $foundService = $false
+$portInUse = $false
 
 foreach ($target in $targets) {
     $pidPath = Join-Path $runtime "$($target.Name).pid"
@@ -35,6 +36,7 @@ foreach ($target in $targets) {
 
     $listeners = Get-NetTCPConnection -State Listen -LocalPort $target.Port -ErrorAction SilentlyContinue
     foreach ($listener in $listeners) {
+        $portInUse = $true
         $processId = [int]$listener.OwningProcess
         if ($stopped.ContainsKey($processId)) { continue }
         $process = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
@@ -66,6 +68,6 @@ if ($docker) {
     }
 }
 
-if (-not $foundService) {
+if (-not $foundService -and -not $portInUse) {
     Write-Host 'No encontré servicios de Agent Observability activos en 5080/5173 ni contenedores de este proyecto.'
 }

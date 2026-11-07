@@ -13,7 +13,7 @@ En Windows, inicia ambos servicios y abre el dashboard. El script genera una cla
 opencode
 ```
 
-Detén sólo los procesos que inició el script con `.\stop.ps1`. La base de datos se guarda en `%LOCALAPPDATA%\AgentObservabilityPlatform\telemetry.db`; los registros están en la misma carpeta, dentro de `logs`. Si el backend no puede restaurar NuGet o npm no puede instalar, el script muestra el error en la terminal.
+Detén los servicios con `.\stop.ps1` desde PowerShell o `.\stop.cmd` desde CMD. La base de datos se guarda en `%LOCALAPPDATA%\AgentObservabilityPlatform\telemetry.db`; los registros están en la misma carpeta, dentro de `logs`. Si el backend no puede restaurar NuGet o npm no puede instalar, el script muestra el error en la terminal.
 
 ```powershell
 $key = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))

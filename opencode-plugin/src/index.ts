@@ -60,7 +60,8 @@ export default Plugin.define({
   id: 'agent-observability',
   async setup(ctx) {
     const endpoint = process.env.OPENCODE_OBSERVABILITY_URL ?? 'http://127.0.0.1:5080';
-    const apiKey = process.env.OPENCODE_OBSERVABILITY_KEY ?? '[development-key-removed]';
+    const apiKey = process.env.OPENCODE_OBSERVABILITY_KEY;
+    if (!apiKey) { console.warn('Agent Observability: configura OPENCODE_OBSERVABILITY_KEY para habilitar la ingesta.'); return; }
     const fallbackProject = process.env.OPENCODE_OBSERVABILITY_PROJECT ?? basename(ctx.location.directory) ?? 'opencode';
     const queue: Telemetry[] = [];
     const controller = new AbortController();
@@ -96,4 +97,3 @@ export default Plugin.define({
     return () => controller.abort();
   },
 });
-

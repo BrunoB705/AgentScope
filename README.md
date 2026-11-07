@@ -6,19 +6,23 @@ MVP local para observar sesiones de OpenCode. API ASP.NET Core + SQLite + Signal
 
 Requiere .NET 10, Node 22+ y PowerShell 7 para desarrollo. Para contenedores, instala Docker Compose.
 
-En Windows, inicia ambos servicios y abre el dashboard automáticamente:
+En Windows, inicia ambos servicios y abre el dashboard. El script genera una clave aleatoria una sola vez y la guarda fuera del repositorio, en `%LOCALAPPDATA%\AgentObservabilityPlatform\telemetry.key`. Ejecuta OpenCode desde esa misma terminal para que herede la clave:
 
 ```powershell
 .\start.ps1
+opencode
 ```
 
 Detén sólo los procesos que inició el script con `.\stop.ps1`. La base de datos se guarda en `%LOCALAPPDATA%\AgentObservabilityPlatform\telemetry.db`; los registros están en la misma carpeta, dentro de `logs`. Si el backend no puede restaurar NuGet o npm no puede instalar, el script muestra el error en la terminal.
 
-```sh
+```powershell
+$key = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+$env:TELEMETRY_API_KEY = $key
+$env:OPENCODE_OBSERVABILITY_KEY = $key
 docker compose up --build
 ```
 
-Abre <http://127.0.0.1:5173>. API: <http://127.0.0.1:5080/api/v1/health>. Cambia `TELEMETRY_API_KEY` en el entorno antes de iniciar si quieres usar una clave distinta; configura la misma clave en `OPENCODE_OBSERVABILITY_KEY`.
+Abre <http://127.0.0.1:5173>. API: <http://127.0.0.1:5080/api/v1/health>. No hay claves predeterminadas; para ejecutar manualmente configura `Telemetry__ApiKey` y `OPENCODE_OBSERVABILITY_KEY` con el mismo valor.
 
 Para ejecutar manualmente: `dotnet run --project backend --no-launch-profile --urls http://127.0.0.1:5080` y, en `dashboard`, `npm ci && npm run dev -- --host 127.0.0.1 --port 5173`.
 
@@ -26,13 +30,7 @@ Para ejecutar manualmente: `dotnet run --project backend --no-launch-profile --u
 
 El adaptador usa la API de plugins v2 de OpenCode. El puente de proyecto está en `.opencode/plugins/agent-observability.ts`; para que funcione desde otros directorios, copia `opencode-plugin/src/index.ts` a `~/.config/opencode/plugins/agent-observability.ts`. Al cargarlo en una instancia ya abierta, OpenCode puede recargar el archivo; los eventos anteriores a la carga no se reconstruyen, así que una sesión activa debe generar un evento nuevo para aparecer.
 
-Configura estas variables en el proceso OpenCode si quieres cambiar los valores predeterminados:
-
-```text
-OPENCODE_OBSERVABILITY_URL=http://127.0.0.1:5080
-OPENCODE_OBSERVABILITY_KEY=[development-key-removed]
-OPENCODE_OBSERVABILITY_PROJECT=mi-proyecto
-```
+El plugin lee `OPENCODE_OBSERVABILITY_KEY` del entorno. Al iniciar OpenCode desde la terminal donde ejecutaste `start.ps1`, hereda la clave generada fuera del repositorio.
 
 El plugin registra sesiones, pasos de modelo y herramientas completadas o fallidas. Correlaciona herramientas con el paso del modelo y sólo transmite metadatos seleccionados: nombres, estados, códigos de error y tokens. No serializa prompts, respuestas ni contenido/argumentos de herramientas.
 
@@ -52,4 +50,3 @@ cd dashboard && npm ci && npm run build
 - SignalR `/hubs/telemetry`, evento `telemetry.updated`
 
 La deduplicación usa `source + eventId`. Las vistas permiten inspeccionar spans de modelo/herramienta y eventos no correlacionados. La política de atributos usa lista de exclusión para claves sensibles.
-

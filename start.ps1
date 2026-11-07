@@ -1,6 +1,5 @@
 [CmdletBinding()]
 param(
-    [string]$ApiKey = $(if ($env:TELEMETRY_API_KEY) { $env:TELEMETRY_API_KEY } else { '[development-key-removed]' }),
     [switch]$NoBrowser
 )
 
@@ -9,7 +8,17 @@ $repo = Split-Path -Parent $MyInvocation.MyCommand.Path
 $runtime = Join-Path $env:LOCALAPPDATA 'AgentObservabilityPlatform'
 $logs = Join-Path $runtime 'logs'
 $data = Join-Path $runtime 'telemetry.db'
+$keyFile = Join-Path $runtime 'telemetry.key'
 New-Item -ItemType Directory -Force -Path $logs | Out-Null
+
+if (Test-Path $keyFile) {
+    $ApiKey = (Get-Content -LiteralPath $keyFile -Raw).Trim()
+} else {
+    $ApiKey = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+    [System.IO.File]::WriteAllText($keyFile, $ApiKey)
+}
+$env:TELEMETRY_API_KEY = $ApiKey
+$env:OPENCODE_OBSERVABILITY_KEY = $ApiKey
 
 function Test-Endpoint([string]$Url) {
     try { return (Invoke-WebRequest -Uri $Url -TimeoutSec 2 -UseBasicParsing).StatusCode -eq 200 }

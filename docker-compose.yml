@@ -4,7 +4,7 @@ services:
     environment:
       ASPNETCORE_URLS: http://+:5080
       ConnectionStrings__Telemetry: Data Source=/data/telemetry.db
-      Telemetry__ApiKey: ${TELEMETRY_API_KEY:-[development-key-removed]}
+      Telemetry__ApiKey: ${TELEMETRY_API_KEY:?Set TELEMETRY_API_KEY before starting Compose}
     ports: ["127.0.0.1:5080:5080"]
     volumes: ["telemetry-data:/data"]
   dashboard:

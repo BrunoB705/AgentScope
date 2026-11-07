@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.Data.Sqlite;
 
 var builder = WebApplication.CreateBuilder(args);
+if (string.IsNullOrWhiteSpace(builder.Configuration["Telemetry:ApiKey"])) throw new InvalidOperationException("Telemetry:ApiKey must be set through environment configuration.");
 builder.Services.AddDbContext<TelemetryDb>(o => o.UseSqlite(builder.Configuration.GetConnectionString("Telemetry") ?? "Data Source=telemetry.db"));
 builder.Services.AddSignalR();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.WithOrigins("http://localhost:5173", "http://127.0.0.1:5173").AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
@@ -14,7 +15,7 @@ app.UseCors();
 app.MapHub<TelemetryHub>("/hubs/telemetry");
 app.MapGet("/api/v1/health", () => Results.Ok(new { status = "ok" }));
 app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEventDto dto, TelemetryDb db, IConfiguration config, IHubContext<TelemetryHub> hub) => {
-    var key = config["Telemetry:ApiKey"] ?? "[development-key-removed]";
+    var key = config["Telemetry:ApiKey"]!;
     if (!CryptographicEquals(request.Headers["X-Telemetry-Key"].ToString(), key)) return Results.Unauthorized();
     if (string.IsNullOrWhiteSpace(dto.EventId) || dto.EventId.Length > 200 || string.IsNullOrWhiteSpace(dto.Source) || dto.Source.Length > 80 || string.IsNullOrWhiteSpace(dto.SessionId) || dto.SessionId.Length > 200 || string.IsNullOrWhiteSpace(dto.Type) || dto.Type.Length > 120 || dto.Timestamp == default || dto.DurationMs < 0 || dto.InputTokens < 0 || dto.OutputTokens < 0) return Results.BadRequest(new { error = "Required fields are missing or exceed supported limits" });
     var existing = await db.Events.AnyAsync(e => e.Source == dto.Source && e.EventId == dto.EventId);

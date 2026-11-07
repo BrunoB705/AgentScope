@@ -86,7 +86,7 @@ public sealed class TelemetryApiTests : IDisposable
     private async Task<HttpResponseMessage> Post(TelemetryEventDto dto)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/telemetry/events") { Content = JsonContent.Create(dto) };
-        request.Headers.Add("X-Telemetry-Key", "[fixture-credential-removed]");
+        request.Headers.Add("X-Telemetry-Key", TestCredentials.ApiKey);
         return await _client.SendAsync(request);
     }
 
@@ -102,7 +102,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         builder.ConfigureAppConfiguration(config => config.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["ConnectionStrings:Telemetry"] = $"Data Source={_database};Pooling=False",
-            ["Telemetry:ApiKey"] = "[fixture-credential-removed]",
+            ["Telemetry:ApiKey"] = TestCredentials.ApiKey,
             ["ASPNETCORE_ENVIRONMENT"] = "Development"
         }));
         builder.ConfigureLogging(logging => logging.ClearProviders());
@@ -119,3 +119,8 @@ public sealed record TelemetryEventDto(
     string? Project = null, string? Status = null, long? DurationMs = null, string? Model = null,
     int InputTokens = 0, int OutputTokens = 0, string? ParentId = null, string? Name = null,
     Dictionary<string, string>? Attributes = null);
+
+internal static class TestCredentials
+{
+    internal static readonly string ApiKey = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+}

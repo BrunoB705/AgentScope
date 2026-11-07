@@ -2,6 +2,7 @@
 **/obj/
 **/node_modules/
 **/dist/
+**/*.tsbuildinfo
 *.db
 *.db-shm
 *.db-wal

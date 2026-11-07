@@ -51,7 +51,7 @@ export const AgentObservability: Plugin = async () => {
       parentId: extras.parentId,
       inputTokens: numeric(get(get(props, 'tokens') as Record<string, unknown> | undefined, 'input')),
       outputTokens: numeric(get(get(props, 'tokens') as Record<string, unknown> | undefined, 'output')),
-      attributes: { opencode_event: type } });
+      attributes: { opencode_event: type, ...(extras.errorCode ? { error_code: extras.errorCode } : {}) } });
   };
 
   return {
@@ -59,31 +59,39 @@ export const AgentObservability: Plugin = async () => {
       const mapped = event as unknown as OpenCodeEvent;
       const p = mapped.properties;
       const info = get(p, 'info') as Record<string, unknown> | undefined;
-      const sid = str(get(p, 'sessionID')) ?? str(get(p, 'sessionId')) ?? str(get(info, 'id'));
+      const partInfo = get(p, 'part') as Record<string, unknown> | undefined;
+      const sid = str(get(p, 'sessionID')) ?? str(get(p, 'sessionId')) ?? str(get(info, 'id')) ?? str(get(partInfo, 'sessionID'));
       if (!sid) return;
       switch (mapped.type) {
         case 'session.created': emit(mapped.type, sid, p, { status: 'active' }); break;
         case 'session.idle': emit(mapped.type, sid, p, { status: 'completed' }); break;
-        case 'session.error': emit(mapped.type, sid, p, { status: 'error' }); break;
+        case 'session.error': {
+          const error = get(p, 'error') as Record<string, unknown> | undefined;
+          emit(mapped.type, sid, p, { status: 'error', errorCode: str(get(error, 'name')) ?? 'session_error' });
+          break;
+        }
         case 'message.updated': {
           const info = get(p, 'info') as Record<string, unknown> | undefined;
           if (str(get(info, 'role')) === 'assistant') {
             const time = get(info, 'time') as Record<string, unknown> | undefined;
             const start = numeric(get(time, 'created')); const end = numeric(get(time, 'completed'));
             // Message updates arrive repeatedly. Emit only the completed assistant turn with a stable ID.
-            if (end > 0) emit('model.completed', sid, info, { eventId: `model:${str(get(info, 'id'))}`, name: str(get(info, 'modelID')) ?? 'model', timestamp: new Date(start).toISOString(), durationMs: Math.max(0, end - start), status: get(info, 'error') ? 'error' : 'ok' });
+            if (end > 0) {
+              const error = get(info, 'error') as Record<string, unknown> | undefined;
+              emit('model.completed', sid, info, { eventId: `model:${str(get(info, 'id'))}`, name: str(get(info, 'modelID')) ?? 'model', timestamp: new Date(start).toISOString(), durationMs: Math.max(0, end - start), status: error ? 'error' : 'ok', errorCode: str(get(error, 'name')) });
+            }
           }
           break;
         }
         case 'message.part.updated': {
-          const part = get(p, 'part') as Record<string, unknown> | undefined;
+          const part = partInfo;
           if (str(get(part, 'type')) !== 'tool') break;
           const state = get(part, 'state') as Record<string, unknown> | undefined;
           const stateName = str(get(state, 'status'));
           if (stateName !== 'completed' && stateName !== 'error') break;
           const time = get(state, 'time') as Record<string, unknown> | undefined;
           const start = numeric(get(time, 'start')); const end = numeric(get(time, 'end'));
-          emit('tool.completed', sid, undefined, { eventId: `tool:${str(get(part, 'callID'))}`, parentId: `model:${str(get(part, 'messageID'))}`, name: str(get(part, 'tool')) ?? 'tool', timestamp: new Date(start).toISOString(), durationMs: Math.max(0, end - start), status: stateName === 'error' ? 'error' : 'ok' });
+          emit('tool.completed', sid, undefined, { eventId: `tool:${str(get(part, 'callID'))}`, parentId: `model:${str(get(part, 'messageID'))}`, name: str(get(part, 'tool')) ?? 'tool', timestamp: new Date(start).toISOString(), durationMs: Math.max(0, end - start), status: stateName === 'error' ? 'error' : 'ok', errorCode: stateName === 'error' ? 'opencode_tool_error' : undefined });
           break;
         }
         default: break;

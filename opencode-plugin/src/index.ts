@@ -1,101 +1,99 @@
-import type { Plugin } from '@opencode-ai/plugin';
+import { Plugin } from '@opencode/plugin';
 
-// All OpenCode event shape assumptions live here so the adapter can be updated independently.
-type OpenCodeEvent = { type: string; properties?: Record<string, unknown> };
-const get = (o: Record<string, unknown> | undefined, key: string) => o?.[key];
-  const numeric = (v: unknown): number => typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.trunc(v)) : 0;
-const str = (v: unknown): string | undefined => typeof v === 'string' ? v : undefined;
-const id = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+type Event = { id?: string; created?: number; type: string; data?: Record<string, unknown>; location?: { directory?: string } };
+type Telemetry = Record<string, unknown>;
+const get = (value: unknown, key: string): unknown => value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
+const str = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined;
+const numeric = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+const date = (value?: number) => new Date(typeof value === 'number' ? value : Date.now()).toISOString();
+const basename = (path?: string) => path?.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+const session = (event: Event) => str(event.data?.sessionID);
 
-export const AgentObservability: Plugin = async () => {
-  const endpoint = process.env.OPENCODE_OBSERVABILITY_URL ?? 'http://127.0.0.1:5080';
-  const apiKey = process.env.OPENCODE_OBSERVABILITY_KEY ?? '[development-key-removed]';
-  const logicalProject = process.env.OPENCODE_OBSERVABILITY_PROJECT ?? 'opencode';
-  const queue: unknown[] = [];
-  let flushing = false;
-
-  // Bounded in-memory best-effort queue. Never await network I/O from OpenCode hooks.
-  const enqueue = (event: Record<string, unknown>) => {
-    queue.push(event);
-    if (queue.length > 100) queue.shift();
-    void flush();
-  };
-  async function flush() {
-    if (flushing) return;
-    flushing = true;
-    try {
-      while (queue.length) {
-        const body = queue[0];
-        let sent = false;
-        for (let attempt = 0; attempt < 3 && !sent; attempt++) {
-          try {
-            const response = await fetch(`${endpoint.replace(/\/$/, '')}/api/v1/telemetry/events`, {
-              method: 'POST', headers: { 'content-type': 'application/json', 'x-telemetry-key': apiKey },
-              body: JSON.stringify(body), signal: AbortSignal.timeout(1800),
-            });
-            sent = response.ok;
-          } catch { /* collector may be stopped */ }
-          if (!sent && attempt < 2) await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
-        }
-        queue.shift(); // drop after bounded retries; collection must never block OpenCode
-      }
-    } finally { flushing = false; }
+/** Maps only scalar metadata from OpenCode v2 events; message, tool input/output are never copied. */
+export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode'): Telemetry[] {
+  const sid = session(event);
+  if (!sid) return [];
+  const data = event.data ?? {};
+  const project = basename(event.location?.directory) ?? fallbackProject;
+  const common = { source: 'opencode', sessionId: sid, timestamp: date(event.created), project };
+  const payload = (type: string, extras: Record<string, unknown> = {}): Telemetry => ({
+    eventId: `${type}:${event.id ?? `${sid}:${event.created ?? Date.now()}`}`,
+    ...common, type, status: 'ok', attributes: { opencode_event: event.type }, ...extras,
+  });
+  switch (event.type) {
+    case 'session.created': return [payload(event.type, { status: 'active' })];
+    case 'session.idle': return [payload(event.type, { status: 'completed' })];
+    case 'session.execution.started': return [payload(event.type, { status: 'active' })];
+    case 'session.execution.succeeded': return [payload(event.type, { status: 'completed' })];
+    case 'session.execution.interrupted': return [payload('session.idle', { status: 'completed' })];
+    case 'session.execution.failed': {
+      const error = get(data, 'error');
+      const code = str(get(error, 'type')) ?? 'execution_failed';
+      return [payload('session.error', { status: 'error', attributes: { opencode_event: event.type, error_code: code } })];
+    }
+    case 'session.step.ended': {
+      const tokens = get(data, 'tokens');
+      const finish = str(get(data, 'finish'));
+      return [payload('model.completed', {
+        eventId: `model:${str(get(data, 'assistantMessageID')) ?? event.id ?? sid}`,
+        name: 'model', status: finish === 'error' ? 'error' : 'ok',
+        inputTokens: numeric(get(tokens, 'input')), outputTokens: numeric(get(tokens, 'output')),
+        attributes: { opencode_event: event.type, ...(finish === 'error' ? { error_code: 'model_error' } : {}) },
+      })];
+    }
+    case 'session.tool.success':
+    case 'session.tool.failed': {
+      const metadata = get(data, 'metadata');
+      const name = str(get(metadata, 'tool')) ?? 'tool';
+      return [payload('tool.completed', {
+        eventId: `tool:${str(get(data, 'id')) ?? event.id ?? sid}`,
+        parentId: `model:${str(get(data, 'assistantMessageID')) ?? ''}`,
+        name, status: event.type.endsWith('.failed') ? 'error' : 'ok',
+        attributes: { opencode_event: event.type, ...(event.type.endsWith('.failed') ? { error_code: 'tool_error' } : {}) },
+      })];
+    }
+    default: return [];
   }
+}
 
-  const emit = (type: string, sessionId: string, props?: Record<string, unknown>, extras: Record<string, unknown> = {}) => {
-    if (!sessionId) return;
-    // Deliberately select safe scalar metadata; never serialize prompt, content, args, or output.
-    enqueue({ eventId: extras.eventId ?? id(), source: 'opencode', sessionId, timestamp: extras.timestamp ?? new Date().toISOString(), type,
-      project: logicalProject, status: extras.status ?? (type.endsWith('.error') ? 'error' : 'ok'),
-      name: extras.name, durationMs: extras.durationMs, model: str(get(props, 'modelID')),
-      parentId: extras.parentId,
-      inputTokens: numeric(get(get(props, 'tokens') as Record<string, unknown> | undefined, 'input')),
-      outputTokens: numeric(get(get(props, 'tokens') as Record<string, unknown> | undefined, 'output')),
-      attributes: { opencode_event: type, ...(extras.errorCode ? { error_code: extras.errorCode } : {}) } });
-  };
-
-  return {
-    event: async ({ event }) => {
-      const mapped = event as unknown as OpenCodeEvent;
-      const p = mapped.properties;
-      const info = get(p, 'info') as Record<string, unknown> | undefined;
-      const partInfo = get(p, 'part') as Record<string, unknown> | undefined;
-      const sid = str(get(p, 'sessionID')) ?? str(get(p, 'sessionId')) ?? str(get(info, 'id')) ?? str(get(partInfo, 'sessionID'));
-      if (!sid) return;
-      switch (mapped.type) {
-        case 'session.created': emit(mapped.type, sid, p, { status: 'active' }); break;
-        case 'session.idle': emit(mapped.type, sid, p, { status: 'completed' }); break;
-        case 'session.error': {
-          const error = get(p, 'error') as Record<string, unknown> | undefined;
-          emit(mapped.type, sid, p, { status: 'error', errorCode: str(get(error, 'name')) ?? 'session_error' });
-          break;
-        }
-        case 'message.updated': {
-          const info = get(p, 'info') as Record<string, unknown> | undefined;
-          if (str(get(info, 'role')) === 'assistant') {
-            const time = get(info, 'time') as Record<string, unknown> | undefined;
-            const start = numeric(get(time, 'created')); const end = numeric(get(time, 'completed'));
-            // Message updates arrive repeatedly. Emit only the completed assistant turn with a stable ID.
-            if (end > 0) {
-              const error = get(info, 'error') as Record<string, unknown> | undefined;
-              emit('model.completed', sid, info, { eventId: `model:${str(get(info, 'id'))}`, name: str(get(info, 'modelID')) ?? 'model', timestamp: new Date(start).toISOString(), durationMs: Math.max(0, end - start), status: error ? 'error' : 'ok', errorCode: str(get(error, 'name')) });
-            }
+export default Plugin.define({
+  id: 'agent-observability',
+  async setup(ctx) {
+    const endpoint = process.env.OPENCODE_OBSERVABILITY_URL ?? 'http://127.0.0.1:5080';
+    const apiKey = process.env.OPENCODE_OBSERVABILITY_KEY ?? '[development-key-removed]';
+    const fallbackProject = process.env.OPENCODE_OBSERVABILITY_PROJECT ?? basename(ctx.location.directory) ?? 'opencode';
+    const queue: Telemetry[] = [];
+    const controller = new AbortController();
+    let flushing = false;
+    const enqueue = (event: Telemetry) => { queue.push(event); if (queue.length > 100) queue.shift(); void flush(); };
+    async function flush() {
+      if (flushing) return;
+      flushing = true;
+      try {
+        while (queue.length && !controller.signal.aborted) {
+          const body = queue[0]; let sent = false;
+          for (let attempt = 0; attempt < 3 && !sent && !controller.signal.aborted; attempt++) {
+            try {
+              const response = await fetch(`${endpoint.replace(/\/$/, '')}/api/v1/telemetry/events`, {
+                method: 'POST', headers: { 'content-type': 'application/json', 'x-telemetry-key': apiKey },
+                body: JSON.stringify(body), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(1800)]),
+              });
+              sent = response.ok;
+            } catch { /* Collector may be stopped; OpenCode must keep working. */ }
+            if (!sent && attempt < 2) await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
           }
-          break;
+          queue.shift();
         }
-        case 'message.part.updated': {
-          const part = partInfo;
-          if (str(get(part, 'type')) !== 'tool') break;
-          const state = get(part, 'state') as Record<string, unknown> | undefined;
-          const stateName = str(get(state, 'status'));
-          if (stateName !== 'completed' && stateName !== 'error') break;
-          const time = get(state, 'time') as Record<string, unknown> | undefined;
-          const start = numeric(get(time, 'start')); const end = numeric(get(time, 'end'));
-          emit('tool.completed', sid, undefined, { eventId: `tool:${str(get(part, 'callID'))}`, parentId: `model:${str(get(part, 'messageID'))}`, name: str(get(part, 'tool')) ?? 'tool', timestamp: new Date(start).toISOString(), durationMs: Math.max(0, end - start), status: stateName === 'error' ? 'error' : 'ok', errorCode: stateName === 'error' ? 'opencode_tool_error' : undefined });
-          break;
+      } finally { flushing = false; }
+    }
+    void (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          for (const mapped of mapOpenCodeEvent(event as Event, fallbackProject)) enqueue(mapped);
         }
-        default: break;
-      }
-    },
-  };
-};
+      } catch { /* Abort during plugin shutdown or a transient event stream failure. */ }
+    })();
+    return () => controller.abort();
+  },
+});
+

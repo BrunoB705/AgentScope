@@ -24,7 +24,9 @@ Para ejecutar manualmente: `dotnet run --project backend --no-launch-profile --u
 
 ## Plugin OpenCode
 
-El puente de proyecto está en `.opencode/plugins/agent-observability.ts` y carga el adaptador tipado de `opencode-plugin/src/index.ts` cuando OpenCode se inicia desde este repositorio. Para usarlo globalmente, copia el adaptador a `~/.config/opencode/plugins/`. Configura estas variables en el proceso OpenCode si quieres cambiar los valores predeterminados:
+El adaptador usa la API de plugins v2 de OpenCode. El puente de proyecto está en `.opencode/plugins/agent-observability.ts`; para que funcione desde otros directorios, copia `opencode-plugin/src/index.ts` a `~/.config/opencode/plugins/agent-observability.ts`. Al cargarlo en una instancia ya abierta, OpenCode puede recargar el archivo; los eventos anteriores a la carga no se reconstruyen, así que una sesión activa debe generar un evento nuevo para aparecer.
+
+Configura estas variables en el proceso OpenCode si quieres cambiar los valores predeterminados:
 
 ```text
 OPENCODE_OBSERVABILITY_URL=http://127.0.0.1:5080
@@ -32,7 +34,7 @@ OPENCODE_OBSERVABILITY_KEY=[development-key-removed]
 OPENCODE_OBSERVABILITY_PROJECT=mi-proyecto
 ```
 
-El plugin observa creación/fin de sesión, turnos de modelo completados y partes de herramienta completadas o fallidas. Genera IDs idempotentes y correlaciona llamadas de herramienta con el turno del modelo. Sólo serializa nombres, estados, códigos de error, tiempos y tokens; no lee ni envía el contenido de prompts, respuestas, argumentos ni salidas.
+El plugin registra sesiones, pasos de modelo y herramientas completadas o fallidas. Correlaciona herramientas con el paso del modelo y sólo transmite metadatos seleccionados: nombres, estados, códigos de error y tokens. No serializa prompts, respuestas ni contenido/argumentos de herramientas.
 
 ## Validación
 
@@ -50,3 +52,4 @@ cd dashboard && npm ci && npm run build
 - SignalR `/hubs/telemetry`, evento `telemetry.updated`
 
 La deduplicación usa `source + eventId`. Las vistas permiten inspeccionar spans de modelo/herramienta y eventos no correlacionados. La política de atributos usa lista de exclusión para claves sensibles.
+

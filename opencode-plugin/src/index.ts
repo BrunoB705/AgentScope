@@ -7,6 +7,7 @@ type Telemetry = Record<string, unknown>;
 const get = (value: unknown, key: string): unknown => value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
 const str = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined;
 const numeric = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+const finite = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 const date = (value?: number) => new Date(typeof value === 'number' ? value : Date.now()).toISOString();
 const basename = (path?: string) => path?.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
 const session = (event: Event) => str(event.data?.sessionID);
@@ -31,7 +32,7 @@ async function resolveApiKey(): Promise<string | undefined> {
 }
 
 /** Maps only scalar metadata from OpenCode v2 events; message, tool input/output are never copied. */
-export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode'): Telemetry[] {
+export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', step?: { model?: string; started?: number }): Telemetry[] {
   const sid = session(event);
   if (!sid) return [];
   const data = event.data ?? {};
@@ -66,7 +67,11 @@ export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode'): Te
       const finish = str(get(data, 'finish'));
       return [payload('model.completed', {
         eventId: `model:${str(get(data, 'assistantMessageID')) ?? event.id ?? sid}`,
-        name: 'model', status: finish === 'error' ? 'error' : 'ok',
+        name: step?.model ?? 'model', model: step?.model,
+        status: finish === 'error' ? 'error' : 'ok',
+        timestamp: date(step?.started ?? event.created),
+        durationMs: typeof step?.started === 'number' && typeof event.created === 'number' ? Math.max(0, event.created - step.started) : undefined,
+        cost: finite(get(data, 'cost')),
         inputTokens: numeric(get(tokens, 'input')), outputTokens: numeric(get(tokens, 'output')),
         attributes: { opencode_event: event.type, ...(finish === 'error' ? { error_code: 'model_error' } : {}) },
       })];
@@ -94,6 +99,8 @@ export default Plugin.define({
     if (!apiKey) { console.warn('Agent Observability: configura OPENCODE_OBSERVABILITY_KEY para habilitar la ingesta.'); return; }
     const fallbackProject = process.env.OPENCODE_OBSERVABILITY_PROJECT ?? basename(ctx.location.directory) ?? 'opencode';
     const queue: Telemetry[] = [];
+    const stepByMessage = new Map<string, { model: string; started: number }>();
+    const modelBySession = new Map<string, string>();
     const controller = new AbortController();
     let flushing = false;
     const enqueue = (event: Telemetry) => { queue.push(event); if (queue.length > 100) queue.shift(); void flush(); };
@@ -120,7 +127,21 @@ export default Plugin.define({
     void (async () => {
       try {
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-          for (const mapped of mapOpenCodeEvent(event as Event, fallbackProject)) enqueue(mapped);
+          const current = event as Event;
+          const sid = session(current);
+          const messageId = str(get(current.data, 'assistantMessageID'));
+          if (sid && (current.type === 'session.model.selected' || current.type === 'session.step.started')) {
+            const model = modelLabel(current.data ?? {});
+            if (model) modelBySession.set(sid, model);
+            if (current.type === 'session.step.started' && messageId && model) {
+              const started = finite(get(current.data, 'started'));
+              stepByMessage.set(messageId, { model, started: started ?? current.created ?? Date.now() });
+            }
+          }
+          const step = current.type === 'session.step.ended' ? (messageId ? stepByMessage.get(messageId) : undefined) : undefined;
+          const model = step?.model ?? (sid ? modelBySession.get(sid) : undefined);
+          for (const mapped of mapOpenCodeEvent(current, fallbackProject, { model, started: step?.started })) enqueue(mapped);
+          if (current.type === 'session.step.ended' && messageId) stepByMessage.delete(messageId);
         }
       } catch { /* Abort during plugin shutdown or a transient event stream failure. */ }
     })();

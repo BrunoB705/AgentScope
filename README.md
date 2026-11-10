@@ -32,7 +32,7 @@ El adaptador usa la API de plugins v2 de OpenCode. El puente de proyecto está e
 
 El plugin usa `OPENCODE_OBSERVABILITY_KEY` si está definida; si no, lee la clave local desde `%LOCALAPPDATA%\AgentObservabilityPlatform\telemetry.key`. Así puede capturar sesiones aunque OpenCode se haya iniciado desde otra terminal. Los eventos anteriores a la carga del plugin no se reconstruyen; una sesión ya abierta debe generar actividad nueva para aparecer.
 
-El plugin registra sesiones, pasos de modelo y herramientas completadas o fallidas. Correlaciona herramientas con el paso del modelo y sólo transmite metadatos seleccionados: nombres, estados, códigos de error y tokens. No serializa prompts, respuestas ni contenido/argumentos de herramientas.
+El plugin registra sesiones, el proveedor y modelo informados por OpenCode al iniciar cada paso, y las herramientas completadas o fallidas. Correlaciona herramientas con el paso del modelo y sólo transmite metadatos seleccionados: nombres, estados, códigos de error y tokens. No serializa prompts, respuestas ni contenido/argumentos de herramientas.
 
 ## Validación
 

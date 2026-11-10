@@ -10,6 +10,13 @@ const numeric = (value: unknown): number => typeof value === 'number' && Number.
 const date = (value?: number) => new Date(typeof value === 'number' ? value : Date.now()).toISOString();
 const basename = (path?: string) => path?.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
 const session = (event: Event) => str(event.data?.sessionID);
+const modelLabel = (data: Record<string, unknown>) => {
+  const model = get(data, 'model');
+  const id = str(get(model, 'id'));
+  if (!id) return undefined;
+  const provider = str(get(model, 'providerID'));
+  return provider ? `${provider}/${id}` : id;
+};
 
 async function resolveApiKey(): Promise<string | undefined> {
   const fromEnvironment = process.env.OPENCODE_OBSERVABILITY_KEY;
@@ -44,6 +51,15 @@ export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode'): Te
       const error = get(data, 'error');
       const code = str(get(error, 'type')) ?? 'execution_failed';
       return [payload('session.error', { status: 'error', attributes: { opencode_event: event.type, error_code: code } })];
+    }
+    case 'session.model.selected':
+    case 'session.step.started': {
+      const model = modelLabel(data);
+      if (!model) return [];
+      return [payload('session.model.selected', {
+        eventId: `model-selection:${event.id ?? `${sid}:${event.created ?? Date.now()}`}`,
+        model,
+      })];
     }
     case 'session.step.ended': {
       const tokens = get(data, 'tokens');

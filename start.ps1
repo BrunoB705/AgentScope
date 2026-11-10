@@ -14,7 +14,14 @@ New-Item -ItemType Directory -Force -Path $logs | Out-Null
 if (Test-Path $keyFile) {
     $ApiKey = (Get-Content -LiteralPath $keyFile -Raw).Trim()
 } else {
-    $ApiKey = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+    $randomBytes = New-Object byte[] 32
+    $randomGenerator = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $randomGenerator.GetBytes($randomBytes)
+        $ApiKey = [Convert]::ToBase64String($randomBytes)
+    } finally {
+        $randomGenerator.Dispose()
+    }
     [System.IO.File]::WriteAllText($keyFile, $ApiKey)
 }
 $env:TELEMETRY_API_KEY = $ApiKey

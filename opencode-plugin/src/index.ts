@@ -1,4 +1,6 @@
 import { Plugin } from '@opencode/plugin';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 type Event = { id?: string; created?: number; type: string; data?: Record<string, unknown>; location?: { directory?: string } };
 type Telemetry = Record<string, unknown>;
@@ -8,6 +10,18 @@ const numeric = (value: unknown): number => typeof value === 'number' && Number.
 const date = (value?: number) => new Date(typeof value === 'number' ? value : Date.now()).toISOString();
 const basename = (path?: string) => path?.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
 const session = (event: Event) => str(event.data?.sessionID);
+
+async function resolveApiKey(): Promise<string | undefined> {
+  const fromEnvironment = process.env.OPENCODE_OBSERVABILITY_KEY;
+  if (fromEnvironment) return fromEnvironment;
+  const localAppData = process.env.LOCALAPPDATA;
+  if (!localAppData) return undefined;
+  try {
+    return (await readFile(join(localAppData, 'AgentObservabilityPlatform', 'telemetry.key'), 'utf8')).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Maps only scalar metadata from OpenCode v2 events; message, tool input/output are never copied. */
 export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode'): Telemetry[] {
@@ -60,7 +74,7 @@ export default Plugin.define({
   id: 'agent-observability',
   async setup(ctx) {
     const endpoint = process.env.OPENCODE_OBSERVABILITY_URL ?? 'http://127.0.0.1:5080';
-    const apiKey = process.env.OPENCODE_OBSERVABILITY_KEY;
+    const apiKey = (await resolveApiKey()) ?? '';
     if (!apiKey) { console.warn('Agent Observability: configura OPENCODE_OBSERVABILITY_KEY para habilitar la ingesta.'); return; }
     const fallbackProject = process.env.OPENCODE_OBSERVABILITY_PROJECT ?? basename(ctx.location.directory) ?? 'opencode';
     const queue: Telemetry[] = [];

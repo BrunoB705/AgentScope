@@ -6,6 +6,7 @@ import './style.css';
 type Session = { id: string; source: string; project?: string; status: string; model?: string; startedAt: string; endedAt?: string; spanCount: number; errorCount: number; inputTokens: number; outputTokens: number };
 type Span = { id: string; parentId?: string; name: string; kind: string; status: string; startedAt: string; durationMs?: number; inputTokens: number; outputTokens: number; reasoningTokens: number; cacheReadTokens: number; cacheWriteTokens: number; cost?: number | null; quotaCostEstimate?: number | null; attributesJson: string };
 type Listing = { items: Session[]; total: number; page: number; pageSize: number };
+type InstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }> };
 const time = (value?: string) => value ? new Date(value).toLocaleString() : '—';
 const duration = (milliseconds: number) => milliseconds < 60_000 ? `${(milliseconds / 1000).toFixed(1)} s` : `${Math.floor(milliseconds / 60_000)} min ${Math.floor(milliseconds % 60_000 / 1000)} s`;
 const money = (value?: number | null, missing = 'Sin dato') => value == null ? missing : `US$ ${value.toFixed(8)}`;
@@ -23,6 +24,9 @@ function App() {
   const [page, setPage] = React.useState(1);
   const [online, setOnline] = React.useState(false);
   const [apiError, setApiError] = React.useState('');
+  const [installPrompt, setInstallPrompt] = React.useState<InstallPromptEvent | null>(null);
+  const [installed, setInstalled] = React.useState(false);
+  const [installHelp, setInstallHelp] = React.useState('');
   const loadRef = React.useRef<() => Promise<void>>(async () => undefined);
   const selectedRef = React.useRef<string | null>(selected);
   const detailLoadRef = React.useRef<() => Promise<void>>(async () => undefined);
@@ -54,6 +58,14 @@ function App() {
 
   React.useEffect(() => { void load(); }, [load]);
   React.useEffect(() => {
+    if (window.matchMedia('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone) setInstalled(true);
+    const beforeInstall = (event: Event) => { event.preventDefault(); setInstallPrompt(event as InstallPromptEvent); };
+    const onInstalled = () => { setInstalled(true); setInstallPrompt(null); setInstallHelp(''); };
+    window.addEventListener('beforeinstallprompt', beforeInstall);
+    window.addEventListener('appinstalled', onInstalled);
+    return () => { window.removeEventListener('beforeinstallprompt', beforeInstall); window.removeEventListener('appinstalled', onInstalled); };
+  }, []);
+  React.useEffect(() => {
     const connection = new HubConnectionBuilder().withUrl('/hubs/telemetry').withAutomaticReconnect().build();
     connection.on('telemetry.updated', (event?: { sessionId?: string }) => { setOnline(true); void loadRef.current(); if (event?.sessionId === selectedRef.current) void detailLoadRef.current(); });
     connection.onreconnected(() => { setOnline(true); void loadRef.current(); });
@@ -70,9 +82,20 @@ function App() {
   const depthOf = (span: Span) => { let depth = 0, parent = span.parentId; const seen = new Set<string>(); while (parent && !seen.has(parent)) { seen.add(parent); const item = spans.find(s => s.id === parent); if (!item) break; depth++; parent = item.parentId; } return Math.min(depth, 5); };
   const tokenTotal = sessions.reduce((sum, s) => sum + s.inputTokens + s.outputTokens, 0);
   const durationTotal = sessions.reduce((sum, s) => sum + (s.endedAt ? Math.max(0, Date.parse(s.endedAt) - Date.parse(s.startedAt)) : 0), 0);
+  const installApplication = async () => {
+    setInstallHelp('');
+    if (!installPrompt) {
+      setInstallHelp('En Edge: menú ⋯ → Aplicaciones → Instalar AgentScope.');
+      return;
+    }
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    if (choice.outcome === 'accepted') setInstalled(true);
+    setInstallPrompt(null);
+  };
 
   return <main>
-    <header><div><span className="eyebrow">LOCAL AGENT TELEMETRY</span><h1>Observability</h1><p>Sesiones y actividad de OpenCode en tiempo real</p></div><span className={`live ${online ? 'connected' : ''}`}><i />{online ? 'En vivo' : 'Reconectando'}</span></header>
+    <header><div><span className="eyebrow">LOCAL AGENT TELEMETRY</span><h1>AgentScope</h1><p>Sesiones y actividad de OpenCode en tiempo real</p></div><div className="header-actions"><button className="install-button" disabled={installed} onClick={() => void installApplication()}>{installed ? 'Aplicación instalada' : 'Instalar aplicación'}</button><span className={`live ${online ? 'connected' : ''}`}><i />{online ? 'En vivo' : 'Reconectando'}</span>{installHelp && <small className="install-help">{installHelp}</small>}</div></header>
     {apiError && <div className="api-error" role="status">{apiError}</div>}
     <section className="stats"><article><span>Sesiones encontradas</span><b>{listing.total.toLocaleString()}</b></article><article><span>Errores en esta página</span><b>{sessions.reduce((a, s) => a + s.errorCount, 0)}</b></article><article><span>Duración acumulada</span><b>{duration(durationTotal)}</b></article><article><span>Spans en esta página</span><b>{sessions.reduce((a, s) => a + s.spanCount, 0)}</b></article><article><span>Tokens conocidos</span><b>{tokenTotal.toLocaleString()}</b></article></section>
     <section className="layout"><div className="panel"><div className="panel-head"><div><h2>Sesiones</h2><small>Actividad reciente</small></div><span className="result-count">{listing.total} resultados</span></div>

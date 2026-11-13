@@ -59,3 +59,33 @@ main{max-width:1880px;padding-left:3.5vw;padding-right:3.5vw}
 .tool-chip{border:1px solid #315244;background:#142019;color:#a9ddc1;border-radius:20px;padding:6px 10px;font:12px 'DM Mono',monospace}
 @media(max-width:1280px){.layout{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:540px){.timeline{max-height:55vh;padding:0 16px}.tool-list{padding-left:16px;padding-right:16px}}
+
+.budgets-panel{margin:0 0 20px;background:#11141a;border:1px solid #222731;border-radius:9px}
+.budgets-panel summary{cursor:pointer;padding:17px 20px;font-size:14px;font-weight:600;list-style-position:inside}
+.budgets-panel summary span{float:right;color:#858d9b;font:12px 'DM Mono',monospace}
+.budgets-content{border-top:1px solid #222731;padding:18px 20px}
+.budget-form{display:grid;grid-template-columns:1.2fr 1fr 1fr auto;gap:12px;align-items:end}
+.budget-form label,.review-note-label{font-size:12px;color:#858d9b}
+.budget-form input,.budget-form select,.review-note-label textarea{display:block;width:100%;margin-top:7px;padding:9px 10px;border:1px solid #29303a;border-radius:6px;background:#0c0f13;color:#dce0e7;font:13px 'DM Sans',sans-serif}
+.budget-form button,.review-actions button{border:1px solid #315244;border-radius:6px;background:#18221f;color:#a9ddc1;padding:10px 14px;cursor:pointer;font:12px 'DM Sans',sans-serif}
+.budget-form button:disabled,.review-actions button:disabled{opacity:.55;cursor:default}
+.budget-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:16px}
+.budget-item{border:1px solid #262d36;border-radius:8px;padding:14px;background:#0e1116}
+.budget-heading,.review-actions{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.budget-heading b{font-size:14px}.budget-heading small,.budget-item>small{font-size:11px}
+.budget-amount{margin:14px 0 9px;font:13px 'DM Mono',monospace;color:#dce0e7}
+.budget-track{height:7px;overflow:hidden;background:#252b33;border-radius:8px;margin-bottom:8px}
+.budget-track i{display:block;height:100%;background:#67d2a1;border-radius:8px}
+.near-budget .budget-track i{background:#e2a956}.over-budget .budget-track i{background:#ff7777}
+.near-budget{border-color:#604d2b}.over-budget{border-color:#633333}
+.text-button{border:0;background:transparent;color:#ff9a9a;cursor:pointer;font-size:11px}
+.budget-footnote,.form-message{font-size:11px;color:#858d9b;margin:14px 0 0;line-height:1.5}
+.review-box{margin:0 24px 20px;padding:16px;border:1px solid #262d36;border-radius:8px;background:#0e1116}
+.review-box h3{margin:0 0 5px;font-size:14px}.review-box p{margin:0 0 10px;color:#858d9b;font-size:12px}
+.rating-input{display:flex;align-items:center;gap:4px;margin:8px 0 12px}
+.rating-input button{border:0;background:transparent;color:#4c535f;font-size:25px;line-height:1;cursor:pointer;padding:3px}
+.rating-input button.rated{color:#f0bf5b}.rating-input .clear-rating{font-size:11px;color:#858d9b;margin-left:8px}
+.review-note-label textarea{resize:vertical;min-height:68px}
+.review-actions{margin-top:10px}.review-actions small{font-size:11px;font-family:'DM Sans',sans-serif}
+@media(max-width:900px){.budget-form{grid-template-columns:repeat(2,minmax(0,1fr))}.budget-form button{align-self:end}}
+@media(max-width:540px){.budgets-panel summary{padding:15px 13px;font-size:12px}.budgets-panel summary span{font-size:10px}.budgets-content{padding:14px}.budget-form{grid-template-columns:1fr}.review-box{margin-left:16px;margin-right:16px}.review-actions{align-items:flex-start;flex-direction:column}}

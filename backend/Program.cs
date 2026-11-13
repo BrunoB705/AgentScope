@@ -21,10 +21,52 @@ using (var scope = app.Services.CreateScope()) {
         await EnsureColumnAsync(db, table, "QuotaCostEstimate", "REAL NULL");
     }
     await EnsureSessionTitleColumnAsync(db);
+    await EnsureSessionReviewColumnsAsync(db);
+    await db.Database.ExecuteSqlRawAsync("CREATE TABLE IF NOT EXISTS Budgets (Project TEXT NOT NULL PRIMARY KEY, MonthlyLimit REAL NOT NULL, Metric TEXT NOT NULL)");
 }
 app.UseCors();
 app.MapHub<TelemetryHub>("/hubs/telemetry");
 app.MapGet("/api/v1/health", () => Results.Ok(new { status = "ok" }));
+app.MapPut("/api/v1/sessions/{id}/review", async (string id, SessionReviewDto dto, TelemetryDb db, IHubContext<TelemetryHub> hub) => {
+    if (dto.Rating is < 1 or > 5 || dto.Note?.Length > 2000) return Results.BadRequest(new { error = "La puntuación debe ser de 1 a 5 y la nota no puede superar 2000 caracteres." });
+    var session = await db.Sessions.FindAsync(id);
+    if (session is null) return Results.NotFound();
+    session.Rating = dto.Rating;
+    session.ReviewNote = string.IsNullOrWhiteSpace(dto.Note) ? null : dto.Note.Trim();
+    await db.SaveChangesAsync();
+    await hub.Clients.All.SendAsync("telemetry.updated", new { sessionId = id, type = "session.review.updated" });
+    return Results.Ok(new { rating = session.Rating, note = session.ReviewNote });
+});
+app.MapGet("/api/v1/budgets", async (TelemetryDb db) => {
+    var start = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+    var budgets = await db.Budgets.AsNoTracking().OrderBy(x => x.Project).ToListAsync();
+    var rows = new List<object>();
+    foreach (var budget in budgets) {
+        var usage = db.Spans.AsNoTracking().Join(db.Sessions.AsNoTracking().Where(s => s.Project == budget.Project), span => span.SessionId, session => session.Id, (span, session) => span).Where(span => span.StartedAt >= start);
+        var spent = budget.Metric == "quota"
+            ? await usage.SumAsync(s => (double?)s.QuotaCostEstimate)
+            : await usage.SumAsync(s => (double?)s.Cost);
+        rows.Add(new { project = budget.Project, monthlyLimit = budget.MonthlyLimit, metric = budget.Metric, spent, periodStart = start, percentage = spent.HasValue ? spent.Value / budget.MonthlyLimit * 100 : (double?)null });
+    }
+    return Results.Ok(rows);
+});
+app.MapPut("/api/v1/budgets", async (BudgetDto dto, TelemetryDb db) => {
+    var project = Safe(dto.Project?.Trim(), 120);
+    if (string.IsNullOrWhiteSpace(project) || !double.IsFinite(dto.MonthlyLimit) || dto.MonthlyLimit <= 0 || dto.MonthlyLimit > 1_000_000 || dto.Metric is not ("cost" or "quota")) return Results.BadRequest(new { error = "Indica proyecto, límite mensual válido y métrica cost o quota." });
+    var budget = await db.Budgets.FindAsync(project);
+    if (budget is null) { budget = new Budget { Project = project }; db.Budgets.Add(budget); }
+    budget.MonthlyLimit = dto.MonthlyLimit;
+    budget.Metric = dto.Metric;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { budget.Project, budget.MonthlyLimit, budget.Metric });
+});
+app.MapDelete("/api/v1/budgets", async (string project, TelemetryDb db) => {
+    var budget = await db.Budgets.FindAsync(project);
+    if (budget is null) return Results.NotFound();
+    db.Budgets.Remove(budget);
+    await db.SaveChangesAsync();
+    return Results.NoContent();
+});
 app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEventDto dto, TelemetryDb db, IConfiguration config, IHubContext<TelemetryHub> hub) => {
     var key = config["Telemetry:ApiKey"]!;
     if (!CryptographicEquals(request.Headers["X-Telemetry-Key"].ToString(), key)) return Results.Unauthorized();
@@ -72,14 +114,18 @@ app.Run();
 
 static bool CryptographicEquals(string a,string b) { var x=System.Text.Encoding.UTF8.GetBytes(a);var y=System.Text.Encoding.UTF8.GetBytes(b);return x.Length==y.Length && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(x,y); }
 static async Task EnsureSessionTitleColumnAsync(TelemetryDb db) { var exists=false; await db.Database.OpenConnectionAsync(); try { await using var command=db.Database.GetDbConnection().CreateCommand(); command.CommandText="PRAGMA table_info('Sessions')"; await using var reader=await command.ExecuteReaderAsync(); while(await reader.ReadAsync()) if(reader.GetString(1)=="Title") exists=true; } finally { await db.Database.CloseConnectionAsync(); } if(!exists) await db.Database.ExecuteSqlRawAsync("ALTER TABLE Sessions ADD COLUMN Title TEXT NULL"); }
+static async Task EnsureSessionReviewColumnsAsync(TelemetryDb db) { foreach (var (name, sql) in new[] { ("Rating", "ALTER TABLE Sessions ADD COLUMN Rating INTEGER NULL"), ("ReviewNote", "ALTER TABLE Sessions ADD COLUMN ReviewNote TEXT NULL") }) { var exists=false; await db.Database.OpenConnectionAsync(); try { await using var command=db.Database.GetDbConnection().CreateCommand(); command.CommandText="PRAGMA table_info('Sessions')"; await using var reader=await command.ExecuteReaderAsync(); while(await reader.ReadAsync()) if(reader.GetString(1)==name) exists=true; } finally { await db.Database.CloseConnectionAsync(); } if(!exists) await db.Database.ExecuteSqlRawAsync(sql); } }
 static async Task EnsureColumnAsync(TelemetryDb db, string table, string column, string definition) { var tableName=table switch { "Events"=>"Events", "Spans"=>"Spans", _=>throw new ArgumentOutOfRangeException(nameof(table)) }; var columnName=column switch { "Cost"=>"Cost", "ReasoningTokens"=>"ReasoningTokens", "CacheReadTokens"=>"CacheReadTokens", "CacheWriteTokens"=>"CacheWriteTokens", "QuotaCostEstimate"=>"QuotaCostEstimate", _=>throw new ArgumentOutOfRangeException(nameof(column)) }; var alterQuery=(tableName,columnName,definition) switch { ("Events","Cost","REAL NULL")=>"ALTER TABLE Events ADD COLUMN Cost REAL NULL", ("Spans","Cost","REAL NULL")=>"ALTER TABLE Spans ADD COLUMN Cost REAL NULL", ("Events","ReasoningTokens","INTEGER NOT NULL DEFAULT 0")=>"ALTER TABLE Events ADD COLUMN ReasoningTokens INTEGER NOT NULL DEFAULT 0", ("Spans","ReasoningTokens","INTEGER NOT NULL DEFAULT 0")=>"ALTER TABLE Spans ADD COLUMN ReasoningTokens INTEGER NOT NULL DEFAULT 0", ("Events","CacheReadTokens","INTEGER NOT NULL DEFAULT 0")=>"ALTER TABLE Events ADD COLUMN CacheReadTokens INTEGER NOT NULL DEFAULT 0", ("Spans","CacheReadTokens","INTEGER NOT NULL DEFAULT 0")=>"ALTER TABLE Spans ADD COLUMN CacheReadTokens INTEGER NOT NULL DEFAULT 0", ("Events","CacheWriteTokens","INTEGER NOT NULL DEFAULT 0")=>"ALTER TABLE Events ADD COLUMN CacheWriteTokens INTEGER NOT NULL DEFAULT 0", ("Spans","CacheWriteTokens","INTEGER NOT NULL DEFAULT 0")=>"ALTER TABLE Spans ADD COLUMN CacheWriteTokens INTEGER NOT NULL DEFAULT 0", ("Events","QuotaCostEstimate","REAL NULL")=>"ALTER TABLE Events ADD COLUMN QuotaCostEstimate REAL NULL", ("Spans","QuotaCostEstimate","REAL NULL")=>"ALTER TABLE Spans ADD COLUMN QuotaCostEstimate REAL NULL", _=>throw new ArgumentOutOfRangeException(nameof(column)) }; var exists=false; await db.Database.OpenConnectionAsync(); try { await using var command=db.Database.GetDbConnection().CreateCommand(); command.CommandText=$"PRAGMA table_info('{tableName}')"; await using var reader=await command.ExecuteReaderAsync(); while(await reader.ReadAsync()) if(reader.GetString(1)==columnName) exists=true; } finally { await db.Database.CloseConnectionAsync(); } if(!exists) await db.Database.ExecuteSqlRawAsync(alterQuery); }
 static string SpanId(string source,string eventId) => $"{source}:{eventId}";
 static string? ParentSpanId(string source,string? parentId) => string.IsNullOrWhiteSpace(parentId) ? null : SpanId(source,parentId);
 static string? Safe(string? s,int max) => string.IsNullOrWhiteSpace(s)?null:s[..Math.Min(s.Length,max)];
 static Dictionary<string,string> SafeAttributes(Dictionary<string,string>? input) { var result=new Dictionary<string,string>(); if(input is null)return result; var blocked=new[]{"prompt","response","content","output","arguments","args","command","file","path","body","secret","token","api_key","key"}; foreach(var kv in input.Take(32)) { var k=kv.Key.ToLowerInvariant(); if(blocked.Any(k.Contains)) continue; result[Safe(kv.Key,100)!]=Safe(kv.Value,500)??""; } return result; }
 record TelemetryEventDto(string EventId,string Source,string SessionId,DateTimeOffset Timestamp,string Type,string? Project=null,string? Status=null,long? DurationMs=null,string? Model=null,int InputTokens=0,int OutputTokens=0,string? ParentId=null,string? Name=null,Dictionary<string,string>? Attributes=null,double? Cost=null,int ReasoningTokens=0,int CacheReadTokens=0,int CacheWriteTokens=0,double? QuotaCostEstimate=null,string? Title=null);
-class TelemetryDb(DbContextOptions<TelemetryDb> options):DbContext(options) { public DbSet<Session> Sessions=>Set<Session>();public DbSet<TelemetryEvent> Events=>Set<TelemetryEvent>();public DbSet<Span> Spans=>Set<Span>(); protected override void OnModelCreating(ModelBuilder b){var utc=new ValueConverter<DateTime,DateTime>(v=>DateTime.SpecifyKind(v,DateTimeKind.Utc),v=>DateTime.SpecifyKind(v,DateTimeKind.Utc));var utcNullable=new ValueConverter<DateTime?,DateTime?>(v=>v.HasValue?DateTime.SpecifyKind(v.Value,DateTimeKind.Utc):null,v=>v.HasValue?DateTime.SpecifyKind(v.Value,DateTimeKind.Utc):null);b.Entity<TelemetryEvent>().HasIndex(x=>new{x.Source,x.EventId});b.Entity<TelemetryEvent>().Property(x=>x.Timestamp).HasConversion(utc);b.Entity<Session>().HasKey(x=>x.Id);b.Entity<Session>().Property(x=>x.StartedAt).HasConversion(utc);b.Entity<Session>().Property(x=>x.EndedAt).HasConversion(utcNullable);b.Entity<Session>().Property(x=>x.UpdatedAt).HasConversion(utc);b.Entity<Span>().HasKey(x=>x.Id);b.Entity<Span>().Property(x=>x.StartedAt).HasConversion(utc);} }
-class Session { public string Id{get;set;}="";public string Source{get;set;}="";public string? Project{get;set;} public string? Title{get;set;} public string Status{get;set;}="active";public string? Model{get;set;}public DateTime StartedAt{get;set;}public DateTime? EndedAt{get;set;}public DateTime UpdatedAt{get;set;} }
+record SessionReviewDto(int? Rating, string? Note);
+record BudgetDto(string? Project, double MonthlyLimit, string Metric);
+class TelemetryDb(DbContextOptions<TelemetryDb> options):DbContext(options) { public DbSet<Session> Sessions=>Set<Session>();public DbSet<TelemetryEvent> Events=>Set<TelemetryEvent>();public DbSet<Span> Spans=>Set<Span>();public DbSet<Budget> Budgets=>Set<Budget>(); protected override void OnModelCreating(ModelBuilder b){var utc=new ValueConverter<DateTime,DateTime>(v=>DateTime.SpecifyKind(v,DateTimeKind.Utc),v=>DateTime.SpecifyKind(v,DateTimeKind.Utc));var utcNullable=new ValueConverter<DateTime?,DateTime?>(v=>v.HasValue?DateTime.SpecifyKind(v.Value,DateTimeKind.Utc):null,v=>v.HasValue?DateTime.SpecifyKind(v.Value,DateTimeKind.Utc):null);b.Entity<TelemetryEvent>().HasIndex(x=>new{x.Source,x.EventId});b.Entity<TelemetryEvent>().Property(x=>x.Timestamp).HasConversion(utc);b.Entity<Session>().HasKey(x=>x.Id);b.Entity<Session>().Property(x=>x.StartedAt).HasConversion(utc);b.Entity<Session>().Property(x=>x.EndedAt).HasConversion(utcNullable);b.Entity<Session>().Property(x=>x.UpdatedAt).HasConversion(utc);b.Entity<Span>().HasKey(x=>x.Id);b.Entity<Span>().Property(x=>x.StartedAt).HasConversion(utc);b.Entity<Budget>().HasKey(x=>x.Project);} }
+class Session { public string Id{get;set;}="";public string Source{get;set;}="";public string? Project{get;set;} public string? Title{get;set;} public int? Rating{get;set;} public string? ReviewNote{get;set;} public string Status{get;set;}="active";public string? Model{get;set;}public DateTime StartedAt{get;set;}public DateTime? EndedAt{get;set;}public DateTime UpdatedAt{get;set;} }
+class Budget { public string Project{get;set;}="";public double MonthlyLimit{get;set;}public string Metric{get;set;}="cost"; }
 class TelemetryEvent { public long Id{get;set;}public string EventId{get;set;}="";public string Source{get;set;}="";public string SessionId{get;set;}="";public DateTime Timestamp{get;set;}public string Type{get;set;}="";public string? Status{get;set;}public long? DurationMs{get;set;}public string? Model{get;set;}public int InputTokens{get;set;}public int OutputTokens{get;set;}public int ReasoningTokens{get;set;}public int CacheReadTokens{get;set;}public int CacheWriteTokens{get;set;}public double? Cost{get;set;}public double? QuotaCostEstimate{get;set;}public string AttributesJson{get;set;}="{}"; }
 class Span { public string Id{get;set;}="";public string SessionId{get;set;}="";public string? ParentId{get;set;}public string Name{get;set;}="";public string Kind{get;set;}="";public string Status{get;set;}="ok";public DateTime StartedAt{get;set;}public long? DurationMs{get;set;}public int InputTokens{get;set;}public int OutputTokens{get;set;}public int ReasoningTokens{get;set;}public int CacheReadTokens{get;set;}public int CacheWriteTokens{get;set;}public double? Cost{get;set;}public double? QuotaCostEstimate{get;set;}public string AttributesJson{get;set;}="{}"; }
 class TelemetryHub:Hub { }

@@ -132,7 +132,8 @@ export default Plugin.define({
     const stepByMessage = new Map<string, { model: string; started: number; modelInfo?: Record<string, unknown> }>();
     const modelBySession = new Map<string, string>();
     const modelInfoById = new Map<string, Record<string, unknown>>();
-    const titleLookupAttempted = new Set<string>();
+    const titleLookupAt = new Map<string, number>();
+    const titleBySession = new Map<string, string>();
     const toolNameById = new Map<string, string>();
     try {
       const models = await ctx.model.list({ location: { directory: ctx.location.directory } });
@@ -141,6 +142,21 @@ export default Plugin.define({
     const controller = new AbortController();
     let flushing = false;
     const enqueue = (event: Telemetry) => { queue.push(event); if (queue.length > 100) queue.shift(); void flush(); };
+    // Backfill titles for sessions already stored by the collector when the plugin starts.
+    void (async () => {
+      try {
+        const listed = await (ctx.session as unknown as { list: (input: { directory: string; limit: number; order: 'desc' }) => Promise<unknown> }).list({ directory: ctx.location.directory, limit: 100, order: 'desc' });
+        const items = get(listed, 'data');
+        if (!Array.isArray(items)) return;
+        for (const item of items) {
+          const sessionId = str(get(item, 'id'));
+          const title = str(get(item, 'title'));
+          if (!sessionId || !title) continue;
+          titleBySession.set(sessionId, title);
+          enqueue({ eventId: `session-title:${sessionId}`, source: 'opencode', sessionId, timestamp: date(), type: 'session.title.updated', title, project: basename(ctx.location.directory) ?? fallbackProject });
+        }
+      } catch { /* Existing titles are a best-effort backfill; telemetry collection still starts. */ }
+    })();
     async function flush() {
       if (flushing) return;
       flushing = true;
@@ -167,11 +183,18 @@ export default Plugin.define({
           const current = event as Event;
           const sid = session(current);
           const messageId = str(get(current.data, 'assistantMessageID'));
-          if (sid && !titleLookupAttempted.has(sid)) {
-            titleLookupAttempted.add(sid);
+          const renamedTitle = current.type === 'session.renamed' ? str(get(current.data, 'title')) : undefined;
+          if (sid && renamedTitle) titleBySession.set(sid, renamedTitle);
+          if (sid && !titleBySession.has(sid) && Date.now() - (titleLookupAt.get(sid) ?? 0) >= 30_000) {
+            titleLookupAt.set(sid, Date.now());
             try {
-              const sessionInfo = await (ctx.session as unknown as { get: (input: { sessionID: string }) => Promise<{ title?: string }> }).get({ sessionID: sid });
-              if (sessionInfo.title) enqueue({ eventId: `session-title:${sid}`, source: 'opencode', sessionId: sid, timestamp: date(), type: 'session.title.updated', title: sessionInfo.title, project: basename(current.location?.directory) ?? fallbackProject });
+              const sessionInfo = await (ctx.session as unknown as { get: (input: { sessionID: string }) => Promise<unknown> }).get({ sessionID: sid });
+              // OpenCode's v2 session endpoint wraps its payload in `data`.
+              const title = str(get(get(sessionInfo, 'data'), 'title')) ?? str(get(sessionInfo, 'title'));
+              if (title) {
+                titleBySession.set(sid, title);
+                enqueue({ eventId: `session-title:${sid}`, source: 'opencode', sessionId: sid, timestamp: date(), type: 'session.title.updated', title, project: basename(current.location?.directory) ?? fallbackProject });
+              }
             } catch { /* Session metadata lookup is optional; live events continue. */ }
           }
           const toolId = str(get(current.data, 'id'));

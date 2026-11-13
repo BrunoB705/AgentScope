@@ -122,9 +122,13 @@ function App() {
     setReviewSaving(true); setReviewMessage('');
     try {
       const response = await fetch(`/api/v1/sessions/${encodeURIComponent(selected)}/review`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rating: reviewRating, note: reviewNote }) });
-      if (!response.ok) throw new Error();
+      if (!response.ok) {
+        if (response.status === 404 || response.status === 405) throw new Error('La API activa no tiene la función de evaluación. En PowerShell ejecuta .\\stop.ps1 y luego .\\start.ps1.');
+        if (response.status >= 500) throw new Error(`La API devolvió un error ${response.status}. Reinicia AgentScope con .\\stop.ps1 y .\\start.ps1; si persiste, revisa api-error.log.`);
+        throw new Error(`La API rechazó la evaluación (HTTP ${response.status}).`);
+      }
       setReviewMessage('Evaluación guardada.'); await loadDetail(selected);
-    } catch { setReviewMessage('No se pudo guardar la evaluación. Comprueba que la API esté conectada.'); }
+    } catch (error) { setReviewMessage(error instanceof TypeError ? 'No se pudo conectar con la API. Confirma que AgentScope esté iniciado.' : error instanceof Error ? error.message : 'No se pudo guardar la evaluación.'); }
     finally { setReviewSaving(false); }
   };
   const saveBudget = async (event: React.FormEvent) => {

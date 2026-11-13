@@ -51,7 +51,7 @@ async function resolveApiKey(): Promise<string | undefined> {
 }
 
 /** Maps only scalar metadata from OpenCode v2 events; message, tool input/output are never copied. */
-export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', step?: { model?: string; started?: number; modelInfo?: Record<string, unknown> }): Telemetry[] {
+export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', step?: { model?: string; started?: number; modelInfo?: Record<string, unknown>; toolName?: string }): Telemetry[] {
   const sid = session(event);
   if (!sid) return [];
   const data = event.data ?? {};
@@ -63,6 +63,10 @@ export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', ste
   });
   switch (event.type) {
     case 'session.created': return [payload(event.type, { status: 'active' })];
+    case 'session.renamed': {
+      const title = str(get(data, 'title'));
+      return title ? [payload('session.title.updated', { title })] : [];
+    }
     case 'session.idle': return [payload(event.type, { status: 'completed' })];
     case 'session.execution.started': return [payload(event.type, { status: 'active' })];
     case 'session.execution.succeeded': return [payload(event.type, { status: 'completed' })];
@@ -99,10 +103,13 @@ export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', ste
         attributes: { opencode_event: event.type, ...(finish === 'error' ? { error_code: 'model_error' } : {}) },
       })];
     }
+    case 'session.tool.called':
+      return [];
     case 'session.tool.success':
     case 'session.tool.failed': {
       const metadata = get(data, 'metadata');
-      const name = str(get(metadata, 'tool')) ?? 'tool';
+      const native = get(data, 'native');
+      const name = str(get(metadata, 'tool')) ?? str(get(metadata, 'name')) ?? str(get(native, 'name')) ?? str(get(data, 'name')) ?? step?.toolName ?? 'tool';
       return [payload('tool.completed', {
         eventId: `tool:${str(get(data, 'id')) ?? event.id ?? sid}`,
         parentId: `model:${str(get(data, 'assistantMessageID')) ?? ''}`,
@@ -125,6 +132,8 @@ export default Plugin.define({
     const stepByMessage = new Map<string, { model: string; started: number; modelInfo?: Record<string, unknown> }>();
     const modelBySession = new Map<string, string>();
     const modelInfoById = new Map<string, Record<string, unknown>>();
+    const titleLookupAttempted = new Set<string>();
+    const toolNameById = new Map<string, string>();
     try {
       const models = await ctx.model.list({ location: { directory: ctx.location.directory } });
       for (const model of models.data) modelInfoById.set(`${model.providerID}/${model.modelID}`, model as unknown as Record<string, unknown>);
@@ -158,6 +167,25 @@ export default Plugin.define({
           const current = event as Event;
           const sid = session(current);
           const messageId = str(get(current.data, 'assistantMessageID'));
+          if (sid && !titleLookupAttempted.has(sid)) {
+            titleLookupAttempted.add(sid);
+            try {
+              const sessionInfo = await (ctx.session as unknown as { get: (input: { sessionID: string }) => Promise<{ title?: string }> }).get({ sessionID: sid });
+              if (sessionInfo.title) enqueue({ eventId: `session-title:${sid}`, source: 'opencode', sessionId: sid, timestamp: date(), type: 'session.title.updated', title: sessionInfo.title, project: basename(current.location?.directory) ?? fallbackProject });
+            } catch { /* Session metadata lookup is optional; live events continue. */ }
+          }
+          const toolId = str(get(current.data, 'id'));
+          if (sid && toolId && current.type === 'session.tool.called') {
+            const metadata = get(current, 'metadata');
+            const native = get(current.data, 'native');
+            const name = str(get(metadata, 'tool')) ?? str(get(metadata, 'name')) ?? str(get(native, 'name')) ?? str(get(current.data, 'name'));
+            if (name) toolNameById.set(`${sid}:${toolId}`, name);
+          }
+          const toolName = sid && toolId && (current.type === 'session.tool.success' || current.type === 'session.tool.failed') ? toolNameById.get(`${sid}:${toolId}`) : undefined;
+          if (sid && toolId && (current.type === 'session.tool.success' || current.type === 'session.tool.failed')) toolNameById.delete(`${sid}:${toolId}`);
+          const step = current.type === 'session.step.ended' ? (messageId ? stepByMessage.get(messageId) : undefined) : undefined;
+          const model = step?.model ?? (sid ? modelBySession.get(sid) : undefined);
+          for (const mapped of mapOpenCodeEvent(current, fallbackProject, { model, started: step?.started, modelInfo: step?.modelInfo ?? (model ? modelInfoById.get(model) : undefined), toolName })) enqueue(mapped);
           if (sid && (current.type === 'session.model.selected' || current.type === 'session.step.started')) {
             const model = modelLabel(current.data ?? {});
             if (model) modelBySession.set(sid, model);
@@ -166,9 +194,6 @@ export default Plugin.define({
               stepByMessage.set(messageId, { model, started: started ?? current.created ?? Date.now(), modelInfo: modelInfoById.get(model) });
             }
           }
-          const step = current.type === 'session.step.ended' ? (messageId ? stepByMessage.get(messageId) : undefined) : undefined;
-          const model = step?.model ?? (sid ? modelBySession.get(sid) : undefined);
-          for (const mapped of mapOpenCodeEvent(current, fallbackProject, { model, started: step?.started, modelInfo: step?.modelInfo ?? (model ? modelInfoById.get(model) : undefined) })) enqueue(mapped);
           if (current.type === 'session.step.ended' && messageId) stepByMessage.delete(messageId);
         }
       } catch { /* Abort during plugin shutdown or a transient event stream failure. */ }

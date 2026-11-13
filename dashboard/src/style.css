@@ -49,3 +49,13 @@ footer{font-size:12px;line-height:1.6;margin-top:26px}
 @media(max-width:1100px){main{padding-left:4vw;padding-right:4vw}}
 @media(max-width:540px){main{padding:24px 14px}.stats article{padding:15px}.stats b{font-size:23px}.panel-head{padding:17px}.metrics{grid-template-columns:repeat(2,1fr);padding-left:16px;padding-right:16px}.detail h3{margin-left:16px;margin-right:16px}.timeline{padding:0 16px}td,th{padding:12px 8px}.session-id{max-width:110px}}
 @media(max-width:1280px){.layout{grid-template-columns:1fr}}
+
+/* The trace scrolls inside its own panel so long sessions do not extend the page. */
+main{max-width:1880px;padding-left:3.5vw;padding-right:3.5vw}
+.layout{grid-template-columns:minmax(0,1.12fr) minmax(0,.88fr)}
+.timeline{max-height:min(58vh,680px);overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding-right:14px}
+.timeline:focus-visible{outline:1px solid #315244;outline-offset:2px}
+.tool-list{display:flex;flex-wrap:wrap;gap:8px;padding:0 24px 4px}
+.tool-chip{border:1px solid #315244;background:#142019;color:#a9ddc1;border-radius:20px;padding:6px 10px;font:12px 'DM Mono',monospace}
+@media(max-width:1280px){.layout{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:540px){.timeline{max-height:55vh;padding:0 16px}.tool-list{padding-left:16px;padding-right:16px}}

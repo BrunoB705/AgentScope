@@ -21,12 +21,12 @@ Corregir cuatro fallas que hoy hacen que AgentScope pueda mostrar un historial i
 ## Criterios de aceptación
 
 - Un evento que falla los tres intentos sigue en la cola y se reintenta después; no se pierde en silencio.
-- Al superar el límite de cola se descarta el más viejo y se informa cuántos se descartaron.
+- Al superar el límite de cola se descarta el más viejo encolado, nunca el evento que está en vuelo, y se informa cuántos se descartaron.
 - Un rechazo permanente (4xx, salvo 401, 403, 408 y 429) se descarta con aviso y no bloquea los eventos siguientes.
 - Un 401/403 se trata como problema de credenciales: se reintenta, se avisa una sola vez y la cola no se descarta.
 - Una ejecución exitosa termina en `completed`; una interrumpida en `interrupted`; una reanudada vuelve a `active` y `EndedAt` queda nulo.
 - Un `session.idle` nativo posterior a una interrupción no degrada el estado `interrupted` a `completed`.
-- Un terminal fuera de orden no cierra una sesión reabierta, y un `started` fuera de orden no reabre una sesión con un terminal más nuevo.
+- Un terminal fuera de orden no cierra una sesión reabierta, y un `started` fuera de orden no reabre una sesión con un terminal más nuevo o con el mismo timestamp.
 - Veinte POST concurrentes del mismo evento de sesión producen una sola fila y un solo `duplicate: false`, tanto al crear la sesión como sobre una sesión ya existente.
 - `PUT /api/v1/sessions/{id}/review` y la ingesta comparten el mismo lock, para no competir por la fila `Session`.
 - `npm run dev` en el dashboard queda escuchando en `127.0.0.1`.

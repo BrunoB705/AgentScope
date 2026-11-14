@@ -94,14 +94,30 @@ test('reintenta y drena cuando el colector vuelve', async () => {
   queue.dispose();
 });
 
-test('descarta el más viejo y lo informa cuando la cola se llena', () => {
-  const queue = new TelemetryQueue(() => new Promise<'ok'>(() => undefined), { max: 2 });
+test('descarta el más viejo encolado sin tocar el evento en vuelo', async () => {
+  const sent: unknown[] = [];
+  let release!: (result: 'ok') => void;
+  let started!: () => void;
+  const startedPromise = new Promise<void>(resolve => { started = resolve; });
+  const queue = new TelemetryQueue(event => {
+    sent.push(event.eventId);
+    if (event.eventId === 'a') {
+      started();
+      return new Promise<'ok'>(resolve => { release = resolve; });
+    }
+    return Promise.resolve('ok');
+  }, { max: 2, attempts: 1 });
   queue.enqueue({ eventId: 'a' });
+  await startedPromise;
   queue.enqueue({ eventId: 'b' });
   queue.enqueue({ eventId: 'c' });
   assert.equal(queue.size, 2);
   assert.equal(queue.droppedCount, 1);
-  assert.equal(queue.peek()?.eventId, 'b');
+  assert.equal(queue.peek()?.eventId, 'a');
+  release('ok');
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(sent, ['a', 'c']);
+  assert.equal(queue.size, 0);
   queue.dispose();
 });
 
@@ -132,7 +148,7 @@ Expected: FAIL porque `TelemetryQueue` todavía no existe.
 En `opencode-plugin/src/index.ts`:
 
 - Exportar `Telemetry`, `DeliveryResult` y `TelemetryQueueOptions`.
-- Implementar la cola con estas reglas: `enqueue` agrega y dispara `flush`; si `size >= max`, quita el primero, incrementa `droppedCount` y llama `onDrop`; `flush` no quita el evento si los intentos devuelven `'retry'`, programa un reintento con `retryDelayMs` y llama `onRetry` una vez por racha; si devuelve `'ok'`, quita el evento y sigue; si devuelve `'permanent'`, quita el evento, incrementa `rejectedCount`, llama `onPermanent` y sigue con el próximo; `dispose` cancela el timer.
+- Implementar la cola con estas reglas: `enqueue` agrega y dispara `flush`; si `size >= max`, quita el más viejo que **no** esté en vuelo (el índice 1 si el 0 es el evento que se está enviando), incrementa `droppedCount` y llama `onDrop`; el evento en vuelo nunca se descarta por overflow; `flush` no quita el evento si los intentos devuelven `'retry'`, programa un reintento con `retryDelayMs` y llama `onRetry` una vez por racha; si devuelve `'ok'`, quita el evento y sigue; si devuelve `'permanent'`, quita el evento, incrementa `rejectedCount`, llama `onPermanent` y sigue con el próximo; `dispose` cancela el timer.
 - Reemplazar `const queue: Telemetry[]`, `flushing`, `enqueue` y `flush` de `setup` por una instancia de `TelemetryQueue`.
 - El `send` de la instancia debe hacer el `fetch` actual a `/api/v1/telemetry/events` con `x-telemetry-key`, `AbortSignal.any` y timeout de 1800 ms, y devolver `deliveryResultForStatus(response.status)`.
 - `deliveryResultForStatus`: 2xx -> `'ok'`; 400-499 salvo 401, 403, 408 y 429 -> `'permanent'`; todo lo demás -> `'retry'`. Un 401 o 403 es un problema de credenciales que afecta a todos los eventos: se reintenta y se avisa una sola vez por sesión del plugin, sin descartar la cola.
@@ -265,6 +281,18 @@ public async Task SucceededExecutionIgnoresInterruptedStatus()
     using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-succeeded-interrupted"));
     Assert.Equal("completed", detail.RootElement.GetProperty("session").GetProperty("status").GetString());
 }
+
+[Fact]
+public async Task StartedWithSameTimestampDoesNotReopenTerminal()
+{
+    var instant = DateTimeOffset.UtcNow.AddMinutes(-1);
+    await Post(Fixture("succeeded", "session-same-timestamp", "session.execution.succeeded", instant) with { Status = "completed" });
+    await Post(Fixture("start", "session-same-timestamp", "session.execution.started", instant) with { Status = "active" });
+    using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-same-timestamp"));
+    var session = detail.RootElement.GetProperty("session");
+    Assert.Equal("completed", session.GetProperty("status").GetString());
+    Assert.NotEqual(JsonValueKind.Null, session.GetProperty("endedAt").ValueKind);
+}
 ```
 
 - [ ] **Step 2: Correr los tests y verificar que fallan**
@@ -287,7 +315,7 @@ if (dto.Type is "session.idle" or "session.execution.succeeded" or "session.erro
         e.SessionId == dto.SessionId && e.Timestamp > eventTime &&
         (e.Type == "session.execution.started" || e.Type == "session.idle" ||
          e.Type == "session.execution.succeeded" || e.Type == "session.error"));
-    var isCurrent = !session.EndedAt.HasValue || eventTime >= session.EndedAt.Value;
+    var isCurrent = !session.EndedAt.HasValue || eventTime > session.EndedAt.Value;
     if (!newerActivity && isCurrent)
     {
         var next = dto.Type == "session.error"
@@ -303,7 +331,7 @@ if (dto.Type == "session.execution.started")
     var newerTerminal = await db.Events.AnyAsync(e =>
         e.SessionId == dto.SessionId && e.Timestamp > eventTime &&
         (e.Type == "session.idle" || e.Type == "session.execution.succeeded" || e.Type == "session.error"));
-    if (!newerTerminal && (!session.EndedAt.HasValue || eventTime >= session.EndedAt.Value))
+    if (!newerTerminal && (!session.EndedAt.HasValue || eventTime > session.EndedAt.Value))
     {
         session.Status = "active";
         session.EndedAt = null;
@@ -321,7 +349,7 @@ Run: `$env:Telemetry__ApiKey='test-key'; dotnet test backend.Tests/AgentObservab
 
 Run: `cd dashboard; npm run build`
 
-Expected: 11 tests del plugin, 12 del backend y build del dashboard sin errores.
+Expected: 11 tests del plugin, 13 del backend y build del dashboard sin errores.
 
 - [ ] **Step 5: Commit**
 
@@ -409,7 +437,7 @@ En `backend/Program.cs`:
 
 Run: `$env:Telemetry__ApiKey='test-key'; dotnet test backend.Tests/AgentObservability.Api.Tests.csproj`
 
-Expected: 14 tests del backend pasan, incluidos los dos concurrentes.
+Expected: 15 tests del backend pasan, incluidos los dos concurrentes.
 
 - [ ] **Step 5: Commit**
 

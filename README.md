@@ -55,7 +55,7 @@ cd dashboard && npm ci && npm run build
 - `POST /api/v1/telemetry/events` (cabecera `X-Telemetry-Key`)
 - `GET /api/v1/sessions?status=&model=&error=&from=&to=&page=&pageSize=`
 - `GET /api/v1/sessions/{id}` y `GET /api/v1/traces/{id}`
-- `GET /api/v1/analytics/tools?days=7|30|90` (sin `days`, consulta todo el historial)
+- `GET /api/v1/analytics/tools?days=1|7|30|90` (sin `days`, consulta todo el historial)
 - SignalR `/hubs/telemetry`, evento `telemetry.updated`
 
 La deduplicación usa `source + eventId`. Las vistas permiten inspeccionar spans de modelo/herramienta y eventos no correlacionados. La política de atributos usa lista de exclusión para claves sensibles.

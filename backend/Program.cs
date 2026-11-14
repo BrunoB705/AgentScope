@@ -81,7 +81,7 @@ app.MapDelete("/api/v1/budgets", async (string project, TelemetryDb db) => {
     return Results.NoContent();
 });
 app.MapGet("/api/v1/analytics/tools", async (TelemetryDb db, int? days) => {
-    var windowDays = days is 7 or 30 or 90 ? days : null;
+    var windowDays = days is 1 or 7 or 30 or 90 ? days : null;
     var cutoff = windowDays.HasValue ? DateTime.UtcNow.AddDays(-windowDays.Value) : (DateTime?)null;
     var query = from span in db.Spans.AsNoTracking()
                 join session in db.Sessions.AsNoTracking() on span.SessionId equals session.Id

@@ -22,7 +22,8 @@ Corregir cuatro fallas que hoy hacen que AgentScope pueda mostrar un historial i
 
 - Un evento que falla los tres intentos sigue en la cola y se reintenta después; no se pierde en silencio.
 - Al superar el límite de cola se descarta el más viejo y se informa cuántos se descartaron.
-- Un rechazo permanente (4xx, salvo 408/429) se descarta con aviso y no bloquea los eventos siguientes.
+- Un rechazo permanente (4xx, salvo 401, 403, 408 y 429) se descarta con aviso y no bloquea los eventos siguientes.
+- Un 401/403 se trata como problema de credenciales: se reintenta, se avisa una sola vez y la cola no se descarta.
 - Una ejecución exitosa termina en `completed`; una interrumpida en `interrupted`; una reanudada vuelve a `active` y `EndedAt` queda nulo.
 - Veinte POST concurrentes del mismo evento de sesión producen una sola fila y un solo `duplicate: false`.
 - `npm run dev` en el dashboard queda escuchando en `127.0.0.1`.

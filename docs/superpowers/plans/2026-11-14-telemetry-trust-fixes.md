@@ -40,6 +40,7 @@
 **Interfaces:**
 - Produce: `export type Telemetry = Record<string, unknown>`
 - Produce: `export type DeliveryResult = 'ok' | 'retry' | 'permanent'`
+- Produce: `export function deliveryResultForStatus(status: number): DeliveryResult`
 - Produce: `export type TelemetryQueueOptions = { max?: number; attempts?: number; attemptDelayMs?: number; retryDelayMs?: number; signal?: AbortSignal; onDrop?: (dropped: number) => void; onPermanent?: (event: Telemetry) => void; onRetry?: (failures: number) => void }`
 - Produce: `export class TelemetryQueue`
   - `constructor(send: (event: Telemetry) => Promise<DeliveryResult>, options?: TelemetryQueueOptions)`
@@ -58,7 +59,17 @@
 Agregar a `opencode-plugin/src/index.test.ts`:
 
 ```ts
-import { TelemetryQueue } from './index.ts';
+import { TelemetryQueue, deliveryResultForStatus } from './index.ts';
+
+test('clasifica la respuesta del colector sin descartar errores de credenciales', () => {
+  assert.equal(deliveryResultForStatus(200), 'ok');
+  assert.equal(deliveryResultForStatus(400), 'permanent');
+  assert.equal(deliveryResultForStatus(401), 'retry');
+  assert.equal(deliveryResultForStatus(403), 'retry');
+  assert.equal(deliveryResultForStatus(408), 'retry');
+  assert.equal(deliveryResultForStatus(429), 'retry');
+  assert.equal(deliveryResultForStatus(500), 'retry');
+});
 
 test('conserva el evento pendiente cuando el envío falla', async () => {
   let attempts = 0;
@@ -123,7 +134,8 @@ En `opencode-plugin/src/index.ts`:
 - Exportar `Telemetry`, `DeliveryResult` y `TelemetryQueueOptions`.
 - Implementar la cola con estas reglas: `enqueue` agrega y dispara `flush`; si `size >= max`, quita el primero, incrementa `droppedCount` y llama `onDrop`; `flush` no quita el evento si los intentos devuelven `'retry'`, programa un reintento con `retryDelayMs` y llama `onRetry` una vez por racha; si devuelve `'ok'`, quita el evento y sigue; si devuelve `'permanent'`, quita el evento, incrementa `rejectedCount`, llama `onPermanent` y sigue con el próximo; `dispose` cancela el timer.
 - Reemplazar `const queue: Telemetry[]`, `flushing`, `enqueue` y `flush` de `setup` por una instancia de `TelemetryQueue`.
-- El `send` de la instancia debe hacer el `fetch` actual a `/api/v1/telemetry/events` con `x-telemetry-key`, `AbortSignal.any` y timeout de 1800 ms. Devolver `'ok'` si `response.ok`; `'permanent'` si el status es 400-499 salvo 408 y 429; `'retry'` en cualquier otro caso.
+- El `send` de la instancia debe hacer el `fetch` actual a `/api/v1/telemetry/events` con `x-telemetry-key`, `AbortSignal.any` y timeout de 1800 ms, y devolver `deliveryResultForStatus(response.status)`.
+- `deliveryResultForStatus`: 2xx -> `'ok'`; 400-499 salvo 401, 403, 408 y 429 -> `'permanent'`; todo lo demás -> `'retry'`. Un 401 o 403 es un problema de credenciales que afecta a todos los eventos: se reintenta y se avisa una sola vez por sesión del plugin, sin descartar la cola.
 - Pasar `signal: controller.signal`, `onDrop` con un `console.warn` que informe el total, `onPermanent` con un aviso que incluya el `eventId` descartado, y `onRetry` con un aviso sólo en el primer fallo de la racha.
 - En el cleanup, llamar `queue.dispose()` antes de `controller.abort()`.
 
@@ -131,7 +143,7 @@ En `opencode-plugin/src/index.ts`:
 
 Run: `cd opencode-plugin; npm run typecheck; npm test`
 
-Expected: typecheck sin errores y 8 tests pasando.
+Expected: typecheck sin errores y 9 tests pasando.
 
 - [ ] **Step 5: Commit**
 

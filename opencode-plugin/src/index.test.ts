@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mapOpenCodeEvent } from './index.ts';
+import { deliveryResultForStatus, mapOpenCodeEvent, TelemetryQueue } from './index.ts';
 
 test('maps v2 session events and derives project name from its working directory', () => {
   const [mapped] = mapOpenCodeEvent({ id: 'e1', created: 2000, type: 'session.created', location: { directory: 'C:\\work\\my-app' }, data: { sessionID: 's1', title: 'private title' } });
@@ -38,4 +38,91 @@ test('maps completed tool call with correlation and drops its content and metada
 test('ignores unrelated event and malformed events without a session id', () => {
   assert.deepEqual(mapOpenCodeEvent({ type: 'session.text.delta', data: { sessionID: 's1', text: 'secret' } }), []);
   assert.deepEqual(mapOpenCodeEvent({ type: 'session.idle', data: {} }), []);
+});
+
+test('distingue una ejecución interrumpida de una completada', () => {
+  const [mapped] = mapOpenCodeEvent({ id: 'e4', created: 5000, type: 'session.execution.interrupted', data: { sessionID: 's1' } });
+  assert.equal(mapped.type, 'session.idle');
+  assert.equal(mapped.status, 'interrupted');
+});
+
+test('marca la ejecución exitosa como completada', () => {
+  const [mapped] = mapOpenCodeEvent({ id: 'e5', created: 6000, type: 'session.execution.succeeded', data: { sessionID: 's1' } });
+  assert.equal(mapped.type, 'session.execution.succeeded');
+  assert.equal(mapped.status, 'completed');
+});
+
+test('clasifica la respuesta del colector sin descartar errores de credenciales', () => {
+  assert.equal(deliveryResultForStatus(200), 'ok');
+  assert.equal(deliveryResultForStatus(400), 'permanent');
+  assert.equal(deliveryResultForStatus(401), 'retry');
+  assert.equal(deliveryResultForStatus(403), 'retry');
+  assert.equal(deliveryResultForStatus(408), 'retry');
+  assert.equal(deliveryResultForStatus(429), 'retry');
+  assert.equal(deliveryResultForStatus(500), 'retry');
+});
+
+test('conserva el evento pendiente cuando el envío falla', async () => {
+  let attempts = 0;
+  const queue = new TelemetryQueue(async () => { attempts++; return 'retry'; }, { attempts: 1, retryDelayMs: 1000 });
+  queue.enqueue({ eventId: 'e1' });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(queue.size, 1);
+  assert.equal(queue.droppedCount, 0);
+  assert.equal(attempts, 1);
+  queue.dispose();
+});
+
+test('reintenta y drena cuando el colector vuelve', async () => {
+  let result: 'retry' | 'ok' = 'retry';
+  const queue = new TelemetryQueue(async () => result, { attempts: 1, retryDelayMs: 5 });
+  queue.enqueue({ eventId: 'e2' });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(queue.size, 1);
+  result = 'ok';
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(queue.size, 0);
+  queue.dispose();
+});
+
+test('descarta el más viejo encolado sin tocar el evento en vuelo', async () => {
+  const sent: unknown[] = [];
+  let release!: (result: 'ok') => void;
+  let started!: () => void;
+  const startedPromise = new Promise<void>(resolve => { started = resolve; });
+  const queue = new TelemetryQueue(event => {
+    sent.push(event.eventId);
+    if (event.eventId === 'a') {
+      started();
+      return new Promise<'ok'>(resolve => { release = resolve; });
+    }
+    return Promise.resolve('ok');
+  }, { max: 2, attempts: 1 });
+  queue.enqueue({ eventId: 'a' });
+  await startedPromise;
+  queue.enqueue({ eventId: 'b' });
+  queue.enqueue({ eventId: 'c' });
+  assert.equal(queue.size, 2);
+  assert.equal(queue.droppedCount, 1);
+  assert.equal(queue.peek()?.eventId, 'a');
+  release('ok');
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(sent, ['a', 'c']);
+  assert.equal(queue.size, 0);
+  queue.dispose();
+});
+
+test('descarta un rechazo permanente sin bloquear los eventos siguientes', async () => {
+  const sent: unknown[] = [];
+  const queue = new TelemetryQueue(async event => {
+    sent.push(event.eventId);
+    return event.eventId === 'bad' ? 'permanent' : 'ok';
+  }, { attempts: 1 });
+  queue.enqueue({ eventId: 'bad' });
+  queue.enqueue({ eventId: 'good' });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(sent, ['bad', 'good']);
+  assert.equal(queue.size, 0);
+  assert.equal(queue.rejectedCount, 1);
+  queue.dispose();
 });

@@ -55,6 +55,47 @@ public sealed class TelemetryApiTests : IDisposable
     }
 
     [Fact]
+    public async Task ConcurrentDuplicateEventsAreIdempotent()
+    {
+        var payload = Fixture("race-1", "session-race", "session.created");
+        var responses = await Task.WhenAll(Enumerable.Range(0, 20).Select(_ => Post(payload)));
+        Assert.All(responses, response => Assert.Equal(HttpStatusCode.OK, response.StatusCode));
+
+        var duplicates = new List<bool>();
+        foreach (var response in responses)
+        {
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            duplicates.Add(json.RootElement.GetProperty("duplicate").GetBoolean());
+        }
+        Assert.Equal(1, duplicates.Count(value => !value));
+        Assert.Equal(19, duplicates.Count(value => value));
+
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-race"));
+        Assert.Equal(1, detail.RootElement.GetProperty("events").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task ConcurrentDuplicateEventsForExistingSessionAreIdempotent()
+    {
+        await Post(Fixture("seed", "session-race-existing", "session.created"));
+        var payload = Fixture("race-existing", "session-race-existing", "session.created");
+        var responses = await Task.WhenAll(Enumerable.Range(0, 20).Select(_ => Post(payload)));
+
+        Assert.All(responses, response => Assert.Equal(HttpStatusCode.OK, response.StatusCode));
+        var duplicates = new List<bool>();
+        foreach (var response in responses)
+        {
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            duplicates.Add(json.RootElement.GetProperty("duplicate").GetBoolean());
+        }
+        Assert.Equal(1, duplicates.Count(value => !value));
+        Assert.Equal(19, duplicates.Count(value => value));
+
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-race-existing"));
+        Assert.Equal(2, detail.RootElement.GetProperty("events").GetArrayLength());
+    }
+
+    [Fact]
     public async Task LateEventsBuildAParentedTraceAndKeepTheEarliestStart()
     {
         var start = DateTimeOffset.UtcNow.AddMinutes(-3);
@@ -81,6 +122,223 @@ public sealed class TelemetryApiTests : IDisposable
         using var result = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions?status=error&model=model-b&page=1&pageSize=1"));
         Assert.Equal(1, result.RootElement.GetProperty("total").GetInt32());
         Assert.Equal("session-err", result.RootElement.GetProperty("items")[0].GetProperty("id").GetString());
+    }
+
+    [Fact]
+    public async Task SuccessfulExecutionClosesTheSession()
+    {
+        await Post(Fixture("success", "session-success", "session.execution.succeeded") with { Status = "completed" });
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-success"));
+        var session = detail.RootElement.GetProperty("session");
+        Assert.Equal("completed", session.GetProperty("status").GetString());
+        Assert.NotEqual(JsonValueKind.Null, session.GetProperty("endedAt").ValueKind);
+    }
+
+    [Fact]
+    public async Task InterruptedExecutionKeepsItsOwnStatus()
+    {
+        await Post(Fixture("interrupted", "session-interrupted", "session.idle") with { Status = "interrupted" });
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-interrupted"));
+        Assert.Equal("interrupted", detail.RootElement.GetProperty("session").GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task StartedExecutionReopensAClosedSession()
+    {
+        await Post(Fixture("idle", "session-reopen", "session.idle", DateTimeOffset.UtcNow.AddMinutes(-1)) with { Status = "completed" });
+        await Post(Fixture("start", "session-reopen", "session.execution.started", DateTimeOffset.UtcNow) with { Status = "active" });
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-reopen"));
+        var session = detail.RootElement.GetProperty("session");
+        Assert.Equal("active", session.GetProperty("status").GetString());
+        Assert.Equal(JsonValueKind.Null, session.GetProperty("endedAt").ValueKind);
+    }
+
+    [Fact]
+    public async Task InterruptedThenIdleKeepsInterrupted()
+    {
+        var start = DateTimeOffset.UtcNow.AddMinutes(-2);
+        await Post(Fixture("interrupted", "session-interrupted-tail", "session.idle", start) with { Status = "interrupted" });
+        await Post(Fixture("idle-tail", "session-interrupted-tail", "session.idle", start.AddSeconds(5)) with { Status = "completed" });
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-interrupted-tail"));
+        Assert.Equal("interrupted", detail.RootElement.GetProperty("session").GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task LateIdleDoesNotCloseReopenedSession()
+    {
+        var start = DateTimeOffset.UtcNow.AddMinutes(-3);
+        await Post(Fixture("idle-old", "session-late-idle", "session.idle", start) with { Status = "completed" });
+        await Post(Fixture("start-new", "session-late-idle", "session.execution.started", start.AddMinutes(2)) with { Status = "active" });
+        await Post(Fixture("idle-late", "session-late-idle", "session.idle", start.AddMinutes(1)) with { Status = "completed" });
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-late-idle"));
+        var session = detail.RootElement.GetProperty("session");
+        Assert.Equal("active", session.GetProperty("status").GetString());
+        Assert.Equal(JsonValueKind.Null, session.GetProperty("endedAt").ValueKind);
+    }
+
+    [Fact]
+    public async Task LateStartedDoesNotReopenNewerTerminal()
+    {
+        var start = DateTimeOffset.UtcNow.AddMinutes(-3);
+        await Post(Fixture("idle-new", "session-late-start", "session.idle", start.AddMinutes(2)) with { Status = "completed" });
+        await Post(Fixture("start-late", "session-late-start", "session.execution.started", start.AddMinutes(1)) with { Status = "active" });
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-late-start"));
+        var session = detail.RootElement.GetProperty("session");
+        Assert.Equal("completed", session.GetProperty("status").GetString());
+        Assert.NotEqual(JsonValueKind.Null, session.GetProperty("endedAt").ValueKind);
+    }
+
+    [Fact]
+    public async Task SucceededExecutionIgnoresInterruptedStatus()
+    {
+        await Post(Fixture("succeeded-interrupted", "session-succeeded-interrupted", "session.execution.succeeded") with { Status = "interrupted" });
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-succeeded-interrupted"));
+        Assert.Equal("completed", detail.RootElement.GetProperty("session").GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task StartedWithSameTimestampDoesNotReopenTerminal()
+    {
+        var instant = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await Post(Fixture("succeeded", "session-same-timestamp", "session.execution.succeeded", instant) with { Status = "completed" });
+        await Post(Fixture("start", "session-same-timestamp", "session.execution.started", instant) with { Status = "active" });
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-same-timestamp"));
+        var session = detail.RootElement.GetProperty("session");
+        Assert.Equal("completed", session.GetProperty("status").GetString());
+        Assert.NotEqual(JsonValueKind.Null, session.GetProperty("endedAt").ValueKind);
+    }
+
+    [Fact]
+    public async Task BehaviorFlagsRepeatedToolCalls()
+    {
+        await Post(Fixture("created", "behavior-loop", "session.created"));
+        for (var i = 0; i < 4; i++)
+            await Post(Fixture($"tool-{i}", "behavior-loop", "tool.completed") with { Name = "bash", Status = "ok" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        var session = json.RootElement.GetProperty("sessions").EnumerateArray().Single();
+        var signal = session.GetProperty("signals").EnumerateArray().Single(item => item.GetProperty("kind").GetString() == "tool_loop");
+        Assert.Equal(4, signal.GetProperty("evidence").GetProperty("calls").GetInt32());
+        Assert.Equal(4, signal.GetProperty("evidence").GetProperty("maxConsecutive").GetInt32());
+    }
+
+    [Fact]
+    public async Task BehaviorFlagsErrorBurst()
+    {
+        await Post(Fixture("created", "behavior-errors", "session.created"));
+        for (var i = 0; i < 3; i++)
+            await Post(Fixture($"error-{i}", "behavior-errors", "tool.completed") with { Name = $"tool-{i}", Status = "error" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        var signals = json.RootElement.GetProperty("sessions").EnumerateArray().Single().GetProperty("signals").EnumerateArray().ToArray();
+        Assert.Single(signals);
+        Assert.Equal("error_burst", signals[0].GetProperty("kind").GetString());
+    }
+
+    [Fact]
+    public async Task BehaviorFlagsThreeConsecutiveTools()
+    {
+        await Post(Fixture("created", "behavior-three", "session.created"));
+        for (var i = 0; i < 3; i++)
+            await Post(Fixture($"tool-{i}", "behavior-three", "tool.completed") with { Name = "bash", Status = "ok" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        var signal = json.RootElement.GetProperty("sessions").EnumerateArray().Single().GetProperty("signals").EnumerateArray().Single();
+        Assert.Equal("tool_loop", signal.GetProperty("kind").GetString());
+        Assert.Equal(3, signal.GetProperty("evidence").GetProperty("calls").GetInt32());
+        Assert.Equal(3, signal.GetProperty("evidence").GetProperty("maxConsecutive").GetInt32());
+    }
+
+    [Fact]
+    public async Task BehaviorFlagsModelErrorBurst()
+    {
+        await Post(Fixture("created", "behavior-model-errors", "session.created"));
+        for (var i = 0; i < 2; i++)
+            await Post(Fixture($"model-{i}", "behavior-model-errors", "model.completed") with { Name = "model-a", Model = "model-a", Status = "error" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        var signals = json.RootElement.GetProperty("sessions").EnumerateArray().Single().GetProperty("signals").EnumerateArray().ToArray();
+        Assert.Single(signals);
+        Assert.Equal("error_burst", signals[0].GetProperty("kind").GetString());
+        Assert.Equal(2, signals[0].GetProperty("evidence").GetProperty("modelErrors").GetInt32());
+    }
+
+    [Fact]
+    public async Task BehaviorFlagsLongSessionBySpanCount()
+    {
+        await Post(Fixture("created", "behavior-spans", "session.created"));
+        for (var i = 0; i < 30; i++)
+            await Post(Fixture($"tool-{i}", "behavior-spans", "tool.completed") with { Name = $"tool-{i}", Status = "ok" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        var signal = json.RootElement.GetProperty("sessions").EnumerateArray().Single().GetProperty("signals").EnumerateArray().Single();
+        Assert.Equal("long_session", signal.GetProperty("kind").GetString());
+        Assert.Equal(30, signal.GetProperty("evidence").GetProperty("spans").GetInt32());
+    }
+
+    [Fact]
+    public async Task BehaviorOrdersSessionsAndSignals()
+    {
+        await Post(Fixture("a-idle", "behavior-order-a", "session.idle") with { Status = "interrupted" });
+        for (var i = 0; i < 4; i++)
+            await Post(Fixture($"a-tool-{i}", "behavior-order-a", "tool.completed") with { Name = "bash", Status = "ok" });
+        await Post(Fixture("b-idle", "behavior-order-b", "session.idle") with { Status = "interrupted" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        var sessions = json.RootElement.GetProperty("sessions").EnumerateArray().ToArray();
+        Assert.Equal("behavior-order-a", sessions[0].GetProperty("id").GetString());
+        Assert.Equal("behavior-order-b", sessions[1].GetProperty("id").GetString());
+        var signals = sessions[0].GetProperty("signals").EnumerateArray().ToArray();
+        Assert.Equal(2, signals.Length);
+        Assert.Equal("interrupted", signals[0].GetProperty("kind").GetString());
+        Assert.Equal("tool_loop", signals[1].GetProperty("kind").GetString());
+    }
+
+    [Fact]
+    public async Task BehaviorFlagsLongSession()
+    {
+        await Post(Fixture("created", "behavior-long", "session.created"));
+        for (var i = 0; i < 20; i++)
+            await Post(Fixture($"model-{i}", "behavior-long", "model.completed") with { Name = "model-a", Model = "model-a", Status = "ok" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        var signals = json.RootElement.GetProperty("sessions").EnumerateArray().Single().GetProperty("signals");
+        Assert.Contains(signals.EnumerateArray(), item => item.GetProperty("kind").GetString() == "long_session");
+    }
+
+    [Fact]
+    public async Task BehaviorFlagsInterruptedSession()
+    {
+        await Post(Fixture("interrupted", "behavior-interrupted", "session.idle") with { Status = "interrupted" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        var signals = json.RootElement.GetProperty("sessions").EnumerateArray().Single().GetProperty("signals");
+        Assert.Contains(signals.EnumerateArray(), item => item.GetProperty("kind").GetString() == "interrupted");
+    }
+
+    [Fact]
+    public async Task BehaviorIgnoresHealthySession()
+    {
+        await Post(Fixture("created", "behavior-healthy", "session.created"));
+        await Post(Fixture("model", "behavior-healthy", "model.completed") with { Name = "model-a", Model = "model-a", Status = "ok" });
+        await Post(Fixture("tool", "behavior-healthy", "tool.completed") with { Name = "read", Status = "ok" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        Assert.Equal(0, json.RootElement.GetProperty("totals").GetProperty("flaggedSessions").GetInt32());
+        Assert.Empty(json.RootElement.GetProperty("sessions").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task BehaviorFiltersByWindow()
+    {
+        var old = DateTimeOffset.UtcNow.AddDays(-40);
+        await Post(Fixture("old", "behavior-old", "session.idle", old) with { Status = "interrupted" });
+        await Post(Fixture("recent", "behavior-recent", "session.idle") with { Status = "interrupted" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior?days=30"));
+        var sessions = json.RootElement.GetProperty("sessions").EnumerateArray().ToArray();
+        Assert.DoesNotContain(sessions, session => session.GetProperty("id").GetString() == "behavior-old");
+        Assert.Contains(sessions, session => session.GetProperty("id").GetString() == "behavior-recent");
     }
 
     private async Task<HttpResponseMessage> Post(TelemetryEventDto dto)

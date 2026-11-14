@@ -142,19 +142,45 @@ export default Plugin.define({
     const controller = new AbortController();
     let flushing = false;
     const enqueue = (event: Telemetry) => { queue.push(event); if (queue.length > 100) queue.shift(); void flush(); };
-    // Backfill titles for sessions already stored by the collector when the plugin starts.
+    // Recover titles for previously collected sessions across all projects.
     void (async () => {
       try {
-        const listed = await (ctx.session as unknown as { list: (input: { directory: string; limit: number; order: 'desc' }) => Promise<unknown> }).list({ directory: ctx.location.directory, limit: 100, order: 'desc' });
-        const items = get(listed, 'data');
-        if (!Array.isArray(items)) return;
-        for (const item of items) {
-          const sessionId = str(get(item, 'id'));
-          const title = str(get(item, 'title'));
-          if (!sessionId || !title) continue;
-          titleBySession.set(sessionId, title);
-          enqueue({ eventId: `session-title:${sessionId}`, source: 'opencode', sessionId, timestamp: date(), type: 'session.title.updated', title, project: basename(ctx.location.directory) ?? fallbackProject });
+        const sessionIds = new Set<string>();
+        let page = 1;
+        let total = Number.POSITIVE_INFINITY;
+        while (sessionIds.size < total) {
+          const response = await fetch(`${endpoint.replace(/\/$/, '')}/api/v1/sessions?page=${page}&pageSize=100`, {
+            headers: { 'x-telemetry-key': apiKey }, signal: AbortSignal.timeout(1800),
+          });
+          if (!response.ok) return;
+          const result = await response.json() as { items?: Array<{ id?: unknown; title?: unknown }>; total?: number };
+          total = typeof result.total === 'number' ? result.total : 0;
+          const items = Array.isArray(result.items) ? result.items : [];
+          for (const item of items) {
+            const sessionId = str(item.id);
+            if (!sessionId) continue;
+            if (str(item.title)) titleBySession.set(sessionId, str(item.title)!);
+            else sessionIds.add(sessionId);
+          }
+          if (!items.length || items.length < 100) break;
+          page++;
         }
+
+        const pending = [...sessionIds];
+        const workers = Array.from({ length: 4 }, async () => {
+          while (pending.length) {
+            const sessionId = pending.pop();
+            if (!sessionId) continue;
+            try {
+              const sessionInfo = await (ctx.session as unknown as { get: (input: { sessionID: string }) => Promise<unknown> }).get({ sessionID: sessionId });
+              const title = str(get(get(sessionInfo, 'data'), 'title')) ?? str(get(sessionInfo, 'title'));
+              if (!title) continue;
+              titleBySession.set(sessionId, title);
+              enqueue({ eventId: `session-title:${sessionId}`, source: 'opencode', sessionId, timestamp: date(), type: 'session.title.updated', title, project: fallbackProject });
+            } catch { /* A missing or inaccessible session should not interrupt title recovery. */ }
+          }
+        });
+        await Promise.all(workers);
       } catch { /* Existing titles are a best-effort backfill; telemetry collection still starts. */ }
     })();
     async function flush() {

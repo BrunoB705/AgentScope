@@ -83,6 +83,35 @@ public sealed class TelemetryApiTests : IDisposable
         Assert.Equal("session-err", result.RootElement.GetProperty("items")[0].GetProperty("id").GetString());
     }
 
+    [Fact]
+    public async Task SuccessfulExecutionClosesTheSession()
+    {
+        await Post(Fixture("success", "session-success", "session.execution.succeeded") with { Status = "completed" });
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-success"));
+        var session = detail.RootElement.GetProperty("session");
+        Assert.Equal("completed", session.GetProperty("status").GetString());
+        Assert.NotEqual(JsonValueKind.Null, session.GetProperty("endedAt").ValueKind);
+    }
+
+    [Fact]
+    public async Task InterruptedExecutionKeepsItsOwnStatus()
+    {
+        await Post(Fixture("interrupted", "session-interrupted", "session.idle") with { Status = "interrupted" });
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-interrupted"));
+        Assert.Equal("interrupted", detail.RootElement.GetProperty("session").GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task StartedExecutionReopensAClosedSession()
+    {
+        await Post(Fixture("idle", "session-reopen", "session.idle", DateTimeOffset.UtcNow.AddMinutes(-1)) with { Status = "completed" });
+        await Post(Fixture("start", "session-reopen", "session.execution.started", DateTimeOffset.UtcNow) with { Status = "active" });
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-reopen"));
+        var session = detail.RootElement.GetProperty("session");
+        Assert.Equal("active", session.GetProperty("status").GetString());
+        Assert.Equal(JsonValueKind.Null, session.GetProperty("endedAt").ValueKind);
+    }
+
     private async Task<HttpResponseMessage> Post(TelemetryEventDto dto)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/telemetry/events") { Content = JsonContent.Create(dto) };

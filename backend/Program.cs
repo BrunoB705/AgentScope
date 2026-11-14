@@ -163,7 +163,11 @@ app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEve
     if (session is null) { session = new Session { Id = dto.SessionId, Source = dto.Source, Project = Safe(dto.Project, 120), StartedAt = dto.Timestamp.UtcDateTime }; db.Sessions.Add(session); }
     session.UpdatedAt = DateTime.UtcNow;
     if (dto.Timestamp.UtcDateTime < session.StartedAt) session.StartedAt = dto.Timestamp.UtcDateTime;
-    if (dto.Type is "session.idle" or "session.error") { session.Status = dto.Type == "session.error" ? "error" : "completed"; session.EndedAt = dto.Timestamp.UtcDateTime; }
+    if (dto.Type is "session.idle" or "session.execution.succeeded" or "session.error") {
+        session.Status = dto.Type == "session.error" ? "error" : dto.Status == "interrupted" ? "interrupted" : "completed";
+        session.EndedAt = dto.Timestamp.UtcDateTime;
+    }
+    if (dto.Type == "session.execution.started") { session.Status = "active"; session.EndedAt = null; }
     if (!string.IsNullOrWhiteSpace(dto.Model)) session.Model = Safe(dto.Model, 120);
     if (dto.Type == "session.title.updated" && !string.IsNullOrWhiteSpace(dto.Title)) session.Title = Safe(dto.Title, 200);
     var attrs = SafeAttributes(dto.Attributes);

@@ -40,6 +40,18 @@ test('ignores unrelated event and malformed events without a session id', () => 
   assert.deepEqual(mapOpenCodeEvent({ type: 'session.idle', data: {} }), []);
 });
 
+test('distingue una ejecución interrumpida de una completada', () => {
+  const [mapped] = mapOpenCodeEvent({ id: 'e4', created: 5000, type: 'session.execution.interrupted', data: { sessionID: 's1' } });
+  assert.equal(mapped.type, 'session.idle');
+  assert.equal(mapped.status, 'interrupted');
+});
+
+test('marca la ejecución exitosa como completada', () => {
+  const [mapped] = mapOpenCodeEvent({ id: 'e5', created: 6000, type: 'session.execution.succeeded', data: { sessionID: 's1' } });
+  assert.equal(mapped.type, 'session.execution.succeeded');
+  assert.equal(mapped.status, 'completed');
+});
+
 test('clasifica la respuesta del colector sin descartar errores de credenciales', () => {
   assert.equal(deliveryResultForStatus(200), 'ok');
   assert.equal(deliveryResultForStatus(400), 'permanent');

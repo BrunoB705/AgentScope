@@ -192,7 +192,7 @@ export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', ste
     case 'session.idle': return [payload(event.type, { status: 'completed' })];
     case 'session.execution.started': return [payload(event.type, { status: 'active' })];
     case 'session.execution.succeeded': return [payload(event.type, { status: 'completed' })];
-    case 'session.execution.interrupted': return [payload('session.idle', { status: 'completed' })];
+    case 'session.execution.interrupted': return [payload('session.idle', { status: 'interrupted' })];
     case 'session.execution.failed': {
       const error = get(data, 'error');
       const code = str(get(error, 'type')) ?? 'execution_failed';

@@ -163,11 +163,31 @@ app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEve
     if (session is null) { session = new Session { Id = dto.SessionId, Source = dto.Source, Project = Safe(dto.Project, 120), StartedAt = dto.Timestamp.UtcDateTime }; db.Sessions.Add(session); }
     session.UpdatedAt = DateTime.UtcNow;
     if (dto.Timestamp.UtcDateTime < session.StartedAt) session.StartedAt = dto.Timestamp.UtcDateTime;
+    var eventTime = dto.Timestamp.UtcDateTime;
     if (dto.Type is "session.idle" or "session.execution.succeeded" or "session.error") {
-        session.Status = dto.Type == "session.error" ? "error" : dto.Status == "interrupted" ? "interrupted" : "completed";
-        session.EndedAt = dto.Timestamp.UtcDateTime;
+        var newerActivity = await db.Events.AnyAsync(e =>
+            e.SessionId == dto.SessionId && e.Timestamp > eventTime &&
+            (e.Type == "session.execution.started" || e.Type == "session.idle" ||
+             e.Type == "session.execution.succeeded" || e.Type == "session.error"));
+        var isCurrent = !session.EndedAt.HasValue || eventTime >= session.EndedAt.Value;
+        if (!newerActivity && isCurrent) {
+            var next = dto.Type == "session.error"
+                ? "error"
+                : dto.Type == "session.idle" && dto.Status == "interrupted" ? "interrupted" : "completed";
+            if (dto.Type == "session.idle" && session.Status == "interrupted" && next == "completed") next = "interrupted";
+            session.Status = next;
+            session.EndedAt = eventTime;
+        }
     }
-    if (dto.Type == "session.execution.started") { session.Status = "active"; session.EndedAt = null; }
+    if (dto.Type == "session.execution.started") {
+        var newerTerminal = await db.Events.AnyAsync(e =>
+            e.SessionId == dto.SessionId && e.Timestamp > eventTime &&
+            (e.Type == "session.idle" || e.Type == "session.execution.succeeded" || e.Type == "session.error"));
+        if (!newerTerminal && (!session.EndedAt.HasValue || eventTime >= session.EndedAt.Value)) {
+            session.Status = "active";
+            session.EndedAt = null;
+        }
+    }
     if (!string.IsNullOrWhiteSpace(dto.Model)) session.Model = Safe(dto.Model, 120);
     if (dto.Type == "session.title.updated" && !string.IsNullOrWhiteSpace(dto.Title)) session.Title = Safe(dto.Title, 200);
     var attrs = SafeAttributes(dto.Attributes);

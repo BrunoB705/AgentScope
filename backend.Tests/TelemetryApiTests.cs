@@ -112,6 +112,49 @@ public sealed class TelemetryApiTests : IDisposable
         Assert.Equal(JsonValueKind.Null, session.GetProperty("endedAt").ValueKind);
     }
 
+    [Fact]
+    public async Task InterruptedThenIdleKeepsInterrupted()
+    {
+        var start = DateTimeOffset.UtcNow.AddMinutes(-2);
+        await Post(Fixture("interrupted", "session-interrupted-tail", "session.idle", start) with { Status = "interrupted" });
+        await Post(Fixture("idle-tail", "session-interrupted-tail", "session.idle", start.AddSeconds(5)) with { Status = "completed" });
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-interrupted-tail"));
+        Assert.Equal("interrupted", detail.RootElement.GetProperty("session").GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task LateIdleDoesNotCloseReopenedSession()
+    {
+        var start = DateTimeOffset.UtcNow.AddMinutes(-3);
+        await Post(Fixture("idle-old", "session-late-idle", "session.idle", start) with { Status = "completed" });
+        await Post(Fixture("start-new", "session-late-idle", "session.execution.started", start.AddMinutes(2)) with { Status = "active" });
+        await Post(Fixture("idle-late", "session-late-idle", "session.idle", start.AddMinutes(1)) with { Status = "completed" });
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-late-idle"));
+        var session = detail.RootElement.GetProperty("session");
+        Assert.Equal("active", session.GetProperty("status").GetString());
+        Assert.Equal(JsonValueKind.Null, session.GetProperty("endedAt").ValueKind);
+    }
+
+    [Fact]
+    public async Task LateStartedDoesNotReopenNewerTerminal()
+    {
+        var start = DateTimeOffset.UtcNow.AddMinutes(-3);
+        await Post(Fixture("idle-new", "session-late-start", "session.idle", start.AddMinutes(2)) with { Status = "completed" });
+        await Post(Fixture("start-late", "session-late-start", "session.execution.started", start.AddMinutes(1)) with { Status = "active" });
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-late-start"));
+        var session = detail.RootElement.GetProperty("session");
+        Assert.Equal("completed", session.GetProperty("status").GetString());
+        Assert.NotEqual(JsonValueKind.Null, session.GetProperty("endedAt").ValueKind);
+    }
+
+    [Fact]
+    public async Task SucceededExecutionIgnoresInterruptedStatus()
+    {
+        await Post(Fixture("succeeded-interrupted", "session-succeeded-interrupted", "session.execution.succeeded") with { Status = "interrupted" });
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-succeeded-interrupted"));
+        Assert.Equal("completed", detail.RootElement.GetProperty("session").GetProperty("status").GetString());
+    }
+
     private async Task<HttpResponseMessage> Post(TelemetryEventDto dto)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/telemetry/events") { Content = JsonContent.Create(dto) };

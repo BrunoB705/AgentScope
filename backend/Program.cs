@@ -27,16 +27,23 @@ using (var scope = app.Services.CreateScope()) {
 app.UseCors();
 app.MapHub<TelemetryHub>("/hubs/telemetry");
 app.MapGet("/api/v1/health", () => Results.Ok(new { status = "ok" }));
+var ingestLock = new SemaphoreSlim(1, 1);
 app.MapPut("/api/v1/sessions/{id}/review", async (string id, SessionReviewDto dto, TelemetryDb db, IHubContext<TelemetryHub> hub) => {
     if (dto.Rating is < 1 or > 5 || dto.Note?.Length > 2000 || dto.TaskLabel?.Length > 120) return Results.BadRequest(new { error = "La puntuación debe ser de 1 a 5, la tarea no puede superar 120 caracteres y la nota 2000." });
-    var session = await db.Sessions.FindAsync(id);
-    if (session is null) return Results.NotFound();
-    session.Rating = dto.Rating;
-    session.ReviewNote = string.IsNullOrWhiteSpace(dto.Note) ? null : dto.Note.Trim();
-    session.ReviewTask = string.IsNullOrWhiteSpace(dto.TaskLabel) ? null : Safe(dto.TaskLabel.Trim(), 120);
-    await db.SaveChangesAsync();
+    IResult response;
+    await ingestLock.WaitAsync();
+    try {
+        var session = await db.Sessions.FindAsync(id);
+        if (session is null) return Results.NotFound();
+        session.Rating = dto.Rating;
+        session.ReviewNote = string.IsNullOrWhiteSpace(dto.Note) ? null : dto.Note.Trim();
+        session.ReviewTask = string.IsNullOrWhiteSpace(dto.TaskLabel) ? null : Safe(dto.TaskLabel.Trim(), 120);
+        await db.SaveChangesAsync();
+        response = Results.Ok(new { rating = session.Rating, note = session.ReviewNote });
+    }
+    finally { ingestLock.Release(); }
     await hub.Clients.All.SendAsync("telemetry.updated", new { sessionId = id, type = "session.review.updated" });
-    return Results.Ok(new { rating = session.Rating, note = session.ReviewNote });
+    return response;
 });
 app.MapGet("/api/v1/comparisons", async (TelemetryDb db) => {
     var sessions = await db.Sessions.AsNoTracking().Where(s => s.ReviewTask != null && s.ReviewTask != "").OrderByDescending(s => s.UpdatedAt).ToListAsync();
@@ -153,7 +160,6 @@ app.MapGet("/api/v1/analytics/models", async (TelemetryDb db, DateTimeOffset? fr
         trend, agents, models,
     });
 });
-var ingestLock = new SemaphoreSlim(1, 1);
 app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEventDto dto, TelemetryDb db, IConfiguration config, IHubContext<TelemetryHub> hub) => {
     var key = config["Telemetry:ApiKey"]!;
     if (!CryptographicEquals(request.Headers["X-Telemetry-Key"].ToString(), key)) return Results.Unauthorized();

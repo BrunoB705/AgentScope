@@ -75,6 +75,27 @@ public sealed class TelemetryApiTests : IDisposable
     }
 
     [Fact]
+    public async Task ConcurrentDuplicateEventsForExistingSessionAreIdempotent()
+    {
+        await Post(Fixture("seed", "session-race-existing", "session.created"));
+        var payload = Fixture("race-existing", "session-race-existing", "session.created");
+        var responses = await Task.WhenAll(Enumerable.Range(0, 20).Select(_ => Post(payload)));
+
+        Assert.All(responses, response => Assert.Equal(HttpStatusCode.OK, response.StatusCode));
+        var duplicates = new List<bool>();
+        foreach (var response in responses)
+        {
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            duplicates.Add(json.RootElement.GetProperty("duplicate").GetBoolean());
+        }
+        Assert.Equal(1, duplicates.Count(value => !value));
+        Assert.Equal(19, duplicates.Count(value => value));
+
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-race-existing"));
+        Assert.Equal(2, detail.RootElement.GetProperty("events").GetArrayLength());
+    }
+
+    [Fact]
     public async Task LateEventsBuildAParentedTraceAndKeepTheEarliestStart()
     {
         var start = DateTimeOffset.UtcNow.AddMinutes(-3);

@@ -20,3 +20,4 @@
 *.pfx
 /PLAN.md
 /agent-context/
+/.superpowers/

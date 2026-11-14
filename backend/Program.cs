@@ -204,6 +204,73 @@ app.MapGet("/api/v1/behavior", async (TelemetryDb db, int? days) => {
     var ordered = rows.OrderByDescending(r => r.Signals.Length).ThenByDescending(r => r.UpdatedAt).ToArray();
     return Results.Ok(new { windowDays, totals = new { sessions = sessions.Count, flaggedSessions = ordered.Length, signals = ordered.Sum(r => r.Signals.Length) }, sessions = ordered });
 });
+app.MapGet("/api/v1/overview", async (TelemetryDb db, int? days) => {
+    var windowDays = days is 7 or 30 or 90 ? days : null;
+    var cutoff = windowDays.HasValue ? DateTime.UtcNow.AddDays(-windowDays.Value) : (DateTime?)null;
+    var sessionsQuery = db.Sessions.AsNoTracking();
+    if (cutoff.HasValue) sessionsQuery = sessionsQuery.Where(s => s.StartedAt >= cutoff.Value);
+    var sessions = await sessionsQuery.ToListAsync();
+    var ids = sessions.Select(s => s.Id).ToList();
+    var spans = ids.Count == 0 ? new List<Span>() : await db.Spans.AsNoTracking().Where(s => ids.Contains(s.SessionId)).ToListAsync();
+    var active = sessions.Count(s => s.Status == "active");
+    var completed = sessions.Count(s => s.Status == "completed");
+    var error = sessions.Count(s => s.Status == "error");
+    var interrupted = sessions.Count(s => s.Status == "interrupted");
+    var finished = completed + error + interrupted;
+    var finishedWithEnd = sessions.Where(s => s.EndedAt.HasValue && s.Status is "completed" or "error" or "interrupted").ToArray();
+    var inference = spans.Where(s => s.Kind == "inference").ToArray();
+    var toolSpans = spans.Where(s => s.Kind == "execute_tool").ToArray();
+    long inputTokens = inference.Sum(s => (long)s.InputTokens);
+    long outputTokens = inference.Sum(s => (long)s.OutputTokens);
+    long reasoningTokens = inference.Sum(s => (long)s.ReasoningTokens);
+    long cacheReadTokens = inference.Sum(s => (long)s.CacheReadTokens);
+    long cacheWriteTokens = inference.Sum(s => (long)s.CacheWriteTokens);
+    var costRows = inference.Where(s => s.Cost.HasValue).ToArray();
+    var quotaRows = inference.Where(s => s.QuotaCostEstimate.HasValue).ToArray();
+    var totals = new OverviewTotalsDto(
+        sessions.Count, active, completed, error, interrupted, finished,
+        finished == 0 ? null : (double)completed / finished,
+        finished == 0 ? null : (double)error / finished,
+        finishedWithEnd.Length == 0 ? null : finishedWithEnd.Average(s => (s.EndedAt!.Value - s.StartedAt).TotalMilliseconds),
+        inputTokens, outputTokens, reasoningTokens, cacheReadTokens, cacheWriteTokens,
+        inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+        costRows.Length == 0 ? null : costRows.Sum(s => s.Cost!.Value),
+        quotaRows.Length == 0 ? null : quotaRows.Sum(s => s.QuotaCostEstimate!.Value));
+    var topTools = toolSpans.GroupBy(s => s.Name)
+        .Select(group => {
+            var errors = group.Count(s => s.Status is "error" or "failed");
+            var calls = group.Count();
+            return new OverviewToolDto(group.Key, calls, errors, calls == 0 ? 0d : (double)errors / calls, group.Select(s => s.SessionId).Distinct().Count());
+        })
+        .OrderByDescending(tool => tool.Calls)
+        .ThenBy(tool => tool.Name)
+        .Take(5)
+        .ToArray();
+    var topModels = inference.GroupBy(s => s.Name)
+        .Select(group => {
+            var tokens = group.Sum(s => (long)s.InputTokens + s.OutputTokens + s.CacheReadTokens + s.CacheWriteTokens);
+            var costs = group.Where(s => s.Cost.HasValue).ToArray();
+            var quotas = group.Where(s => s.QuotaCostEstimate.HasValue).ToArray();
+            return new OverviewModelDto(
+                group.Key,
+                group.Count(),
+                tokens,
+                costs.Length == 0 ? null : costs.Sum(s => s.Cost!.Value),
+                quotas.Length == 0 ? null : quotas.Sum(s => s.QuotaCostEstimate!.Value),
+                group.Count(s => s.Status is "error" or "failed"));
+        })
+        .OrderByDescending(model => model.TotalTokens)
+        .ThenBy(model => model.Name)
+        .Take(5)
+        .ToArray();
+    var recentSessions = sessions
+        .OrderByDescending(s => s.UpdatedAt)
+        .ThenByDescending(s => s.StartedAt)
+        .Take(5)
+        .Select(s => new OverviewSessionDto(s.Id, s.Title, s.Project, s.Model, s.Status, s.StartedAt, s.UpdatedAt))
+        .ToArray();
+    return Results.Ok(new { windowDays, totals, topTools, topModels, recentSessions });
+});
 app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEventDto dto, TelemetryDb db, IConfiguration config, IHubContext<TelemetryHub> hub) => {
     var key = config["Telemetry:ApiKey"]!;
     if (!CryptographicEquals(request.Headers["X-Telemetry-Key"].ToString(), key)) return Results.Unauthorized();
@@ -289,6 +356,10 @@ record TelemetryEventDto(string EventId,string Source,string SessionId,DateTimeO
 record SessionReviewDto(int? Rating, string? Note, string? TaskLabel);
 record ComparisonRunDto(string Id, string? Title, string? Project, string? Model, string Status, int? Rating, string? Note, string TaskLabel, DateTime UpdatedAt, long DurationMs, int InputTokens, int OutputTokens, double? Cost, double? QuotaCostEstimate, string[] Tools);
 record BudgetDto(string? Project, double MonthlyLimit, string Metric);
+record OverviewTotalsDto(int Sessions, int Active, int Completed, int Error, int Interrupted, int Finished, double? SuccessRate, double? ErrorRate, double? AverageDurationMs, long InputTokens, long OutputTokens, long ReasoningTokens, long CacheReadTokens, long CacheWriteTokens, long TotalTokens, double? ReportedCost, double? QuotaEstimate);
+record OverviewToolDto(string Name, int Calls, int Errors, double ErrorRate, int Sessions);
+record OverviewModelDto(string Name, int Calls, long TotalTokens, double? ReportedCost, double? QuotaEstimate, int Errors);
+record OverviewSessionDto(string Id, string? Title, string? Project, string? Model, string Status, DateTime StartedAt, DateTime UpdatedAt);
 record BehaviorSignalDto(string Kind, string Severity, string Title, string Explanation, object Evidence);
 record BehaviorSessionDto(string Id, string? Title, string? Project, string? Model, string Status, DateTime StartedAt, DateTime UpdatedAt, BehaviorSignalDto[] Signals);
 class TelemetryDb(DbContextOptions<TelemetryDb> options):DbContext(options) { public DbSet<Session> Sessions=>Set<Session>();public DbSet<TelemetryEvent> Events=>Set<TelemetryEvent>();public DbSet<Span> Spans=>Set<Span>();public DbSet<Budget> Budgets=>Set<Budget>(); protected override void OnModelCreating(ModelBuilder b){var utc=new ValueConverter<DateTime,DateTime>(v=>DateTime.SpecifyKind(v,DateTimeKind.Utc),v=>DateTime.SpecifyKind(v,DateTimeKind.Utc));var utcNullable=new ValueConverter<DateTime?,DateTime?>(v=>v.HasValue?DateTime.SpecifyKind(v.Value,DateTimeKind.Utc):null,v=>v.HasValue?DateTime.SpecifyKind(v.Value,DateTimeKind.Utc):null);b.Entity<TelemetryEvent>().HasIndex(x=>new{x.Source,x.EventId});b.Entity<TelemetryEvent>().Property(x=>x.Timestamp).HasConversion(utc);b.Entity<Session>().HasKey(x=>x.Id);b.Entity<Session>().Property(x=>x.StartedAt).HasConversion(utc);b.Entity<Session>().Property(x=>x.EndedAt).HasConversion(utcNullable);b.Entity<Session>().Property(x=>x.UpdatedAt).HasConversion(utc);b.Entity<Span>().HasKey(x=>x.Id);b.Entity<Span>().Property(x=>x.StartedAt).HasConversion(utc);b.Entity<Budget>().HasKey(x=>x.Project);} }

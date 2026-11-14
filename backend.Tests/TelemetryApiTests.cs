@@ -208,6 +208,79 @@ public sealed class TelemetryApiTests : IDisposable
         Assert.NotEqual(JsonValueKind.Null, session.GetProperty("endedAt").ValueKind);
     }
 
+    [Fact]
+    public async Task BehaviorFlagsRepeatedToolCalls()
+    {
+        await Post(Fixture("created", "behavior-loop", "session.created"));
+        for (var i = 0; i < 4; i++)
+            await Post(Fixture($"tool-{i}", "behavior-loop", "tool.completed") with { Name = "bash", Status = "ok" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        var session = json.RootElement.GetProperty("sessions").EnumerateArray().Single();
+        var signal = session.GetProperty("signals").EnumerateArray().Single(item => item.GetProperty("kind").GetString() == "tool_loop");
+        Assert.Equal(4, signal.GetProperty("evidence").GetProperty("calls").GetInt32());
+        Assert.Equal(4, signal.GetProperty("evidence").GetProperty("maxConsecutive").GetInt32());
+    }
+
+    [Fact]
+    public async Task BehaviorFlagsErrorBurst()
+    {
+        await Post(Fixture("created", "behavior-errors", "session.created"));
+        for (var i = 0; i < 3; i++)
+            await Post(Fixture($"error-{i}", "behavior-errors", "tool.completed") with { Name = "bash", Status = "error" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        var signals = json.RootElement.GetProperty("sessions").EnumerateArray().Single().GetProperty("signals");
+        Assert.Contains(signals.EnumerateArray(), item => item.GetProperty("kind").GetString() == "error_burst");
+    }
+
+    [Fact]
+    public async Task BehaviorFlagsLongSession()
+    {
+        await Post(Fixture("created", "behavior-long", "session.created"));
+        for (var i = 0; i < 20; i++)
+            await Post(Fixture($"model-{i}", "behavior-long", "model.completed") with { Name = "model-a", Model = "model-a", Status = "ok" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        var signals = json.RootElement.GetProperty("sessions").EnumerateArray().Single().GetProperty("signals");
+        Assert.Contains(signals.EnumerateArray(), item => item.GetProperty("kind").GetString() == "long_session");
+    }
+
+    [Fact]
+    public async Task BehaviorFlagsInterruptedSession()
+    {
+        await Post(Fixture("interrupted", "behavior-interrupted", "session.idle") with { Status = "interrupted" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        var signals = json.RootElement.GetProperty("sessions").EnumerateArray().Single().GetProperty("signals");
+        Assert.Contains(signals.EnumerateArray(), item => item.GetProperty("kind").GetString() == "interrupted");
+    }
+
+    [Fact]
+    public async Task BehaviorIgnoresHealthySession()
+    {
+        await Post(Fixture("created", "behavior-healthy", "session.created"));
+        await Post(Fixture("model", "behavior-healthy", "model.completed") with { Name = "model-a", Model = "model-a", Status = "ok" });
+        await Post(Fixture("tool", "behavior-healthy", "tool.completed") with { Name = "read", Status = "ok" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        Assert.Equal(0, json.RootElement.GetProperty("totals").GetProperty("flaggedSessions").GetInt32());
+        Assert.Empty(json.RootElement.GetProperty("sessions").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task BehaviorFiltersByWindow()
+    {
+        var old = DateTimeOffset.UtcNow.AddDays(-40);
+        await Post(Fixture("old", "behavior-old", "session.idle", old) with { Status = "interrupted" });
+        await Post(Fixture("recent", "behavior-recent", "session.idle") with { Status = "interrupted" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior?days=30"));
+        var sessions = json.RootElement.GetProperty("sessions").EnumerateArray().ToArray();
+        Assert.DoesNotContain(sessions, session => session.GetProperty("id").GetString() == "behavior-old");
+        Assert.Contains(sessions, session => session.GetProperty("id").GetString() == "behavior-recent");
+    }
+
     private async Task<HttpResponseMessage> Post(TelemetryEventDto dto)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/telemetry/events") { Content = JsonContent.Create(dto) };

@@ -28,7 +28,7 @@ Abre <http://127.0.0.1:5173>. API: <http://127.0.0.1:5080/api/v1/health>. No hay
 
 AgentScope se puede instalar como una aplicación web progresiva (PWA) desde Microsoft Edge o Chrome en Windows. Primero ejecuta `.\start.ps1`, abre `http://127.0.0.1:5173` y pulsa **Instalar aplicación**. Si el navegador no muestra el diálogo, usa su menú **Aplicaciones → Instalar AgentScope**. La aplicación instalada sigue necesitando que AgentScope esté iniciado localmente para conectarse a la API y recibir telemetría.
 
-El acceso directo **AgentScope** del escritorio inicia `start.ps1` en segundo plano y abre la PWA instalada con su icono. Si movés la carpeta del proyecto, hay que actualizar el destino del acceso directo.
+El acceso directo **AgentScope** del escritorio inicia `start.ps1` en segundo plano y abre la PWA instalada con su icono. Cuando se cierra la ventana de AgentScope, el lanzador detiene API y dashboard. Si movés la carpeta del proyecto, hay que actualizar el destino del acceso directo. Si no puede identificar la ventana, mantiene los servicios activos y muestra cómo detenerlos manualmente.
 
 Para ejecutar manualmente: `dotnet run --project backend --no-launch-profile --urls http://127.0.0.1:5080` y, en `dashboard`, `npm ci && npm run dev -- --host 127.0.0.1 --port 5173`.
 

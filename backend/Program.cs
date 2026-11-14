@@ -102,6 +102,57 @@ app.MapGet("/api/v1/analytics/tools", async (TelemetryDb db, int? days) => {
         }).ToArray();
     return Results.Ok(new { windowDays, totalCalls = rows.Count, errorCount = rows.Count(row => row.Status == "error" || row.Status == "failed"), tools });
 });
+app.MapGet("/api/v1/analytics/models", async (TelemetryDb db, DateTimeOffset? from, DateTimeOffset? to, string? source, string? model, string? bucket) => {
+    var bucketType = bucket is "week" or "month" ? bucket : "day";
+    var start = from?.UtcDateTime;
+    var end = to?.UtcDateTime;
+    var query = from span in db.Spans.AsNoTracking()
+                join session in db.Sessions.AsNoTracking() on span.SessionId equals session.Id
+                where span.Kind == "inference"
+                select new { Model = span.Name, Source = session.Source, span.Status, span.StartedAt, span.InputTokens, span.OutputTokens, span.ReasoningTokens, span.CacheReadTokens, span.CacheWriteTokens, span.Cost, span.QuotaCostEstimate };
+    if (start.HasValue) query = query.Where(row => row.StartedAt >= start.Value);
+    if (end.HasValue) query = query.Where(row => row.StartedAt <= end.Value);
+    var allRows = await query.ToListAsync();
+    var availableSources = allRows.Select(row => row.Source).Distinct().Order().ToArray();
+    var availableModels = allRows.Select(row => row.Model).Distinct().Order().ToArray();
+    var rows = allRows.Where(row => (string.IsNullOrWhiteSpace(source) || row.Source == source) && (string.IsNullOrWhiteSpace(model) || row.Model == model)).ToArray();
+    long inputTokens = rows.Sum(row => (long)row.InputTokens);
+    long outputTokens = rows.Sum(row => (long)row.OutputTokens);
+    long cacheReadTokens = rows.Sum(row => (long)row.CacheReadTokens);
+    long cacheWriteTokens = rows.Sum(row => (long)row.CacheWriteTokens);
+    long reasoningTokens = rows.Sum(row => (long)row.ReasoningTokens);
+    long totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
+    var costRows = rows.Where(row => row.Cost.HasValue).ToArray();
+    var quotaRows = rows.Where(row => row.QuotaCostEstimate.HasValue).ToArray();
+    DateTime BucketDate(DateTime date) => bucketType switch {
+        "week" => date.Date.AddDays(-(((int)date.DayOfWeek + 6) % 7)),
+        "month" => new DateTime(date.Year, date.Month, 1, 0, 0, 0, DateTimeKind.Utc),
+        _ => date.Date,
+    };
+    var trend = rows.GroupBy(row => BucketDate(row.StartedAt)).OrderBy(group => group.Key).Select(group => new {
+        period = group.Key,
+        inputTokens = group.Sum(row => (long)row.InputTokens),
+        outputTokens = group.Sum(row => (long)row.OutputTokens),
+        cacheReadTokens = group.Sum(row => (long)row.CacheReadTokens),
+        cacheWriteTokens = group.Sum(row => (long)row.CacheWriteTokens),
+        totalTokens = group.Sum(row => (long)row.InputTokens + row.OutputTokens + row.CacheReadTokens + row.CacheWriteTokens),
+    }).ToArray();
+    var agents = rows.GroupBy(row => row.Source).OrderByDescending(group => group.Sum(row => (long)row.InputTokens + row.OutputTokens + row.CacheReadTokens + row.CacheWriteTokens)).Select(group => {
+        var tokens = group.Sum(row => (long)row.InputTokens + row.OutputTokens + row.CacheReadTokens + row.CacheWriteTokens);
+        return new { name = group.Key, calls = group.Count(), tokens, share = totalTokens == 0 ? 0d : (double)tokens / totalTokens };
+    }).ToArray();
+    var models = rows.GroupBy(row => row.Model).OrderByDescending(group => group.Sum(row => (long)row.InputTokens + row.OutputTokens + row.CacheReadTokens + row.CacheWriteTokens)).Select(group => {
+        var tokens = group.Sum(row => (long)row.InputTokens + row.OutputTokens + row.CacheReadTokens + row.CacheWriteTokens);
+        var costs = group.Where(row => row.Cost.HasValue).ToArray();
+        var quotas = group.Where(row => row.QuotaCostEstimate.HasValue).ToArray();
+        return new { name = group.Key, calls = group.Count(), inputTokens = group.Sum(row => (long)row.InputTokens), outputTokens = group.Sum(row => (long)row.OutputTokens), cacheReadTokens = group.Sum(row => (long)row.CacheReadTokens), cacheWriteTokens = group.Sum(row => (long)row.CacheWriteTokens), tokens, share = totalTokens == 0 ? 0d : (double)tokens / totalTokens, reportedCost = costs.Length == 0 ? (double?)null : costs.Sum(row => row.Cost!.Value), quotaEstimate = quotas.Length == 0 ? (double?)null : quotas.Sum(row => row.QuotaCostEstimate!.Value), errorCount = group.Count(row => row.Status == "error" || row.Status == "failed") };
+    }).ToArray();
+    return Results.Ok(new {
+        bucket = bucketType, availableSources, availableModels,
+        totals = new { calls = rows.Length, totalTokens, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, cacheEfficiency = inputTokens + cacheReadTokens == 0 ? (double?)null : (double)cacheReadTokens / (inputTokens + cacheReadTokens), reportedCost = costRows.Length == 0 ? (double?)null : costRows.Sum(row => row.Cost!.Value), quotaEstimate = quotaRows.Length == 0 ? (double?)null : quotaRows.Sum(row => row.QuotaCostEstimate!.Value), errorCount = rows.Count(row => row.Status == "error" || row.Status == "failed") },
+        trend, agents, models,
+    });
+});
 app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEventDto dto, TelemetryDb db, IConfiguration config, IHubContext<TelemetryHub> hub) => {
     var key = config["Telemetry:ApiKey"]!;
     if (!CryptographicEquals(request.Headers["X-Telemetry-Key"].ToString(), key)) return Results.Unauthorized();

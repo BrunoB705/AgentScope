@@ -48,6 +48,7 @@
   - `get size(): number`
   - `get droppedCount(): number`
 - Consume en `setup`: una instancia de `TelemetryQueue` con el `fetch` actual y `controller.signal`.
+- `attempts` cuenta los intentos dentro de un mismo `flush`; el timer de `retryDelayMs` es independiente y vuelve a llamar a `flush` después. `attemptDelayMs` sólo se usa entre intentos cuando `attempts > 1`.
 
 - [ ] **Step 1: Escribir los tests que fallan**
 
@@ -58,7 +59,7 @@ import { TelemetryQueue } from './index.ts';
 
 test('conserva el evento pendiente cuando el envío falla', async () => {
   let attempts = 0;
-  const queue = new TelemetryQueue(async () => { attempts++; return false; }, { attempts: 1, retryDelayMs: 5 });
+  const queue = new TelemetryQueue(async () => { attempts++; return false; }, { attempts: 1, retryDelayMs: 1000 });
   queue.enqueue({ eventId: 'e1' });
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(queue.size, 1);

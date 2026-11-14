@@ -114,6 +114,8 @@ export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', ste
         eventId: `tool:${str(get(data, 'id')) ?? event.id ?? sid}`,
         parentId: `model:${str(get(data, 'assistantMessageID')) ?? ''}`,
         name, status: event.type.endsWith('.failed') ? 'error' : 'ok',
+        timestamp: date(step?.started ?? event.created),
+        durationMs: typeof step?.started === 'number' && typeof event.created === 'number' ? Math.max(0, event.created - step.started) : undefined,
         attributes: { opencode_event: event.type, ...(event.type.endsWith('.failed') ? { error_code: 'tool_error' } : {}) },
       })];
     }
@@ -135,6 +137,7 @@ export default Plugin.define({
     const titleLookupAt = new Map<string, number>();
     const titleBySession = new Map<string, string>();
     const toolNameById = new Map<string, string>();
+    const toolStartedAtById = new Map<string, number>();
     try {
       const models = await ctx.model.list({ location: { directory: ctx.location.directory } });
       for (const model of models.data) modelInfoById.set(`${model.providerID}/${model.modelID}`, model as unknown as Record<string, unknown>);
@@ -229,12 +232,17 @@ export default Plugin.define({
             const native = get(current.data, 'native');
             const name = str(get(metadata, 'tool')) ?? str(get(metadata, 'name')) ?? str(get(native, 'name')) ?? str(get(current.data, 'name'));
             if (name) toolNameById.set(`${sid}:${toolId}`, name);
+            if (typeof current.created === 'number') toolStartedAtById.set(`${sid}:${toolId}`, current.created);
           }
           const toolName = sid && toolId && (current.type === 'session.tool.success' || current.type === 'session.tool.failed') ? toolNameById.get(`${sid}:${toolId}`) : undefined;
-          if (sid && toolId && (current.type === 'session.tool.success' || current.type === 'session.tool.failed')) toolNameById.delete(`${sid}:${toolId}`);
+          const toolStartedAt = sid && toolId && (current.type === 'session.tool.success' || current.type === 'session.tool.failed') ? toolStartedAtById.get(`${sid}:${toolId}`) : undefined;
+          if (sid && toolId && (current.type === 'session.tool.success' || current.type === 'session.tool.failed')) {
+            toolNameById.delete(`${sid}:${toolId}`);
+            toolStartedAtById.delete(`${sid}:${toolId}`);
+          }
           const step = current.type === 'session.step.ended' ? (messageId ? stepByMessage.get(messageId) : undefined) : undefined;
           const model = step?.model ?? (sid ? modelBySession.get(sid) : undefined);
-          for (const mapped of mapOpenCodeEvent(current, fallbackProject, { model, started: step?.started, modelInfo: step?.modelInfo ?? (model ? modelInfoById.get(model) : undefined), toolName })) enqueue(mapped);
+          for (const mapped of mapOpenCodeEvent(current, fallbackProject, { model, started: step?.started ?? toolStartedAt, modelInfo: step?.modelInfo ?? (model ? modelInfoById.get(model) : undefined), toolName })) enqueue(mapped);
           if (sid && (current.type === 'session.model.selected' || current.type === 'session.step.started')) {
             const model = modelLabel(current.data ?? {});
             if (model) modelBySession.set(sid, model);

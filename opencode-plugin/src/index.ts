@@ -52,6 +52,14 @@ async function resolveApiKey(): Promise<string | undefined> {
   }
 }
 
+/** Only per-event rejections are permanent; credential and transient failures affect every queued event, so they must stay queued. */
+export function deliveryResultForStatus(status: number): DeliveryResult {
+  if (status >= 200 && status < 300) return 'ok';
+  const affectsAllEvents = status === 401 || status === 403 || status === 408 || status === 429;
+  if (status >= 400 && status < 500 && !affectsAllEvents) return 'permanent';
+  return 'retry';
+}
+
 /** Bounded outbox: keeps events until the collector accepts them, and reports drops and retry streaks instead of losing them silently. */
 export class TelemetryQueue {
   private readonly pending: Telemetry[] = [];
@@ -256,15 +264,18 @@ export default Plugin.define({
       for (const model of models.data) modelInfoById.set(`${model.providerID}/${model.modelID}`, model as unknown as Record<string, unknown>);
     } catch { /* Model pricing is optional; keep collecting usage when unavailable. */ }
     const controller = new AbortController();
+    let credentialsWarned = false;
     const queue = new TelemetryQueue(async (body): Promise<DeliveryResult> => {
       try {
         const response = await fetch(`${endpoint.replace(/\/$/, '')}/api/v1/telemetry/events`, {
           method: 'POST', headers: { 'content-type': 'application/json', 'x-telemetry-key': apiKey },
           body: JSON.stringify(body), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(1800)]),
         });
-        if (response.ok) return 'ok';
-        const permanent = response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429;
-        return permanent ? 'permanent' : 'retry';
+        if ((response.status === 401 || response.status === 403) && !credentialsWarned) {
+          credentialsWarned = true;
+          console.warn('Agent Observability: la clave de telemetría fue rechazada; los eventos quedan en cola hasta corregirla.');
+        }
+        return deliveryResultForStatus(response.status);
       } catch {
         /* Collector may be stopped; OpenCode must keep working. */
         return 'retry';

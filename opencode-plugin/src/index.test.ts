@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mapOpenCodeEvent, TelemetryQueue } from './index.ts';
+import { deliveryResultForStatus, mapOpenCodeEvent, TelemetryQueue } from './index.ts';
 
 test('maps v2 session events and derives project name from its working directory', () => {
   const [mapped] = mapOpenCodeEvent({ id: 'e1', created: 2000, type: 'session.created', location: { directory: 'C:\\work\\my-app' }, data: { sessionID: 's1', title: 'private title' } });
@@ -38,6 +38,16 @@ test('maps completed tool call with correlation and drops its content and metada
 test('ignores unrelated event and malformed events without a session id', () => {
   assert.deepEqual(mapOpenCodeEvent({ type: 'session.text.delta', data: { sessionID: 's1', text: 'secret' } }), []);
   assert.deepEqual(mapOpenCodeEvent({ type: 'session.idle', data: {} }), []);
+});
+
+test('clasifica la respuesta del colector sin descartar errores de credenciales', () => {
+  assert.equal(deliveryResultForStatus(200), 'ok');
+  assert.equal(deliveryResultForStatus(400), 'permanent');
+  assert.equal(deliveryResultForStatus(401), 'retry');
+  assert.equal(deliveryResultForStatus(403), 'retry');
+  assert.equal(deliveryResultForStatus(408), 'retry');
+  assert.equal(deliveryResultForStatus(429), 'retry');
+  assert.equal(deliveryResultForStatus(500), 'retry');
 });
 
 test('conserva el evento pendiente cuando el envío falla', async () => {

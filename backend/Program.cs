@@ -153,53 +153,58 @@ app.MapGet("/api/v1/analytics/models", async (TelemetryDb db, DateTimeOffset? fr
         trend, agents, models,
     });
 });
+var ingestLock = new SemaphoreSlim(1, 1);
 app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEventDto dto, TelemetryDb db, IConfiguration config, IHubContext<TelemetryHub> hub) => {
     var key = config["Telemetry:ApiKey"]!;
     if (!CryptographicEquals(request.Headers["X-Telemetry-Key"].ToString(), key)) return Results.Unauthorized();
     if (string.IsNullOrWhiteSpace(dto.EventId) || dto.EventId.Length > 200 || string.IsNullOrWhiteSpace(dto.Source) || dto.Source.Length > 80 || string.IsNullOrWhiteSpace(dto.SessionId) || dto.SessionId.Length > 200 || string.IsNullOrWhiteSpace(dto.Type) || dto.Type.Length > 120 || dto.Timestamp == default || dto.DurationMs < 0 || dto.InputTokens < 0 || dto.OutputTokens < 0 || dto.ReasoningTokens < 0 || dto.CacheReadTokens < 0 || dto.CacheWriteTokens < 0 || dto.Cost is < 0 || dto.Cost is double cost && !double.IsFinite(cost) || dto.QuotaCostEstimate is < 0 || dto.QuotaCostEstimate is double estimate && !double.IsFinite(estimate)) return Results.BadRequest(new { error = "Required fields are missing or exceed supported limits" });
-    var existing = await db.Events.AnyAsync(e => e.Source == dto.Source && e.EventId == dto.EventId);
-    if (existing) return Results.Ok(new { accepted = true, duplicate = true });
-    var session = await db.Sessions.FindAsync(dto.SessionId);
-    if (session is null) { session = new Session { Id = dto.SessionId, Source = dto.Source, Project = Safe(dto.Project, 120), StartedAt = dto.Timestamp.UtcDateTime }; db.Sessions.Add(session); }
-    session.UpdatedAt = DateTime.UtcNow;
-    if (dto.Timestamp.UtcDateTime < session.StartedAt) session.StartedAt = dto.Timestamp.UtcDateTime;
-    var eventTime = dto.Timestamp.UtcDateTime;
-    if (dto.Type is "session.idle" or "session.execution.succeeded" or "session.error") {
-        var newerActivity = await db.Events.AnyAsync(e =>
-            e.SessionId == dto.SessionId && e.Timestamp > eventTime &&
-            (e.Type == "session.execution.started" || e.Type == "session.idle" ||
-             e.Type == "session.execution.succeeded" || e.Type == "session.error"));
-        var isCurrent = !session.EndedAt.HasValue || eventTime >= session.EndedAt.Value;
-        if (!newerActivity && isCurrent) {
-            var next = dto.Type == "session.error"
-                ? "error"
-                : dto.Type == "session.idle" && dto.Status == "interrupted" ? "interrupted" : "completed";
-            if (dto.Type == "session.idle" && session.Status == "interrupted" && next == "completed") next = "interrupted";
-            session.Status = next;
-            session.EndedAt = eventTime;
+    await ingestLock.WaitAsync();
+    try {
+        var existing = await db.Events.AnyAsync(e => e.Source == dto.Source && e.EventId == dto.EventId);
+        if (existing) return Results.Ok(new { accepted = true, duplicate = true });
+        var session = await db.Sessions.FindAsync(dto.SessionId);
+        if (session is null) { session = new Session { Id = dto.SessionId, Source = dto.Source, Project = Safe(dto.Project, 120), StartedAt = dto.Timestamp.UtcDateTime }; db.Sessions.Add(session); }
+        session.UpdatedAt = DateTime.UtcNow;
+        if (dto.Timestamp.UtcDateTime < session.StartedAt) session.StartedAt = dto.Timestamp.UtcDateTime;
+        var eventTime = dto.Timestamp.UtcDateTime;
+        if (dto.Type is "session.idle" or "session.execution.succeeded" or "session.error") {
+            var newerActivity = await db.Events.AnyAsync(e =>
+                e.SessionId == dto.SessionId && e.Timestamp > eventTime &&
+                (e.Type == "session.execution.started" || e.Type == "session.idle" ||
+                 e.Type == "session.execution.succeeded" || e.Type == "session.error"));
+            var isCurrent = !session.EndedAt.HasValue || eventTime >= session.EndedAt.Value;
+            if (!newerActivity && isCurrent) {
+                var next = dto.Type == "session.error"
+                    ? "error"
+                    : dto.Type == "session.idle" && dto.Status == "interrupted" ? "interrupted" : "completed";
+                if (dto.Type == "session.idle" && session.Status == "interrupted" && next == "completed") next = "interrupted";
+                session.Status = next;
+                session.EndedAt = eventTime;
+            }
+        }
+        if (dto.Type == "session.execution.started") {
+            var newerTerminal = await db.Events.AnyAsync(e =>
+                e.SessionId == dto.SessionId && e.Timestamp > eventTime &&
+                (e.Type == "session.idle" || e.Type == "session.execution.succeeded" || e.Type == "session.error"));
+            if (!newerTerminal && (!session.EndedAt.HasValue || eventTime >= session.EndedAt.Value)) {
+                session.Status = "active";
+                session.EndedAt = null;
+            }
+        }
+        if (!string.IsNullOrWhiteSpace(dto.Model)) session.Model = Safe(dto.Model, 120);
+        if (dto.Type == "session.title.updated" && !string.IsNullOrWhiteSpace(dto.Title)) session.Title = Safe(dto.Title, 200);
+        var attrs = SafeAttributes(dto.Attributes);
+        var ev = new TelemetryEvent { EventId = dto.EventId, Source = dto.Source, SessionId = dto.SessionId, Timestamp = dto.Timestamp.UtcDateTime, Type = dto.Type, Status = dto.Status, DurationMs = dto.DurationMs, Model = Safe(dto.Model, 120), InputTokens = dto.InputTokens, OutputTokens = dto.OutputTokens, ReasoningTokens = dto.ReasoningTokens, CacheReadTokens = dto.CacheReadTokens, CacheWriteTokens = dto.CacheWriteTokens, Cost = dto.Cost, QuotaCostEstimate = dto.QuotaCostEstimate, AttributesJson = JsonSerializer.Serialize(attrs) };
+        db.Events.Add(ev);
+        if (dto.Type.StartsWith("tool.")) db.Spans.Add(new Span { Id = SpanId(dto.Source, dto.EventId), SessionId = dto.SessionId, ParentId = ParentSpanId(dto.Source, dto.ParentId), Name = Safe(dto.Name ?? "tool", 160) ?? "tool", Kind = "execute_tool", Status = dto.Status ?? "ok", StartedAt = dto.Timestamp.UtcDateTime, DurationMs = dto.DurationMs, AttributesJson = JsonSerializer.Serialize(attrs) });
+        else if (dto.Type.StartsWith("model.")) db.Spans.Add(new Span { Id = SpanId(dto.Source, dto.EventId), SessionId = dto.SessionId, ParentId = ParentSpanId(dto.Source, dto.ParentId), Name = Safe(dto.Name ?? dto.Model ?? "model", 160) ?? "model", Kind = "inference", Status = dto.Status ?? "ok", StartedAt = dto.Timestamp.UtcDateTime, DurationMs = dto.DurationMs, InputTokens = dto.InputTokens, OutputTokens = dto.OutputTokens, ReasoningTokens = dto.ReasoningTokens, CacheReadTokens = dto.CacheReadTokens, CacheWriteTokens = dto.CacheWriteTokens, Cost = dto.Cost, QuotaCostEstimate = dto.QuotaCostEstimate, AttributesJson = JsonSerializer.Serialize(attrs) });
+        try { await db.SaveChangesAsync(); }
+        catch (DbUpdateException e) when (e.InnerException is SqliteException { SqliteErrorCode: 19, SqliteExtendedErrorCode: 2067 })
+        {
+            return Results.Ok(new { accepted = true, duplicate = true });
         }
     }
-    if (dto.Type == "session.execution.started") {
-        var newerTerminal = await db.Events.AnyAsync(e =>
-            e.SessionId == dto.SessionId && e.Timestamp > eventTime &&
-            (e.Type == "session.idle" || e.Type == "session.execution.succeeded" || e.Type == "session.error"));
-        if (!newerTerminal && (!session.EndedAt.HasValue || eventTime >= session.EndedAt.Value)) {
-            session.Status = "active";
-            session.EndedAt = null;
-        }
-    }
-    if (!string.IsNullOrWhiteSpace(dto.Model)) session.Model = Safe(dto.Model, 120);
-    if (dto.Type == "session.title.updated" && !string.IsNullOrWhiteSpace(dto.Title)) session.Title = Safe(dto.Title, 200);
-    var attrs = SafeAttributes(dto.Attributes);
-    var ev = new TelemetryEvent { EventId = dto.EventId, Source = dto.Source, SessionId = dto.SessionId, Timestamp = dto.Timestamp.UtcDateTime, Type = dto.Type, Status = dto.Status, DurationMs = dto.DurationMs, Model = Safe(dto.Model, 120), InputTokens = dto.InputTokens, OutputTokens = dto.OutputTokens, ReasoningTokens = dto.ReasoningTokens, CacheReadTokens = dto.CacheReadTokens, CacheWriteTokens = dto.CacheWriteTokens, Cost = dto.Cost, QuotaCostEstimate = dto.QuotaCostEstimate, AttributesJson = JsonSerializer.Serialize(attrs) };
-    db.Events.Add(ev);
-    if (dto.Type.StartsWith("tool.")) db.Spans.Add(new Span { Id = SpanId(dto.Source, dto.EventId), SessionId = dto.SessionId, ParentId = ParentSpanId(dto.Source, dto.ParentId), Name = Safe(dto.Name ?? "tool", 160) ?? "tool", Kind = "execute_tool", Status = dto.Status ?? "ok", StartedAt = dto.Timestamp.UtcDateTime, DurationMs = dto.DurationMs, AttributesJson = JsonSerializer.Serialize(attrs) });
-    else if (dto.Type.StartsWith("model.")) db.Spans.Add(new Span { Id = SpanId(dto.Source, dto.EventId), SessionId = dto.SessionId, ParentId = ParentSpanId(dto.Source, dto.ParentId), Name = Safe(dto.Name ?? dto.Model ?? "model", 160) ?? "model", Kind = "inference", Status = dto.Status ?? "ok", StartedAt = dto.Timestamp.UtcDateTime, DurationMs = dto.DurationMs, InputTokens = dto.InputTokens, OutputTokens = dto.OutputTokens, ReasoningTokens = dto.ReasoningTokens, CacheReadTokens = dto.CacheReadTokens, CacheWriteTokens = dto.CacheWriteTokens, Cost = dto.Cost, QuotaCostEstimate = dto.QuotaCostEstimate, AttributesJson = JsonSerializer.Serialize(attrs) });
-    try { await db.SaveChangesAsync(); }
-    catch (DbUpdateException e) when (e.InnerException is SqliteException { SqliteErrorCode: 19, SqliteExtendedErrorCode: 2067 })
-    {
-        return Results.Ok(new { accepted = true, duplicate = true });
-    }
+    finally { ingestLock.Release(); }
     await hub.Clients.All.SendAsync("telemetry.updated", new { sessionId = dto.SessionId, eventId = dto.EventId, type = dto.Type });
     return Results.Ok(new { accepted = true, duplicate = false });
 });

@@ -354,6 +354,114 @@ public sealed class TelemetryApiTests : IDisposable
         Assert.Contains(sessions, session => session.GetProperty("id").GetString() == "behavior-recent-day");
     }
 
+    [Fact]
+    public async Task OverviewCountsSessionsAndRates()
+    {
+        await Post(Fixture("active", "overview-active", "session.created"));
+        await Post(Fixture("completed", "overview-completed", "session.idle") with { Status = "completed" });
+        await Post(Fixture("error", "overview-error", "session.error") with { Status = "error" });
+        await Post(Fixture("interrupted", "overview-interrupted", "session.idle") with { Status = "interrupted" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/overview"));
+        var totals = json.RootElement.GetProperty("totals");
+        Assert.Equal(4, totals.GetProperty("sessions").GetInt32());
+        Assert.Equal(1, totals.GetProperty("active").GetInt32());
+        Assert.Equal(1, totals.GetProperty("completed").GetInt32());
+        Assert.Equal(1, totals.GetProperty("error").GetInt32());
+        Assert.Equal(1, totals.GetProperty("interrupted").GetInt32());
+        Assert.Equal(3, totals.GetProperty("finished").GetInt32());
+        Assert.Equal(1d / 3d, totals.GetProperty("successRate").GetDouble(), 3);
+        Assert.Equal(1d / 3d, totals.GetProperty("errorRate").GetDouble(), 3);
+    }
+
+    [Fact]
+    public async Task OverviewAggregatesTokensAndCosts()
+    {
+        await Post(Fixture("created", "overview-tokens", "session.created"));
+        await Post(Fixture("model-1", "overview-tokens", "model.completed") with
+        {
+            Name = "model-a", Model = "model-a", Status = "ok",
+            InputTokens = 10, OutputTokens = 5, ReasoningTokens = 1, CacheReadTokens = 2, CacheWriteTokens = 1,
+            Cost = 0.1, QuotaCostEstimate = 0.05
+        });
+        await Post(Fixture("model-2", "overview-tokens", "model.completed") with
+        {
+            Name = "model-a", Model = "model-a", Status = "ok",
+            InputTokens = 20, OutputTokens = 5, ReasoningTokens = 1, CacheReadTokens = 2, CacheWriteTokens = 1,
+            Cost = 0.2, QuotaCostEstimate = 0.10
+        });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/overview"));
+        var totals = json.RootElement.GetProperty("totals");
+        Assert.Equal(30, totals.GetProperty("inputTokens").GetInt64());
+        Assert.Equal(10, totals.GetProperty("outputTokens").GetInt64());
+        Assert.Equal(2, totals.GetProperty("reasoningTokens").GetInt64());
+        Assert.Equal(4, totals.GetProperty("cacheReadTokens").GetInt64());
+        Assert.Equal(2, totals.GetProperty("cacheWriteTokens").GetInt64());
+        Assert.Equal(46, totals.GetProperty("totalTokens").GetInt64());
+        Assert.Equal(0.3, totals.GetProperty("reportedCost").GetDouble(), 6);
+        Assert.Equal(0.15, totals.GetProperty("quotaEstimate").GetDouble(), 6);
+    }
+
+    [Fact]
+    public async Task OverviewReturnsTopFiveTools()
+    {
+        await Post(Fixture("created", "overview-tools", "session.created"));
+        var counts = new[] { ("a", 6), ("b", 5), ("c", 4), ("d", 3), ("e", 2), ("f", 1) };
+        foreach (var (name, count) in counts)
+            for (var i = 0; i < count; i++)
+                await Post(Fixture($"tool-{name}-{i}", "overview-tools", "tool.completed") with { Name = name, Status = "ok" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/overview"));
+        var tools = json.RootElement.GetProperty("topTools").EnumerateArray().ToArray();
+        Assert.Equal(5, tools.Length);
+        Assert.Equal("a", tools[0].GetProperty("name").GetString());
+        Assert.Equal("e", tools[4].GetProperty("name").GetString());
+        Assert.DoesNotContain(tools, tool => tool.GetProperty("name").GetString() == "f");
+    }
+
+    [Fact]
+    public async Task OverviewReturnsTopFiveModels()
+    {
+        await Post(Fixture("created", "overview-models", "session.created"));
+        var tokens = new[] { ("model-a", 60), ("model-b", 50), ("model-c", 40), ("model-d", 30), ("model-e", 20), ("model-f", 10) };
+        foreach (var (name, count) in tokens)
+            await Post(Fixture($"model-{name}", "overview-models", "model.completed") with { Name = name, Model = name, Status = "ok", OutputTokens = count });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/overview"));
+        var models = json.RootElement.GetProperty("topModels").EnumerateArray().ToArray();
+        Assert.Equal(5, models.Length);
+        Assert.Equal("model-a", models[0].GetProperty("name").GetString());
+        Assert.Equal("model-e", models[4].GetProperty("name").GetString());
+        Assert.DoesNotContain(models, model => model.GetProperty("name").GetString() == "model-f");
+    }
+
+    [Fact]
+    public async Task OverviewFiltersByWindow()
+    {
+        var old = DateTimeOffset.UtcNow.AddDays(-40);
+        await Post(Fixture("old", "overview-old", "session.created", old));
+        await Post(Fixture("recent", "overview-recent", "session.created"));
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/overview?days=30"));
+        Assert.Equal(1, json.RootElement.GetProperty("totals").GetProperty("sessions").GetInt32());
+        var recent = json.RootElement.GetProperty("recentSessions").EnumerateArray().ToArray();
+        Assert.Contains(recent, session => session.GetProperty("id").GetString() == "overview-recent");
+        Assert.DoesNotContain(recent, session => session.GetProperty("id").GetString() == "overview-old");
+    }
+
+    [Fact]
+    public async Task OverviewReturnsFiveRecentSessions()
+    {
+        for (var i = 0; i < 6; i++)
+            await Post(Fixture($"recent-{i}", $"overview-recent-{i}", "session.created"));
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/overview"));
+        var recent = json.RootElement.GetProperty("recentSessions").EnumerateArray().ToArray();
+        Assert.Equal(5, recent.Length);
+        Assert.Contains(recent, session => session.GetProperty("id").GetString() == "overview-recent-5");
+    }
+
     private async Task<HttpResponseMessage> Post(TelemetryEventDto dto)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/telemetry/events") { Content = JsonContent.Create(dto) };
@@ -389,7 +497,8 @@ public sealed record TelemetryEventDto(
     string EventId, string Source, string SessionId, DateTimeOffset Timestamp, string Type,
     string? Project = null, string? Status = null, long? DurationMs = null, string? Model = null,
     int InputTokens = 0, int OutputTokens = 0, string? ParentId = null, string? Name = null,
-    Dictionary<string, string>? Attributes = null);
+    Dictionary<string, string>? Attributes = null, double? Cost = null, int ReasoningTokens = 0,
+    int CacheReadTokens = 0, int CacheWriteTokens = 0, double? QuotaCostEstimate = null);
 
 internal static class TestCredentials
 {

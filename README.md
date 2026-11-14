@@ -34,6 +34,7 @@ Para ejecutar manualmente: `dotnet run --project backend --no-launch-profile --u
 
 ## Pestañas del dashboard
 
+- **Inicio:** es la vista por defecto; resume la actividad del período con sesiones por estado, tasa de éxito, duración promedio, tokens, costos, las herramientas y los modelos más usados, y las últimas sesiones.
 - **Observabilidad:** lista las sesiones con filtros y muestra el detalle del trace, las herramientas, los tokens, los errores y la evaluación manual.
 - **Herramientas:** resume el uso, la duración promedio y los fallos de cada herramienta en el período elegido.
 - **Comportamiento:** es un detector de sesiones que merecen una mirada: no mide “el comportamiento del agente” en abstracto, sino que marca sesiones guardadas cuando encuentra bucles de herramientas, ráfagas de errores, sesiones largas o interrumpidas, con un enlace al detalle.
@@ -61,6 +62,7 @@ cd dashboard && npm ci && npm run build
 ## API
 
 - `POST /api/v1/telemetry/events` (cabecera `X-Telemetry-Key`)
+- `GET /api/v1/overview?days=7|30|90` (sin `days`, consulta todo el historial)
 - `GET /api/v1/sessions?status=&model=&error=&from=&to=&page=&pageSize=`
 - `GET /api/v1/sessions/{id}` y `GET /api/v1/traces/{id}`
 - `GET /api/v1/analytics/tools?days=1|7|30|90` (sin `days`, consulta todo el historial)

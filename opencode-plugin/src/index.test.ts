@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mapOpenCodeEvent } from './index.ts';
+import { mapOpenCodeEvent, TelemetryQueue } from './index.ts';
 
 test('maps v2 session events and derives project name from its working directory', () => {
   const [mapped] = mapOpenCodeEvent({ id: 'e1', created: 2000, type: 'session.created', location: { directory: 'C:\\work\\my-app' }, data: { sessionID: 's1', title: 'private title' } });
@@ -38,4 +38,37 @@ test('maps completed tool call with correlation and drops its content and metada
 test('ignores unrelated event and malformed events without a session id', () => {
   assert.deepEqual(mapOpenCodeEvent({ type: 'session.text.delta', data: { sessionID: 's1', text: 'secret' } }), []);
   assert.deepEqual(mapOpenCodeEvent({ type: 'session.idle', data: {} }), []);
+});
+
+test('conserva el evento pendiente cuando el envío falla', async () => {
+  let attempts = 0;
+  const queue = new TelemetryQueue(async () => { attempts++; return false; }, { attempts: 1, retryDelayMs: 1000 });
+  queue.enqueue({ eventId: 'e1' });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(queue.size, 1);
+  assert.equal(queue.droppedCount, 0);
+  assert.equal(attempts, 1);
+  queue.dispose();
+});
+
+test('reintenta y drena cuando el colector vuelve', async () => {
+  let healthy = false;
+  const queue = new TelemetryQueue(async () => healthy, { attempts: 1, retryDelayMs: 5 });
+  queue.enqueue({ eventId: 'e2' });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(queue.size, 1);
+  healthy = true;
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(queue.size, 0);
+  queue.dispose();
+});
+
+test('descarta el más viejo y lo informa cuando la cola se llena', () => {
+  const queue = new TelemetryQueue(() => new Promise<boolean>(() => undefined), { max: 2 });
+  queue.enqueue({ eventId: 'a' });
+  queue.enqueue({ eventId: 'b' });
+  queue.enqueue({ eventId: 'c' });
+  assert.equal(queue.size, 2);
+  assert.equal(queue.droppedCount, 1);
+  queue.dispose();
 });

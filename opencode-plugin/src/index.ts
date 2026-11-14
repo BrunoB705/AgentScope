@@ -3,7 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 type Event = { id?: string; created?: number; type: string; data?: Record<string, unknown>; location?: { directory?: string } };
-type Telemetry = Record<string, unknown>;
+export type Telemetry = Record<string, unknown>;
+export type TelemetryQueueOptions = { max?: number; attempts?: number; attemptDelayMs?: number; retryDelayMs?: number; signal?: AbortSignal; onDrop?: (dropped: number) => void; onRetry?: (failures: number) => void };
 type ModelCost = { tier?: { type?: string; size?: number }; input?: number; output?: number; cache?: { read?: number; write?: number } };
 const get = (value: unknown, key: string): unknown => value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
 const str = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined;
@@ -47,6 +48,104 @@ async function resolveApiKey(): Promise<string | undefined> {
     return (await readFile(join(localAppData, 'AgentObservabilityPlatform', 'telemetry.key'), 'utf8')).trim() || undefined;
   } catch {
     return undefined;
+  }
+}
+
+/** Bounded outbox: keeps events until the collector accepts them, and reports drops and retry streaks instead of losing them silently. */
+export class TelemetryQueue {
+  private readonly pending: Telemetry[] = [];
+  private readonly send: (event: Telemetry) => Promise<boolean>;
+  private readonly options: TelemetryQueueOptions;
+  private dropped = 0;
+  private failures = 0;
+  private running: Promise<void> | undefined;
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private disposed = false;
+
+  constructor(send: (event: Telemetry) => Promise<boolean>, options: TelemetryQueueOptions = {}) {
+    this.send = send;
+    this.options = options;
+    options.signal?.addEventListener('abort', () => this.dispose());
+  }
+
+  get size(): number {
+    return this.pending.length;
+  }
+
+  get droppedCount(): number {
+    return this.dropped;
+  }
+
+  enqueue(event: Telemetry): void {
+    if (this.disposed) return;
+    if (this.pending.length >= (this.options.max ?? 100)) {
+      this.pending.shift();
+      this.dropped++;
+      this.options.onDrop?.(this.dropped);
+    }
+    this.pending.push(event);
+    void this.flush();
+  }
+
+  flush(): Promise<void> {
+    if (this.running) return this.running;
+    this.clearRetry();
+    this.running = this.drain().finally(() => { this.running = undefined; });
+    return this.running;
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.clearRetry();
+  }
+
+  private async drain(): Promise<void> {
+    while (this.pending.length > 0 && !this.disposed) {
+      const event = this.pending[0];
+      if (await this.sendWithAttempts(event)) {
+        if (this.pending[0] === event) this.pending.shift();
+        this.failures = 0;
+      } else {
+        if (this.disposed) return;
+        this.failures++;
+        if (this.failures === 1) this.options.onRetry?.(this.failures);
+        this.scheduleRetry();
+        return;
+      }
+    }
+  }
+
+  private async sendWithAttempts(event: Telemetry): Promise<boolean> {
+    const attempts = this.options.attempts ?? 3;
+    const attemptDelayMs = this.options.attemptDelayMs ?? 300;
+    for (let attempt = 0; attempt < attempts && !this.disposed; attempt++) {
+      if (await this.trySend(event)) return true;
+      if (attempt < attempts - 1) await new Promise(resolve => setTimeout(resolve, attemptDelayMs * (attempt + 1)));
+    }
+    return false;
+  }
+
+  private async trySend(event: Telemetry): Promise<boolean> {
+    try {
+      return await this.send(event);
+    } catch {
+      /* The collector may be stopped; the event stays queued for the next attempt. */
+      return false;
+    }
+  }
+
+  private scheduleRetry(): void {
+    if (this.disposed || this.retryTimer) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      void this.flush();
+    }, this.options.retryDelayMs ?? 5000);
+  }
+
+  private clearRetry(): void {
+    if (!this.retryTimer) return;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
   }
 }
 
@@ -130,7 +229,6 @@ export default Plugin.define({
     const apiKey = (await resolveApiKey()) ?? '';
     if (!apiKey) { console.warn('Agent Observability: configura OPENCODE_OBSERVABILITY_KEY para habilitar la ingesta.'); return; }
     const fallbackProject = process.env.OPENCODE_OBSERVABILITY_PROJECT ?? basename(ctx.location.directory) ?? 'opencode';
-    const queue: Telemetry[] = [];
     const stepByMessage = new Map<string, { model: string; started: number; modelInfo?: Record<string, unknown> }>();
     const modelBySession = new Map<string, string>();
     const modelInfoById = new Map<string, Record<string, unknown>>();
@@ -143,8 +241,22 @@ export default Plugin.define({
       for (const model of models.data) modelInfoById.set(`${model.providerID}/${model.modelID}`, model as unknown as Record<string, unknown>);
     } catch { /* Model pricing is optional; keep collecting usage when unavailable. */ }
     const controller = new AbortController();
-    let flushing = false;
-    const enqueue = (event: Telemetry) => { queue.push(event); if (queue.length > 100) queue.shift(); void flush(); };
+    const queue = new TelemetryQueue(async (body) => {
+      try {
+        const response = await fetch(`${endpoint.replace(/\/$/, '')}/api/v1/telemetry/events`, {
+          method: 'POST', headers: { 'content-type': 'application/json', 'x-telemetry-key': apiKey },
+          body: JSON.stringify(body), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(1800)]),
+        });
+        return response.ok;
+      } catch {
+        /* Collector may be stopped; OpenCode must keep working. */
+        return false;
+      }
+    }, {
+      signal: controller.signal,
+      onDrop: total => console.warn(`Agent Observability: cola llena; se descartaron ${total} eventos en total.`),
+      onRetry: () => console.warn('Agent Observability: el colector no responde; los eventos quedan en cola para reintentar.'),
+    });
     // Recover titles for previously collected sessions across all projects.
     void (async () => {
       try {
@@ -179,33 +291,13 @@ export default Plugin.define({
               const title = str(get(get(sessionInfo, 'data'), 'title')) ?? str(get(sessionInfo, 'title'));
               if (!title) continue;
               titleBySession.set(sessionId, title);
-              enqueue({ eventId: `session-title:${sessionId}`, source: 'opencode', sessionId, timestamp: date(), type: 'session.title.updated', title, project: fallbackProject });
+              queue.enqueue({ eventId: `session-title:${sessionId}`, source: 'opencode', sessionId, timestamp: date(), type: 'session.title.updated', title, project: fallbackProject });
             } catch { /* A missing or inaccessible session should not interrupt title recovery. */ }
           }
         });
         await Promise.all(workers);
       } catch { /* Existing titles are a best-effort backfill; telemetry collection still starts. */ }
     })();
-    async function flush() {
-      if (flushing) return;
-      flushing = true;
-      try {
-        while (queue.length && !controller.signal.aborted) {
-          const body = queue[0]; let sent = false;
-          for (let attempt = 0; attempt < 3 && !sent && !controller.signal.aborted; attempt++) {
-            try {
-              const response = await fetch(`${endpoint.replace(/\/$/, '')}/api/v1/telemetry/events`, {
-                method: 'POST', headers: { 'content-type': 'application/json', 'x-telemetry-key': apiKey },
-                body: JSON.stringify(body), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(1800)]),
-              });
-              sent = response.ok;
-            } catch { /* Collector may be stopped; OpenCode must keep working. */ }
-            if (!sent && attempt < 2) await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
-          }
-          queue.shift();
-        }
-      } finally { flushing = false; }
-    }
     void (async () => {
       try {
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
@@ -222,7 +314,7 @@ export default Plugin.define({
               const title = str(get(get(sessionInfo, 'data'), 'title')) ?? str(get(sessionInfo, 'title'));
               if (title) {
                 titleBySession.set(sid, title);
-                enqueue({ eventId: `session-title:${sid}`, source: 'opencode', sessionId: sid, timestamp: date(), type: 'session.title.updated', title, project: basename(current.location?.directory) ?? fallbackProject });
+                queue.enqueue({ eventId: `session-title:${sid}`, source: 'opencode', sessionId: sid, timestamp: date(), type: 'session.title.updated', title, project: basename(current.location?.directory) ?? fallbackProject });
               }
             } catch { /* Session metadata lookup is optional; live events continue. */ }
           }
@@ -242,7 +334,7 @@ export default Plugin.define({
           }
           const step = current.type === 'session.step.ended' ? (messageId ? stepByMessage.get(messageId) : undefined) : undefined;
           const model = step?.model ?? (sid ? modelBySession.get(sid) : undefined);
-          for (const mapped of mapOpenCodeEvent(current, fallbackProject, { model, started: step?.started ?? toolStartedAt, modelInfo: step?.modelInfo ?? (model ? modelInfoById.get(model) : undefined), toolName })) enqueue(mapped);
+          for (const mapped of mapOpenCodeEvent(current, fallbackProject, { model, started: step?.started ?? toolStartedAt, modelInfo: step?.modelInfo ?? (model ? modelInfoById.get(model) : undefined), toolName })) queue.enqueue(mapped);
           if (sid && (current.type === 'session.model.selected' || current.type === 'session.step.started')) {
             const model = modelLabel(current.data ?? {});
             if (model) modelBySession.set(sid, model);
@@ -255,6 +347,6 @@ export default Plugin.define({
         }
       } catch { /* Abort during plugin shutdown or a transient event stream failure. */ }
     })();
-    return () => controller.abort();
+    return () => { queue.dispose(); controller.abort(); };
   },
 });

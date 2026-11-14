@@ -339,8 +339,9 @@ git commit -m "fix: se cierra y reabre la sesión con el estado correcto"
 - Test: `backend.Tests/TelemetryApiTests.cs`
 
 **Interfaces:**
-- Produce: `SemaphoreSlim ingestLock` local de la API, capturado por el handler de ingesta.
-- La sección crítica incluye la consulta de duplicado, el alta/actualización de sesión, el alta de evento/span y `SaveChangesAsync`.
+- Produce: `SemaphoreSlim ingestLock` local de la API, declarado antes de los endpoints que escriben `Sessions`, capturado por los handlers.
+- La sección crítica de ingesta incluye la consulta de duplicado, el alta/actualización de sesión, el alta de evento/span y `SaveChangesAsync`.
+- `PUT /api/v1/sessions/{id}/review` toma el mismo lock alrededor de `FindAsync` + `SaveChangesAsync`, para no competir con la ingesta por la misma fila `Session`.
 - No hay cambios de esquema.
 
 - [ ] **Step 1: Escribir el test que falla**
@@ -365,20 +366,42 @@ public async Task ConcurrentDuplicateEventsAreIdempotent()
     using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-race"));
     Assert.Equal(1, detail.RootElement.GetProperty("events").GetArrayLength());
 }
+
+[Fact]
+public async Task ConcurrentDuplicateEventsForExistingSessionAreIdempotent()
+{
+    await Post(Fixture("seed", "session-race-existing", "session.created"));
+    var payload = Fixture("race-existing", "session-race-existing", "session.created");
+    var responses = await Task.WhenAll(Enumerable.Range(0, 20).Select(_ => Post(payload)));
+
+    Assert.All(responses, response => Assert.Equal(HttpStatusCode.OK, response.StatusCode));
+    var duplicates = new List<bool>();
+    foreach (var response in responses)
+    {
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        duplicates.Add(json.RootElement.GetProperty("duplicate").GetBoolean());
+    }
+    Assert.Equal(1, duplicates.Count(value => !value));
+    Assert.Equal(19, duplicates.Count(value => value));
+
+    using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-race-existing"));
+    Assert.Equal(2, detail.RootElement.GetProperty("events").GetArrayLength());
+}
 ```
 
-- [ ] **Step 2: Correr el test y verificar que falla**
+- [ ] **Step 2: Correr los tests y verificar que fallan**
 
-Run: `$env:Telemetry__ApiKey='test-key'; dotnet test backend.Tests/AgentObservability.Api.Tests.csproj --filter "FullyQualifiedName~ConcurrentDuplicate"`
+Run: `$env:Telemetry__ApiKey='test-key'; dotnet test backend.Tests/AgentObservability.Api.Tests.csproj --filter "FullyQualifiedName~Concurrent"`
 
-Expected: FAIL con más de un `duplicate: false` o más de un evento. Si el `TestServer` serializa las solicitudes y pasa, el test queda como regresión y el semáforo se justifica por la carrera entre la consulta y la inserción.
+Expected: FAIL en el test de sesión nueva por colisión de PK de `Sessions` y, en el de sesión existente, por más de un `duplicate: false` o más de dos eventos. Si el `TestServer` serializa el segundo y pasa, queda como regresión y el semáforo se justifica por la carrera entre la consulta y la inserción sobre `Events`.
 
 - [ ] **Step 3: Implementar el semáforo**
 
 En `backend/Program.cs`:
 
-- Agregar `var ingestLock = new SemaphoreSlim(1, 1);` antes del mapeo del endpoint.
+- Agregar `var ingestLock = new SemaphoreSlim(1, 1);` antes del mapeo de `PUT /api/v1/sessions/{id}/review`, para que ambos handlers lo capturen.
 - Envolver desde la consulta `AnyAsync` hasta el `SaveChangesAsync` en `await ingestLock.WaitAsync(); try { ... } finally { ingestLock.Release(); }`.
+- En `PUT /api/v1/sessions/{id}/review`, tomar el mismo lock alrededor de `FindAsync` + `SaveChangesAsync`; la validación y el `SendAsync` quedan fuera.
 - Dejar el `SendAsync` de SignalR fuera de la sección crítica.
 - Mantener el `catch` de `DbUpdateException` para el caso de una PK de span duplicada.
 
@@ -386,7 +409,7 @@ En `backend/Program.cs`:
 
 Run: `$env:Telemetry__ApiKey='test-key'; dotnet test backend.Tests/AgentObservability.Api.Tests.csproj`
 
-Expected: todos los tests pasan, incluido el concurrente.
+Expected: 14 tests del backend pasan, incluidos los dos concurrentes.
 
 - [ ] **Step 5: Commit**
 

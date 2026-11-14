@@ -27,7 +27,8 @@ Corregir cuatro fallas que hoy hacen que AgentScope pueda mostrar un historial i
 - Una ejecución exitosa termina en `completed`; una interrumpida en `interrupted`; una reanudada vuelve a `active` y `EndedAt` queda nulo.
 - Un `session.idle` nativo posterior a una interrupción no degrada el estado `interrupted` a `completed`.
 - Un terminal fuera de orden no cierra una sesión reabierta, y un `started` fuera de orden no reabre una sesión con un terminal más nuevo.
-- Veinte POST concurrentes del mismo evento de sesión producen una sola fila y un solo `duplicate: false`.
+- Veinte POST concurrentes del mismo evento de sesión producen una sola fila y un solo `duplicate: false`, tanto al crear la sesión como sobre una sesión ya existente.
+- `PUT /api/v1/sessions/{id}/review` y la ingesta comparten el mismo lock, para no competir por la fila `Session`.
 - `npm run dev` en el dashboard queda escuchando en `127.0.0.1`.
 - Los tests existentes y los nuevos pasan; el build del dashboard pasa.
 - No se agregan dependencias ni se modifica el esquema.

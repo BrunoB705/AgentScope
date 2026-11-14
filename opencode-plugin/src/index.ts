@@ -4,7 +4,8 @@ import { join } from 'node:path';
 
 type Event = { id?: string; created?: number; type: string; data?: Record<string, unknown>; location?: { directory?: string } };
 export type Telemetry = Record<string, unknown>;
-export type TelemetryQueueOptions = { max?: number; attempts?: number; attemptDelayMs?: number; retryDelayMs?: number; signal?: AbortSignal; onDrop?: (dropped: number) => void; onRetry?: (failures: number) => void };
+export type DeliveryResult = 'ok' | 'retry' | 'permanent';
+export type TelemetryQueueOptions = { max?: number; attempts?: number; attemptDelayMs?: number; retryDelayMs?: number; signal?: AbortSignal; onDrop?: (dropped: number) => void; onPermanent?: (event: Telemetry) => void; onRetry?: (failures: number) => void };
 type ModelCost = { tier?: { type?: string; size?: number }; input?: number; output?: number; cache?: { read?: number; write?: number } };
 const get = (value: unknown, key: string): unknown => value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
 const str = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined;
@@ -54,18 +55,23 @@ async function resolveApiKey(): Promise<string | undefined> {
 /** Bounded outbox: keeps events until the collector accepts them, and reports drops and retry streaks instead of losing them silently. */
 export class TelemetryQueue {
   private readonly pending: Telemetry[] = [];
-  private readonly send: (event: Telemetry) => Promise<boolean>;
+  private readonly send: (event: Telemetry) => Promise<DeliveryResult>;
   private readonly options: TelemetryQueueOptions;
   private dropped = 0;
+  private rejected = 0;
   private failures = 0;
   private running: Promise<void> | undefined;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private disposed = false;
 
-  constructor(send: (event: Telemetry) => Promise<boolean>, options: TelemetryQueueOptions = {}) {
+  constructor(send: (event: Telemetry) => Promise<DeliveryResult>, options: TelemetryQueueOptions = {}) {
     this.send = send;
     this.options = options;
     options.signal?.addEventListener('abort', () => this.dispose());
+  }
+
+  peek(): Telemetry | undefined {
+    return this.pending[0];
   }
 
   get size(): number {
@@ -74,6 +80,10 @@ export class TelemetryQueue {
 
   get droppedCount(): number {
     return this.dropped;
+  }
+
+  get rejectedCount(): number {
+    return this.rejected;
   }
 
   enqueue(event: Telemetry): void {
@@ -102,35 +112,40 @@ export class TelemetryQueue {
   private async drain(): Promise<void> {
     while (this.pending.length > 0 && !this.disposed) {
       const event = this.pending[0];
-      if (await this.sendWithAttempts(event)) {
-        if (this.pending[0] === event) this.pending.shift();
-        this.failures = 0;
-      } else {
+      const result = await this.sendWithAttempts(event);
+      if (result === 'retry') {
         if (this.disposed) return;
         this.failures++;
         if (this.failures === 1) this.options.onRetry?.(this.failures);
         this.scheduleRetry();
         return;
       }
+      if (this.pending[0] === event) this.pending.shift();
+      this.failures = 0;
+      if (result === 'permanent') {
+        this.rejected++;
+        this.options.onPermanent?.(event);
+      }
     }
   }
 
-  private async sendWithAttempts(event: Telemetry): Promise<boolean> {
+  private async sendWithAttempts(event: Telemetry): Promise<DeliveryResult> {
     const attempts = this.options.attempts ?? 3;
     const attemptDelayMs = this.options.attemptDelayMs ?? 300;
     for (let attempt = 0; attempt < attempts && !this.disposed; attempt++) {
-      if (await this.trySend(event)) return true;
+      const result = await this.trySend(event);
+      if (result !== 'retry') return result;
       if (attempt < attempts - 1) await new Promise(resolve => setTimeout(resolve, attemptDelayMs * (attempt + 1)));
     }
-    return false;
+    return 'retry';
   }
 
-  private async trySend(event: Telemetry): Promise<boolean> {
+  private async trySend(event: Telemetry): Promise<DeliveryResult> {
     try {
       return await this.send(event);
     } catch {
       /* The collector may be stopped; the event stays queued for the next attempt. */
-      return false;
+      return 'retry';
     }
   }
 
@@ -241,21 +256,24 @@ export default Plugin.define({
       for (const model of models.data) modelInfoById.set(`${model.providerID}/${model.modelID}`, model as unknown as Record<string, unknown>);
     } catch { /* Model pricing is optional; keep collecting usage when unavailable. */ }
     const controller = new AbortController();
-    const queue = new TelemetryQueue(async (body) => {
+    const queue = new TelemetryQueue(async (body): Promise<DeliveryResult> => {
       try {
         const response = await fetch(`${endpoint.replace(/\/$/, '')}/api/v1/telemetry/events`, {
           method: 'POST', headers: { 'content-type': 'application/json', 'x-telemetry-key': apiKey },
           body: JSON.stringify(body), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(1800)]),
         });
-        return response.ok;
+        if (response.ok) return 'ok';
+        const permanent = response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429;
+        return permanent ? 'permanent' : 'retry';
       } catch {
         /* Collector may be stopped; OpenCode must keep working. */
-        return false;
+        return 'retry';
       }
     }, {
       signal: controller.signal,
       onDrop: total => console.warn(`Agent Observability: cola llena; se descartaron ${total} eventos en total.`),
-      onRetry: () => console.warn('Agent Observability: el colector no responde; los eventos quedan en cola para reintentar.'),
+      onPermanent: event => console.warn(`Agent Observability: el colector rechazó el evento ${String(event.eventId)}; se descartó sin reintentar.`),
+      onRetry: () => console.warn('Agent Observability: no se pudo entregar telemetría; se reintentará con los eventos en cola.'),
     });
     // Recover titles for previously collected sessions across all projects.
     void (async () => {

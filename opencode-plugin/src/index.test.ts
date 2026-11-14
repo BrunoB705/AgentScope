@@ -42,7 +42,7 @@ test('ignores unrelated event and malformed events without a session id', () => 
 
 test('conserva el evento pendiente cuando el envío falla', async () => {
   let attempts = 0;
-  const queue = new TelemetryQueue(async () => { attempts++; return false; }, { attempts: 1, retryDelayMs: 1000 });
+  const queue = new TelemetryQueue(async () => { attempts++; return 'retry'; }, { attempts: 1, retryDelayMs: 1000 });
   queue.enqueue({ eventId: 'e1' });
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(queue.size, 1);
@@ -52,23 +52,39 @@ test('conserva el evento pendiente cuando el envío falla', async () => {
 });
 
 test('reintenta y drena cuando el colector vuelve', async () => {
-  let healthy = false;
-  const queue = new TelemetryQueue(async () => healthy, { attempts: 1, retryDelayMs: 5 });
+  let result: 'retry' | 'ok' = 'retry';
+  const queue = new TelemetryQueue(async () => result, { attempts: 1, retryDelayMs: 5 });
   queue.enqueue({ eventId: 'e2' });
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(queue.size, 1);
-  healthy = true;
+  result = 'ok';
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(queue.size, 0);
   queue.dispose();
 });
 
 test('descarta el más viejo y lo informa cuando la cola se llena', () => {
-  const queue = new TelemetryQueue(() => new Promise<boolean>(() => undefined), { max: 2 });
+  const queue = new TelemetryQueue(() => new Promise<'ok'>(() => undefined), { max: 2 });
   queue.enqueue({ eventId: 'a' });
   queue.enqueue({ eventId: 'b' });
   queue.enqueue({ eventId: 'c' });
   assert.equal(queue.size, 2);
   assert.equal(queue.droppedCount, 1);
+  assert.equal(queue.peek()?.eventId, 'b');
+  queue.dispose();
+});
+
+test('descarta un rechazo permanente sin bloquear los eventos siguientes', async () => {
+  const sent: unknown[] = [];
+  const queue = new TelemetryQueue(async event => {
+    sent.push(event.eventId);
+    return event.eventId === 'bad' ? 'permanent' : 'ok';
+  }, { attempts: 1 });
+  queue.enqueue({ eventId: 'bad' });
+  queue.enqueue({ eventId: 'good' });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(sent, ['bad', 'good']);
+  assert.equal(queue.size, 0);
+  assert.equal(queue.rejectedCount, 1);
   queue.dispose();
 });

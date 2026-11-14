@@ -407,7 +407,7 @@ public sealed class TelemetryApiTests : IDisposable
     public async Task OverviewReturnsTopFiveTools()
     {
         await Post(Fixture("created", "overview-tools", "session.created"));
-        var counts = new[] { ("a", 6), ("b", 5), ("c", 4), ("d", 3), ("e", 2), ("f", 1) };
+        var counts = new[] { ("z", 6), ("y", 5), ("x", 4), ("w", 3), ("v", 2), ("u", 1) };
         foreach (var (name, count) in counts)
             for (var i = 0; i < count; i++)
                 await Post(Fixture($"tool-{name}-{i}", "overview-tools", "tool.completed") with { Name = name, Status = "ok" });
@@ -415,25 +415,25 @@ public sealed class TelemetryApiTests : IDisposable
         using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/overview"));
         var tools = json.RootElement.GetProperty("topTools").EnumerateArray().ToArray();
         Assert.Equal(5, tools.Length);
-        Assert.Equal("a", tools[0].GetProperty("name").GetString());
-        Assert.Equal("e", tools[4].GetProperty("name").GetString());
-        Assert.DoesNotContain(tools, tool => tool.GetProperty("name").GetString() == "f");
+        Assert.Equal("z", tools[0].GetProperty("name").GetString());
+        Assert.Equal("v", tools[4].GetProperty("name").GetString());
+        Assert.DoesNotContain(tools, tool => tool.GetProperty("name").GetString() == "u");
     }
 
     [Fact]
     public async Task OverviewReturnsTopFiveModels()
     {
         await Post(Fixture("created", "overview-models", "session.created"));
-        var tokens = new[] { ("model-a", 60), ("model-b", 50), ("model-c", 40), ("model-d", 30), ("model-e", 20), ("model-f", 10) };
+        var tokens = new[] { ("model-z", 60), ("model-y", 50), ("model-x", 40), ("model-w", 30), ("model-v", 20), ("model-u", 10) };
         foreach (var (name, count) in tokens)
             await Post(Fixture($"model-{name}", "overview-models", "model.completed") with { Name = name, Model = name, Status = "ok", OutputTokens = count });
 
         using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/overview"));
         var models = json.RootElement.GetProperty("topModels").EnumerateArray().ToArray();
         Assert.Equal(5, models.Length);
-        Assert.Equal("model-a", models[0].GetProperty("name").GetString());
-        Assert.Equal("model-e", models[4].GetProperty("name").GetString());
-        Assert.DoesNotContain(models, model => model.GetProperty("name").GetString() == "model-f");
+        Assert.Equal("model-z", models[0].GetProperty("name").GetString());
+        Assert.Equal("model-v", models[4].GetProperty("name").GetString());
+        Assert.DoesNotContain(models, model => model.GetProperty("name").GetString() == "model-u");
     }
 
     [Fact]
@@ -460,6 +460,7 @@ public sealed class TelemetryApiTests : IDisposable
         var recent = json.RootElement.GetProperty("recentSessions").EnumerateArray().ToArray();
         Assert.Equal(5, recent.Length);
         Assert.Contains(recent, session => session.GetProperty("id").GetString() == "overview-recent-5");
+        Assert.DoesNotContain(recent, session => session.GetProperty("id").GetString() == "overview-recent-0");
     }
 
     private async Task<HttpResponseMessage> Post(TelemetryEventDto dto)

@@ -227,11 +227,71 @@ public sealed class TelemetryApiTests : IDisposable
     {
         await Post(Fixture("created", "behavior-errors", "session.created"));
         for (var i = 0; i < 3; i++)
-            await Post(Fixture($"error-{i}", "behavior-errors", "tool.completed") with { Name = "bash", Status = "error" });
+            await Post(Fixture($"error-{i}", "behavior-errors", "tool.completed") with { Name = $"tool-{i}", Status = "error" });
 
         using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
-        var signals = json.RootElement.GetProperty("sessions").EnumerateArray().Single().GetProperty("signals");
-        Assert.Contains(signals.EnumerateArray(), item => item.GetProperty("kind").GetString() == "error_burst");
+        var signals = json.RootElement.GetProperty("sessions").EnumerateArray().Single().GetProperty("signals").EnumerateArray().ToArray();
+        Assert.Single(signals);
+        Assert.Equal("error_burst", signals[0].GetProperty("kind").GetString());
+    }
+
+    [Fact]
+    public async Task BehaviorFlagsThreeConsecutiveTools()
+    {
+        await Post(Fixture("created", "behavior-three", "session.created"));
+        for (var i = 0; i < 3; i++)
+            await Post(Fixture($"tool-{i}", "behavior-three", "tool.completed") with { Name = "bash", Status = "ok" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        var signal = json.RootElement.GetProperty("sessions").EnumerateArray().Single().GetProperty("signals").EnumerateArray().Single();
+        Assert.Equal("tool_loop", signal.GetProperty("kind").GetString());
+        Assert.Equal(3, signal.GetProperty("evidence").GetProperty("calls").GetInt32());
+        Assert.Equal(3, signal.GetProperty("evidence").GetProperty("maxConsecutive").GetInt32());
+    }
+
+    [Fact]
+    public async Task BehaviorFlagsModelErrorBurst()
+    {
+        await Post(Fixture("created", "behavior-model-errors", "session.created"));
+        for (var i = 0; i < 2; i++)
+            await Post(Fixture($"model-{i}", "behavior-model-errors", "model.completed") with { Name = "model-a", Model = "model-a", Status = "error" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        var signals = json.RootElement.GetProperty("sessions").EnumerateArray().Single().GetProperty("signals").EnumerateArray().ToArray();
+        Assert.Single(signals);
+        Assert.Equal("error_burst", signals[0].GetProperty("kind").GetString());
+        Assert.Equal(2, signals[0].GetProperty("evidence").GetProperty("modelErrors").GetInt32());
+    }
+
+    [Fact]
+    public async Task BehaviorFlagsLongSessionBySpanCount()
+    {
+        await Post(Fixture("created", "behavior-spans", "session.created"));
+        for (var i = 0; i < 30; i++)
+            await Post(Fixture($"tool-{i}", "behavior-spans", "tool.completed") with { Name = $"tool-{i}", Status = "ok" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        var signal = json.RootElement.GetProperty("sessions").EnumerateArray().Single().GetProperty("signals").EnumerateArray().Single();
+        Assert.Equal("long_session", signal.GetProperty("kind").GetString());
+        Assert.Equal(30, signal.GetProperty("evidence").GetProperty("spans").GetInt32());
+    }
+
+    [Fact]
+    public async Task BehaviorOrdersSessionsAndSignals()
+    {
+        await Post(Fixture("a-idle", "behavior-order-a", "session.idle") with { Status = "interrupted" });
+        for (var i = 0; i < 4; i++)
+            await Post(Fixture($"a-tool-{i}", "behavior-order-a", "tool.completed") with { Name = "bash", Status = "ok" });
+        await Post(Fixture("b-idle", "behavior-order-b", "session.idle") with { Status = "interrupted" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
+        var sessions = json.RootElement.GetProperty("sessions").EnumerateArray().ToArray();
+        Assert.Equal("behavior-order-a", sessions[0].GetProperty("id").GetString());
+        Assert.Equal("behavior-order-b", sessions[1].GetProperty("id").GetString());
+        var signals = sessions[0].GetProperty("signals").EnumerateArray().ToArray();
+        Assert.Equal(2, signals.Length);
+        Assert.Equal("interrupted", signals[0].GetProperty("kind").GetString());
+        Assert.Equal("tool_loop", signals[1].GetProperty("kind").GetString());
     }
 
     [Fact]

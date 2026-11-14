@@ -178,7 +178,7 @@ app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEve
                 e.SessionId == dto.SessionId && e.Timestamp > eventTime &&
                 (e.Type == "session.execution.started" || e.Type == "session.idle" ||
                  e.Type == "session.execution.succeeded" || e.Type == "session.error"));
-            var isCurrent = !session.EndedAt.HasValue || eventTime >= session.EndedAt.Value;
+            var isCurrent = !session.EndedAt.HasValue || eventTime > session.EndedAt.Value;
             if (!newerActivity && isCurrent) {
                 var next = dto.Type == "session.error"
                     ? "error"
@@ -192,7 +192,7 @@ app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEve
             var newerTerminal = await db.Events.AnyAsync(e =>
                 e.SessionId == dto.SessionId && e.Timestamp > eventTime &&
                 (e.Type == "session.idle" || e.Type == "session.execution.succeeded" || e.Type == "session.error"));
-            if (!newerTerminal && (!session.EndedAt.HasValue || eventTime >= session.EndedAt.Value)) {
+            if (!newerTerminal && (!session.EndedAt.HasValue || eventTime > session.EndedAt.Value)) {
                 session.Status = "active";
                 session.EndedAt = null;
             }

@@ -85,14 +85,30 @@ test('reintenta y drena cuando el colector vuelve', async () => {
   queue.dispose();
 });
 
-test('descarta el más viejo y lo informa cuando la cola se llena', () => {
-  const queue = new TelemetryQueue(() => new Promise<'ok'>(() => undefined), { max: 2 });
+test('descarta el más viejo encolado sin tocar el evento en vuelo', async () => {
+  const sent: unknown[] = [];
+  let release!: (result: 'ok') => void;
+  let started!: () => void;
+  const startedPromise = new Promise<void>(resolve => { started = resolve; });
+  const queue = new TelemetryQueue(event => {
+    sent.push(event.eventId);
+    if (event.eventId === 'a') {
+      started();
+      return new Promise<'ok'>(resolve => { release = resolve; });
+    }
+    return Promise.resolve('ok');
+  }, { max: 2, attempts: 1 });
   queue.enqueue({ eventId: 'a' });
+  await startedPromise;
   queue.enqueue({ eventId: 'b' });
   queue.enqueue({ eventId: 'c' });
   assert.equal(queue.size, 2);
   assert.equal(queue.droppedCount, 1);
-  assert.equal(queue.peek()?.eventId, 'b');
+  assert.equal(queue.peek()?.eventId, 'a');
+  release('ok');
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(sent, ['a', 'c']);
+  assert.equal(queue.size, 0);
   queue.dispose();
 });
 

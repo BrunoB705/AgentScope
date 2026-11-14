@@ -196,6 +196,18 @@ public sealed class TelemetryApiTests : IDisposable
         Assert.Equal("completed", detail.RootElement.GetProperty("session").GetProperty("status").GetString());
     }
 
+    [Fact]
+    public async Task StartedWithSameTimestampDoesNotReopenTerminal()
+    {
+        var instant = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await Post(Fixture("succeeded", "session-same-timestamp", "session.execution.succeeded", instant) with { Status = "completed" });
+        await Post(Fixture("start", "session-same-timestamp", "session.execution.started", instant) with { Status = "active" });
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-same-timestamp"));
+        var session = detail.RootElement.GetProperty("session");
+        Assert.Equal("completed", session.GetProperty("status").GetString());
+        Assert.NotEqual(JsonValueKind.Null, session.GetProperty("endedAt").ValueKind);
+    }
+
     private async Task<HttpResponseMessage> Post(TelemetryEventDto dto)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/telemetry/events") { Content = JsonContent.Create(dto) };

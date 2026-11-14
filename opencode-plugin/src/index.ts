@@ -70,6 +70,7 @@ export class TelemetryQueue {
   private failures = 0;
   private running: Promise<void> | undefined;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private inFlight: Telemetry | undefined;
   private disposed = false;
 
   constructor(send: (event: Telemetry) => Promise<DeliveryResult>, options: TelemetryQueueOptions = {}) {
@@ -96,11 +97,7 @@ export class TelemetryQueue {
 
   enqueue(event: Telemetry): void {
     if (this.disposed) return;
-    if (this.pending.length >= (this.options.max ?? 100)) {
-      this.pending.shift();
-      this.dropped++;
-      this.options.onDrop?.(this.dropped);
-    }
+    if (this.pending.length >= (this.options.max ?? 100)) this.dropOldestEnqueued();
     this.pending.push(event);
     void this.flush();
   }
@@ -117,10 +114,28 @@ export class TelemetryQueue {
     this.clearRetry();
   }
 
+  /** The in-flight event is already being delivered, so dropping it would report a loss that did not happen. */
+  private dropOldestEnqueued(): void {
+    if (this.pending[0] === this.inFlight) {
+      if (this.pending.length < 2) return;
+      this.pending.splice(1, 1);
+    } else {
+      this.pending.shift();
+    }
+    this.dropped++;
+    this.options.onDrop?.(this.dropped);
+  }
+
   private async drain(): Promise<void> {
     while (this.pending.length > 0 && !this.disposed) {
       const event = this.pending[0];
-      const result = await this.sendWithAttempts(event);
+      this.inFlight = event;
+      let result: DeliveryResult;
+      try {
+        result = await this.sendWithAttempts(event);
+      } finally {
+        this.inFlight = undefined;
+      }
       if (result === 'retry') {
         if (this.disposed) return;
         this.failures++;

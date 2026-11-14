@@ -80,6 +80,28 @@ app.MapDelete("/api/v1/budgets", async (string project, TelemetryDb db) => {
     await db.SaveChangesAsync();
     return Results.NoContent();
 });
+app.MapGet("/api/v1/analytics/tools", async (TelemetryDb db, int? days) => {
+    var windowDays = days is 7 or 30 or 90 ? days : null;
+    var cutoff = windowDays.HasValue ? DateTime.UtcNow.AddDays(-windowDays.Value) : (DateTime?)null;
+    var query = from span in db.Spans.AsNoTracking()
+                join session in db.Sessions.AsNoTracking() on span.SessionId equals session.Id
+                where span.Kind == "execute_tool" && (!cutoff.HasValue || span.StartedAt >= cutoff.Value)
+                select new { span.Name, span.Status, span.DurationMs, span.StartedAt, SessionId = session.Id, session.Title, session.Project, session.Model };
+    var rows = await query.ToListAsync();
+    var tools = rows.GroupBy(row => row.Name)
+        .OrderByDescending(group => group.Count())
+        .ThenBy(group => group.Key)
+        .Select(group => {
+            var durations = group.Where(row => row.DurationMs.HasValue).Select(row => row.DurationMs!.Value).ToArray();
+            var sessions = group.GroupBy(row => row.SessionId)
+                .Select(session => session.OrderByDescending(row => row.StartedAt).First())
+                .OrderByDescending(row => row.StartedAt).Take(5)
+                .Select(row => new { sessionId = row.SessionId, title = row.Title, project = row.Project, model = row.Model });
+            var errors = group.Count(row => row.Status == "error" || row.Status == "failed");
+            return new { name = group.Key, callCount = group.Count(), errorCount = errors, errorRate = group.Count() == 0 ? 0d : (double)errors / group.Count(), sessionCount = group.Select(row => row.SessionId).Distinct().Count(), averageDurationMs = durations.Length == 0 ? (double?)null : durations.Average(), latestSessions = sessions };
+        }).ToArray();
+    return Results.Ok(new { windowDays, totalCalls = rows.Count, errorCount = rows.Count(row => row.Status == "error" || row.Status == "failed"), tools });
+});
 app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEventDto dto, TelemetryDb db, IConfiguration config, IHubContext<TelemetryHub> hub) => {
     var key = config["Telemetry:ApiKey"]!;
     if (!CryptographicEquals(request.Headers["X-Telemetry-Key"].ToString(), key)) return Results.Unauthorized();

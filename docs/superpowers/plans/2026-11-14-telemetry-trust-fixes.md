@@ -168,7 +168,9 @@ git commit -m "fix: se evita perder eventos del plugin sin aviso"
 - `session.execution.interrupted` se mapea a `type: 'session.idle'` con `status: 'interrupted'`.
 - `session.execution.succeeded` conserva su tipo y usa `status: 'completed'`.
 - El backend acepta como terminales `session.idle`, `session.execution.succeeded` y `session.error`.
-- `session.execution.started` deja la sesión en `active` y `EndedAt = null`.
+- `session.execution.started` deja la sesión en `active` y `EndedAt = null`, sólo si es más nuevo que el cierre vigente y no hay un terminal posterior.
+- Un terminal sólo se aplica si es más nuevo que `EndedAt` y no hay una actividad de ciclo de vida posterior.
+- Un `session.idle` nativo posterior a una interrupción preserva `interrupted`; no lo degrada a `completed`.
 - El dashboard agrega el filtro `interrupted` y el badge correspondiente.
 
 - [ ] **Step 1: Escribir los tests que fallan**
@@ -220,13 +222,56 @@ public async Task StartedExecutionReopensAClosedSession()
     Assert.Equal("active", session.GetProperty("status").GetString());
     Assert.Equal(JsonValueKind.Null, session.GetProperty("endedAt").ValueKind);
 }
+
+[Fact]
+public async Task InterruptedThenIdleKeepsInterrupted()
+{
+    var start = DateTimeOffset.UtcNow.AddMinutes(-2);
+    await Post(Fixture("interrupted", "session-interrupted-tail", "session.idle", start) with { Status = "interrupted" });
+    await Post(Fixture("idle-tail", "session-interrupted-tail", "session.idle", start.AddSeconds(5)) with { Status = "completed" });
+    using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-interrupted-tail"));
+    Assert.Equal("interrupted", detail.RootElement.GetProperty("session").GetProperty("status").GetString());
+}
+
+[Fact]
+public async Task LateIdleDoesNotCloseReopenedSession()
+{
+    var start = DateTimeOffset.UtcNow.AddMinutes(-3);
+    await Post(Fixture("idle-old", "session-late-idle", "session.idle", start) with { Status = "completed" });
+    await Post(Fixture("start-new", "session-late-idle", "session.execution.started", start.AddMinutes(2)) with { Status = "active" });
+    await Post(Fixture("idle-late", "session-late-idle", "session.idle", start.AddMinutes(1)) with { Status = "completed" });
+    using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-late-idle"));
+    var session = detail.RootElement.GetProperty("session");
+    Assert.Equal("active", session.GetProperty("status").GetString());
+    Assert.Equal(JsonValueKind.Null, session.GetProperty("endedAt").ValueKind);
+}
+
+[Fact]
+public async Task LateStartedDoesNotReopenNewerTerminal()
+{
+    var start = DateTimeOffset.UtcNow.AddMinutes(-3);
+    await Post(Fixture("idle-new", "session-late-start", "session.idle", start.AddMinutes(2)) with { Status = "completed" });
+    await Post(Fixture("start-late", "session-late-start", "session.execution.started", start.AddMinutes(1)) with { Status = "active" });
+    using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-late-start"));
+    var session = detail.RootElement.GetProperty("session");
+    Assert.Equal("completed", session.GetProperty("status").GetString());
+    Assert.NotEqual(JsonValueKind.Null, session.GetProperty("endedAt").ValueKind);
+}
+
+[Fact]
+public async Task SucceededExecutionIgnoresInterruptedStatus()
+{
+    await Post(Fixture("succeeded-interrupted", "session-succeeded-interrupted", "session.execution.succeeded") with { Status = "interrupted" });
+    using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-succeeded-interrupted"));
+    Assert.Equal("completed", detail.RootElement.GetProperty("session").GetProperty("status").GetString());
+}
 ```
 
 - [ ] **Step 2: Correr los tests y verificar que fallan**
 
-Run: `cd opencode-plugin; npm test` y `$env:Telemetry__ApiKey='test-key'; dotnet test backend.Tests/AgentObservability.Api.Tests.csproj --filter "FullyQualifiedName~Session"`
+Run: `cd opencode-plugin; npm test` y `$env:Telemetry__ApiKey='test-key'; dotnet test backend.Tests/AgentObservability.Api.Tests.csproj`
 
-Expected: fallan los tres tests de backend y el de interrupción del plugin.
+Expected: fallan los tests nuevos de secuencia y el de interrupción del plugin.
 
 - [ ] **Step 3: Implementar el mapeo y la ingesta**
 
@@ -235,17 +280,34 @@ En el plugin: cambiar el caso `session.execution.interrupted` para que devuelva 
 En el backend, dentro del handler de ingesta:
 
 ```csharp
+var eventTime = dto.Timestamp.UtcDateTime;
 if (dto.Type is "session.idle" or "session.execution.succeeded" or "session.error")
 {
-    session.Status = dto.Type == "session.error"
-        ? "error"
-        : dto.Status == "interrupted" ? "interrupted" : "completed";
-    session.EndedAt = dto.Timestamp.UtcDateTime;
+    var newerActivity = await db.Events.AnyAsync(e =>
+        e.SessionId == dto.SessionId && e.Timestamp > eventTime &&
+        (e.Type == "session.execution.started" || e.Type == "session.idle" ||
+         e.Type == "session.execution.succeeded" || e.Type == "session.error"));
+    var isCurrent = !session.EndedAt.HasValue || eventTime >= session.EndedAt.Value;
+    if (!newerActivity && isCurrent)
+    {
+        var next = dto.Type == "session.error"
+            ? "error"
+            : dto.Type == "session.idle" && dto.Status == "interrupted" ? "interrupted" : "completed";
+        if (dto.Type == "session.idle" && session.Status == "interrupted" && next == "completed") next = "interrupted";
+        session.Status = next;
+        session.EndedAt = eventTime;
+    }
 }
 if (dto.Type == "session.execution.started")
 {
-    session.Status = "active";
-    session.EndedAt = null;
+    var newerTerminal = await db.Events.AnyAsync(e =>
+        e.SessionId == dto.SessionId && e.Timestamp > eventTime &&
+        (e.Type == "session.idle" || e.Type == "session.execution.succeeded" || e.Type == "session.error"));
+    if (!newerTerminal && (!session.EndedAt.HasValue || eventTime >= session.EndedAt.Value))
+    {
+        session.Status = "active";
+        session.EndedAt = null;
+    }
 }
 ```
 
@@ -259,7 +321,7 @@ Run: `$env:Telemetry__ApiKey='test-key'; dotnet test backend.Tests/AgentObservab
 
 Run: `cd dashboard; npm run build`
 
-Expected: todos los tests pasan y el build termina sin errores.
+Expected: 11 tests del plugin, 12 del backend y build del dashboard sin errores.
 
 - [ ] **Step 5: Commit**
 

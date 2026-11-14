@@ -25,6 +25,8 @@ Corregir cuatro fallas que hoy hacen que AgentScope pueda mostrar un historial i
 - Un rechazo permanente (4xx, salvo 401, 403, 408 y 429) se descarta con aviso y no bloquea los eventos siguientes.
 - Un 401/403 se trata como problema de credenciales: se reintenta, se avisa una sola vez y la cola no se descarta.
 - Una ejecución exitosa termina en `completed`; una interrumpida en `interrupted`; una reanudada vuelve a `active` y `EndedAt` queda nulo.
+- Un `session.idle` nativo posterior a una interrupción no degrada el estado `interrupted` a `completed`.
+- Un terminal fuera de orden no cierra una sesión reabierta, y un `started` fuera de orden no reabre una sesión con un terminal más nuevo.
 - Veinte POST concurrentes del mismo evento de sesión producen una sola fila y un solo `duplicate: false`.
 - `npm run dev` en el dashboard queda escuchando en `127.0.0.1`.
 - Los tests existentes y los nuevos pasan; el build del dashboard pasa.

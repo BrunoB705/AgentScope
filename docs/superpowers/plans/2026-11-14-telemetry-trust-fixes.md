@@ -39,14 +39,17 @@
 
 **Interfaces:**
 - Produce: `export type Telemetry = Record<string, unknown>`
-- Produce: `export type TelemetryQueueOptions = { max?: number; attempts?: number; attemptDelayMs?: number; retryDelayMs?: number; signal?: AbortSignal; onDrop?: (dropped: number) => void; onRetry?: (failures: number) => void }`
+- Produce: `export type DeliveryResult = 'ok' | 'retry' | 'permanent'`
+- Produce: `export type TelemetryQueueOptions = { max?: number; attempts?: number; attemptDelayMs?: number; retryDelayMs?: number; signal?: AbortSignal; onDrop?: (dropped: number) => void; onPermanent?: (event: Telemetry) => void; onRetry?: (failures: number) => void }`
 - Produce: `export class TelemetryQueue`
-  - `constructor(send: (event: Telemetry) => Promise<boolean>, options?: TelemetryQueueOptions)`
+  - `constructor(send: (event: Telemetry) => Promise<DeliveryResult>, options?: TelemetryQueueOptions)`
   - `enqueue(event: Telemetry): void`
   - `flush(): Promise<void>`
   - `dispose(): void`
+  - `peek(): Telemetry | undefined`
   - `get size(): number`
   - `get droppedCount(): number`
+  - `get rejectedCount(): number`
 - Consume en `setup`: una instancia de `TelemetryQueue` con el `fetch` actual y `controller.signal`.
 - `attempts` cuenta los intentos dentro de un mismo `flush`; el timer de `retryDelayMs` es independiente y vuelve a llamar a `flush` después. `attemptDelayMs` sólo se usa entre intentos cuando `attempts > 1`.
 
@@ -59,7 +62,7 @@ import { TelemetryQueue } from './index.ts';
 
 test('conserva el evento pendiente cuando el envío falla', async () => {
   let attempts = 0;
-  const queue = new TelemetryQueue(async () => { attempts++; return false; }, { attempts: 1, retryDelayMs: 1000 });
+  const queue = new TelemetryQueue(async () => { attempts++; return 'retry'; }, { attempts: 1, retryDelayMs: 1000 });
   queue.enqueue({ eventId: 'e1' });
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(queue.size, 1);
@@ -69,24 +72,40 @@ test('conserva el evento pendiente cuando el envío falla', async () => {
 });
 
 test('reintenta y drena cuando el colector vuelve', async () => {
-  let healthy = false;
-  const queue = new TelemetryQueue(async () => healthy, { attempts: 1, retryDelayMs: 5 });
+  let result: 'retry' | 'ok' = 'retry';
+  const queue = new TelemetryQueue(async () => result, { attempts: 1, retryDelayMs: 5 });
   queue.enqueue({ eventId: 'e2' });
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(queue.size, 1);
-  healthy = true;
+  result = 'ok';
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(queue.size, 0);
   queue.dispose();
 });
 
 test('descarta el más viejo y lo informa cuando la cola se llena', () => {
-  const queue = new TelemetryQueue(() => new Promise<boolean>(() => undefined), { max: 2 });
+  const queue = new TelemetryQueue(() => new Promise<'ok'>(() => undefined), { max: 2 });
   queue.enqueue({ eventId: 'a' });
   queue.enqueue({ eventId: 'b' });
   queue.enqueue({ eventId: 'c' });
   assert.equal(queue.size, 2);
   assert.equal(queue.droppedCount, 1);
+  assert.equal(queue.peek()?.eventId, 'b');
+  queue.dispose();
+});
+
+test('descarta un rechazo permanente sin bloquear los eventos siguientes', async () => {
+  const sent: unknown[] = [];
+  const queue = new TelemetryQueue(async event => {
+    sent.push(event.eventId);
+    return event.eventId === 'bad' ? 'permanent' : 'ok';
+  }, { attempts: 1 });
+  queue.enqueue({ eventId: 'bad' });
+  queue.enqueue({ eventId: 'good' });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(sent, ['bad', 'good']);
+  assert.equal(queue.size, 0);
+  assert.equal(queue.rejectedCount, 1);
   queue.dispose();
 });
 ```
@@ -101,18 +120,18 @@ Expected: FAIL porque `TelemetryQueue` todavía no existe.
 
 En `opencode-plugin/src/index.ts`:
 
-- Exportar `Telemetry` y `TelemetryQueueOptions`.
-- Implementar la cola con estas reglas: `enqueue` agrega y dispara `flush`; si `size >= max`, quita el primero, incrementa `droppedCount` y llama `onDrop`; `flush` no quita el evento si los intentos fallan, programa un reintento con `retryDelayMs` y llama `onRetry` una vez por racha; si el envío responde bien, quita el evento y sigue; `dispose` cancela el timer.
+- Exportar `Telemetry`, `DeliveryResult` y `TelemetryQueueOptions`.
+- Implementar la cola con estas reglas: `enqueue` agrega y dispara `flush`; si `size >= max`, quita el primero, incrementa `droppedCount` y llama `onDrop`; `flush` no quita el evento si los intentos devuelven `'retry'`, programa un reintento con `retryDelayMs` y llama `onRetry` una vez por racha; si devuelve `'ok'`, quita el evento y sigue; si devuelve `'permanent'`, quita el evento, incrementa `rejectedCount`, llama `onPermanent` y sigue con el próximo; `dispose` cancela el timer.
 - Reemplazar `const queue: Telemetry[]`, `flushing`, `enqueue` y `flush` de `setup` por una instancia de `TelemetryQueue`.
-- El `send` de la instancia debe hacer el `fetch` actual a `/api/v1/telemetry/events` con `x-telemetry-key`, `AbortSignal.any` y timeout de 1800 ms, y devolver `response.ok`.
-- Pasar `signal: controller.signal`, `onDrop` con un `console.warn` que informe el total, y `onRetry` con un aviso sólo en el primer fallo de la racha.
+- El `send` de la instancia debe hacer el `fetch` actual a `/api/v1/telemetry/events` con `x-telemetry-key`, `AbortSignal.any` y timeout de 1800 ms. Devolver `'ok'` si `response.ok`; `'permanent'` si el status es 400-499 salvo 408 y 429; `'retry'` en cualquier otro caso.
+- Pasar `signal: controller.signal`, `onDrop` con un `console.warn` que informe el total, `onPermanent` con un aviso que incluya el `eventId` descartado, y `onRetry` con un aviso sólo en el primer fallo de la racha.
 - En el cleanup, llamar `queue.dispose()` antes de `controller.abort()`.
 
 - [ ] **Step 4: Correr typecheck y tests**
 
 Run: `cd opencode-plugin; npm run typecheck; npm test`
 
-Expected: typecheck sin errores y 7 tests pasando.
+Expected: typecheck sin errores y 8 tests pasando.
 
 - [ ] **Step 5: Commit**
 

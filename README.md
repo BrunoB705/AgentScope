@@ -32,6 +32,14 @@ El acceso directo **AgentScope** del escritorio inicia `start.ps1` en segundo pl
 
 Para ejecutar manualmente: `dotnet run --project backend --no-launch-profile --urls http://127.0.0.1:5080` y, en `dashboard`, `npm ci && npm run dev -- --host 127.0.0.1 --port 5173`.
 
+## Pestañas del dashboard
+
+- **Observabilidad:** lista las sesiones con filtros y muestra el detalle del trace, las herramientas, los tokens, los errores y la evaluación manual.
+- **Herramientas:** resume el uso, la duración promedio y los fallos de cada herramienta en el período elegido.
+- **Comportamiento:** es un detector de sesiones que merecen una mirada: no mide “el comportamiento del agente” en abstracto, sino que marca sesiones guardadas cuando encuentra bucles de herramientas, ráfagas de errores, sesiones largas o interrumpidas, con un enlace al detalle.
+- **Modelos:** muestra el consumo de tokens, la eficiencia de caché, el costo reportado por OpenCode y la cuota Go estimada por origen y modelo.
+- **Comparar:** agrupa sesiones por etiqueta de tarea y compara modelo, calificación, costo, duración, tokens y herramientas usadas.
+
 ## Plugin OpenCode
 
 El adaptador usa la API de plugins v2 de OpenCode. El puente de proyecto está en `.opencode/plugins/agent-observability.ts`; para que funcione desde otros directorios, copia `opencode-plugin/src/index.ts` a `~/.config/opencode/plugins/agent-observability.ts`. Al cargarlo en una instancia ya abierta, OpenCode puede recargar el archivo; los eventos anteriores a la carga no se reconstruyen, así que una sesión activa debe generar un evento nuevo para aparecer.

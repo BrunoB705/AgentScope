@@ -70,7 +70,7 @@ function BehaviorPage(props: {
 }) {
   const { data, error, period, setPeriod, onRefresh, onOpenSession } = props;
   return <section className="comparison-page behavior-page">
-    <SectionHeader icon="behavior" eyebrow="DIAGNÓSTICO" title="Comportamiento" description="Sesiones que merecen una mirada." actions={<div className="analytics-actions"><select aria-label="Período de análisis" value={period} onChange={event => setPeriod(event.target.value)}><option value="7">Últimos 7 días</option><option value="30">Últimos 30 días</option><option value="90">Últimos 90 días</option><option value="all">Todo el historial</option></select><button onClick={onRefresh}>Actualizar</button></div>} />
+    <SectionHeader icon="behavior" eyebrow="DIAGNÓSTICO" title="Comportamiento" description="Sesiones que merecen una mirada." actions={<div className="analytics-actions"><select aria-label="Período de análisis" value={period} onChange={event => setPeriod(event.target.value)}><option value="1">Último día</option><option value="7">Últimos 7 días</option><option value="30">Últimos 30 días</option><option value="90">Últimos 90 días</option><option value="all">Todo el historial</option></select><button onClick={onRefresh}>Actualizar</button></div>} />
     {error && <div className="api-error">{error}</div>}
     {!data ? <div className="empty comparison-empty">Cargando comportamiento…</div> : <>
       <div className="analytics-summary"><article><span>Sesiones analizadas</span><b>{data.totals.sessions.toLocaleString()}</b></article><article><span>Sesiones marcadas</span><b>{data.totals.flaggedSessions.toLocaleString()}</b></article><article><span>Señales</span><b>{data.totals.signals.toLocaleString()}</b></article></div>

@@ -341,6 +341,19 @@ public sealed class TelemetryApiTests : IDisposable
         Assert.Contains(sessions, session => session.GetProperty("id").GetString() == "behavior-recent");
     }
 
+    [Fact]
+    public async Task BehaviorFiltersByOneDay()
+    {
+        var old = DateTimeOffset.UtcNow.AddDays(-2);
+        await Post(Fixture("old-day", "behavior-old-day", "session.idle", old) with { Status = "interrupted" });
+        await Post(Fixture("recent-day", "behavior-recent-day", "session.idle") with { Status = "interrupted" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior?days=1"));
+        var sessions = json.RootElement.GetProperty("sessions").EnumerateArray().ToArray();
+        Assert.DoesNotContain(sessions, session => session.GetProperty("id").GetString() == "behavior-old-day");
+        Assert.Contains(sessions, session => session.GetProperty("id").GetString() == "behavior-recent-day");
+    }
+
     private async Task<HttpResponseMessage> Post(TelemetryEventDto dto)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/telemetry/events") { Content = JsonContent.Create(dto) };

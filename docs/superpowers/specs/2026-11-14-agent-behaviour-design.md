@@ -41,7 +41,7 @@ Las tools consecutivas se cuentan sobre los spans de herramienta ordenados por i
 
 ### API
 
-`GET /api/v1/behavior?days=7|30|90` (sin `days`, todo el historial; un valor inválido equivale a todo, igual que la analítica existente).
+`GET /api/v1/behavior?days=1|7|30|90` (sin `days`, todo el historial; un valor inválido equivale a todo, igual que la analítica existente).
 
 Respuesta:
 
@@ -77,7 +77,7 @@ Sólo se devuelven sesiones con al menos una señal. La ventana filtra por `Star
 ### Dashboard
 
 - Nueva pestaña **Comportamiento** entre Herramientas y Modelos.
-- Selector de ventana 7/30/90/todo y botón de actualización.
+- Selector de ventana 1/7/30/90/todo y botón de actualización.
 - Tarjetas de totales: sesiones analizadas, sesiones marcadas, señales.
 - Una tarjeta por sesión marcada con título, proyecto, modelo, estado y sus señales; cada señal muestra título y explicación.
 - Botón **Ver sesión** que cambia a la vista de sesiones y selecciona esa sesión.

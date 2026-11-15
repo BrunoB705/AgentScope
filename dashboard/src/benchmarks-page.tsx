@@ -6,6 +6,7 @@ import {
   quotaPerPassed,
   renderMarkdown,
   summarizeByModel,
+  tokenTotal,
   VARIANTS,
   type BenchmarkRun,
   type BenchmarkSuite,
@@ -188,6 +189,23 @@ export function BenchmarksPage({ version, onOpenSession }: {
     }
   };
 
+  const deleteRun = async (id: string) => {
+    if (!window.confirm('Se eliminan la corrida y sus sesiones vinculadas. Dejarán de contar como uso real. ¿Continuar?')) return;
+    try {
+      const response = await fetch(`/api/v1/benchmarks/runs/${id}`, { method: 'DELETE' });
+      if (!response.ok) {
+        const data = await response.json() as { error?: string };
+        throw new Error(data.error ?? `HTTP ${response.status}`);
+      }
+      setRuns((current) => current.filter((run) => run.id !== id));
+      setRunTotal((current) => Math.max(0, current - 1));
+      if (viewRunId === id) setViewRunId('');
+      setError('');
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'No se pudo eliminar la corrida.');
+    }
+  };
+
   return <section className="model-analytics-page benchmarks-page">
     <div className="model-analytics-header section-header">
       <div className="analytics-title">
@@ -266,6 +284,7 @@ export function BenchmarksPage({ version, onOpenSession }: {
             <div className="benchmark-actions">
               <span className={`benchmark-status ${viewRun.status}`}>{statusLabel(viewRun.status)}</span>
               <span className="benchmark-meta">Suite {viewRun.suite} · juez {viewRun.judgeModel} · {viewRun.completed}/{viewRun.total}</span>
+              {viewRun.status !== 'queued' && viewRun.status !== 'running' && <button className="benchmark-secondary benchmark-danger" onClick={() => void deleteRun(viewRun.id)}>Eliminar corrida</button>}
             </div>
             <div className="benchmark-bar"><i style={{ width: `${viewRun.total ? viewRun.completed / viewRun.total * 100 : 0}%` }} /></div>
             {viewRun.error && <p className="benchmark-warning">{viewRun.error}</p>}
@@ -285,7 +304,7 @@ export function BenchmarksPage({ version, onOpenSession }: {
                 <td>{summary.passed}/{summary.total}</td>
                 <td>{summary.judgeAverage == null ? 'Sin dato' : summary.judgeAverage.toFixed(1)}</td>
                 <td>{formatDuration(summary.durationMs)}</td>
-                <td>{(summary.inputTokens + summary.outputTokens).toLocaleString()}</td>
+                <td title={`Entrada ${summary.inputTokens.toLocaleString()} · Salida ${summary.outputTokens.toLocaleString()} · Razonamiento ${summary.reasoningTokens.toLocaleString()} · Caché leída ${summary.cacheReadTokens.toLocaleString()} · Caché escrita ${summary.cacheWriteTokens.toLocaleString()}`}>{summary.totalTokens.toLocaleString()}</td>
                 <td>{formatMoney(summary.quotaCost)}</td>
                 <td>{formatMoney(quotaPerPassed(summary))}</td>
                 <td>{summary.errors}</td>
@@ -297,7 +316,7 @@ export function BenchmarksPage({ version, onOpenSession }: {
             <summary>Detalle por prueba</summary>
             <div className="benchmark-results-scroll">
               {viewRun.results.map((result) => <div className="benchmark-result-row" key={result.id}>
-                <div><b>{result.testName}</b><small>{result.model}</small></div>
+                <div><b>{result.testName}</b><small>{result.model}</small><small>Entrada {result.inputTokens.toLocaleString()} · Salida {result.outputTokens.toLocaleString()} · Razonamiento {result.reasoningTokens.toLocaleString()} · Caché leída {result.cacheReadTokens.toLocaleString()} · Caché escrita {result.cacheWriteTokens.toLocaleString()} · Total {tokenTotal(result).toLocaleString()}</small></div>
                 <div><span className={`benchmark-status ${result.status}`}>{result.status}</span>{result.verifyPassed != null && <small>{result.verifyPassed ? 'verify OK' : `verify ${result.verifyExitCode}`}</small>}</div>
                 <div>{result.judgeScore == null ? 'Sin nota' : `Juez ${result.judgeScore}/5`}{result.judgeRationale && <small dangerouslySetInnerHTML={{ __html: renderMarkdown(result.judgeRationale) }} />}</div>
                 <div>{result.sessionId && <button className="text-button overview-open" onClick={() => onOpenSession(result.sessionId!)}>Ver trace</button>}

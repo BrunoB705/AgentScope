@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { combinationCount, filterModels, modelSpec, quotaPerPassed, renderMarkdown, summarizeByModel } from './benchmarks.ts';
+import { combinationCount, filterModels, modelSpec, quotaPerPassed, renderMarkdown, summarizeByModel, tokenTotal } from './benchmarks.ts';
 
 const suite = {
   id: 'demo',
@@ -24,6 +24,7 @@ const result = (overrides) => ({
   durationMs: 0,
   inputTokens: 0,
   outputTokens: 0,
+  reasoningTokens: 0,
   cacheReadTokens: 0,
   cacheWriteTokens: 0,
   cost: null,
@@ -62,17 +63,25 @@ test('summarizeByModel promedia notas e ignora nulos', () => {
 
 test('summarizeByModel suma tokens y costo', () => {
   const summary = summarizeByModel([
-    result({ model: 'm1', inputTokens: 10, outputTokens: 5, cost: 0.001, quotaCostEstimate: 0.002, durationMs: 100 }),
-    result({ model: 'm1', testType: 'open', verifyPassed: null, judgeScore: 4, inputTokens: 20, outputTokens: 10, cost: 0.002, quotaCostEstimate: 0.003, durationMs: 200 }),
+    result({ model: 'm1', inputTokens: 10, outputTokens: 5, reasoningTokens: 4, cacheReadTokens: 2, cacheWriteTokens: 1, cost: 0.001, quotaCostEstimate: 0.002, durationMs: 100 }),
+    result({ model: 'm1', testType: 'open', verifyPassed: null, judgeScore: 4, inputTokens: 20, outputTokens: 10, reasoningTokens: 5, cacheReadTokens: 3, cacheWriteTokens: 2, cost: 0.002, quotaCostEstimate: 0.003, durationMs: 200 }),
     result({ model: 'm2', inputTokens: 7, outputTokens: 3, cost: null, quotaCostEstimate: null, durationMs: 50 }),
   ]);
   assert.equal(summary[0].inputTokens, 30);
   assert.equal(summary[0].outputTokens, 15);
+  assert.equal(summary[0].reasoningTokens, 9);
+  assert.equal(summary[0].cacheReadTokens, 5);
+  assert.equal(summary[0].cacheWriteTokens, 3);
+  assert.equal(summary[0].totalTokens, 53);
   assert.equal(summary[0].durationMs, 300);
   assert.equal(summary[0].cost, 0.003);
   assert.equal(summary[0].quotaCost, 0.005);
   assert.equal(summary[1].cost, null);
   assert.equal(summary[1].quotaCost, null);
+});
+
+test('tokenTotal suma entrada, salida y caché sin razonamiento', () => {
+  assert.equal(tokenTotal(result({ inputTokens: 10, outputTokens: 5, reasoningTokens: 4, cacheReadTokens: 2, cacheWriteTokens: 1 })), 18);
 });
 
 test('summarizeByModel cuenta errores', () => {

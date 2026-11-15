@@ -27,6 +27,7 @@ export type BenchmarkResult = {
   durationMs?: number | null;
   inputTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
   cost?: number | null;
@@ -63,6 +64,10 @@ export type ModelSummary = {
   durationMs: number;
   inputTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
   cost: number | null;
   quotaCost: number | null;
   errors: number;
@@ -103,6 +108,10 @@ function isPassed(result: BenchmarkResult): boolean {
   return result.judgeScore != null && result.judgeScore >= 3;
 }
 
+export function tokenTotal(result: BenchmarkResult): number {
+  return result.inputTokens + result.outputTokens + result.cacheReadTokens + result.cacheWriteTokens;
+}
+
 export function summarizeByModel(results: BenchmarkResult[]): ModelSummary[] {
   const groups = new Map<string, BenchmarkResult[]>();
   for (const result of results) {
@@ -132,6 +141,10 @@ export function summarizeByModel(results: BenchmarkResult[]): ModelSummary[] {
         durationMs: items.reduce((sum, item) => sum + (item.durationMs ?? 0), 0),
         inputTokens: items.reduce((sum, item) => sum + item.inputTokens, 0),
         outputTokens: items.reduce((sum, item) => sum + item.outputTokens, 0),
+        reasoningTokens: items.reduce((sum, item) => sum + item.reasoningTokens, 0),
+        cacheReadTokens: items.reduce((sum, item) => sum + item.cacheReadTokens, 0),
+        cacheWriteTokens: items.reduce((sum, item) => sum + item.cacheWriteTokens, 0),
+        totalTokens: items.reduce((sum, item) => sum + tokenTotal(item), 0),
         cost: costs.length ? costs.reduce((sum, cost) => sum + cost, 0) : null,
         quotaCost: quotas.length ? quotas.reduce((sum, quota) => sum + quota, 0) : null,
         errors: items.filter((item) => item.status === 'failed' || item.status === 'timedout' || item.metricsError != null).length,

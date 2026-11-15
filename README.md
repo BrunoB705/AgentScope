@@ -62,7 +62,7 @@ cd dashboard && npm ci && npm run build
 ## API
 
 - `POST /api/v1/telemetry/events` (cabecera `X-Telemetry-Key`)
-- `GET /api/v1/overview?days=7|30|90` (sin `days`, consulta todo el historial)
+- `GET /api/v1/overview?days=1|7|30|90` (sin `days`, consulta todo el historial)
 - `GET /api/v1/sessions?status=&model=&error=&from=&to=&page=&pageSize=`
 - `GET /api/v1/sessions/{id}` y `GET /api/v1/traces/{id}`
 - `GET /api/v1/analytics/tools?days=1|7|30|90` (sin `days`, consulta todo el historial)

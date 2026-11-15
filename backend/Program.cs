@@ -205,7 +205,7 @@ app.MapGet("/api/v1/behavior", async (TelemetryDb db, int? days) => {
     return Results.Ok(new { windowDays, totals = new { sessions = sessions.Count, flaggedSessions = ordered.Length, signals = ordered.Sum(r => r.Signals.Length) }, sessions = ordered });
 });
 app.MapGet("/api/v1/overview", async (TelemetryDb db, int? days) => {
-    var windowDays = days is 7 or 30 or 90 ? days : null;
+    var windowDays = days is 1 or 7 or 30 or 90 ? days : null;
     var cutoff = windowDays.HasValue ? DateTime.UtcNow.AddDays(-windowDays.Value) : (DateTime?)null;
     var sessionsQuery = db.Sessions.AsNoTracking();
     if (cutoff.HasValue) sessionsQuery = sessionsQuery.Where(s => s.StartedAt >= cutoff.Value);

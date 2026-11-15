@@ -219,7 +219,6 @@ export function BenchmarksPage({ version, onOpenSession }: {
             {models.length > 0 ? <div role="group" aria-label="Modelos a comparar">
               <span className="benchmark-meta">Modelos a comparar</span>
               <input className="benchmark-search" type="text" value={modelSearch} onChange={(event) => setModelSearch(event.target.value)} placeholder="Buscar modelo por nombre" />
-              <datalist id="benchmark-variants">{VARIANTS.map((variant) => <option key={variant} value={variant} />)}</datalist>
               <div className="benchmark-models">
                 {visibleModels.length === 0 && <span className="benchmark-empty">Ningún modelo coincide con la búsqueda.</span>}
                 {visibleModels.map((model) => <div className="benchmark-model-row" key={model}>
@@ -227,7 +226,10 @@ export function BenchmarksPage({ version, onOpenSession }: {
                     <input type="checkbox" checked={selectedModels.includes(model)} onChange={() => toggleModel(model)} />
                     <span>{model}</span>
                   </label>
-                  {selectedModels.includes(model) && <input className="benchmark-variant" list="benchmark-variants" value={variants[model] ?? ''} onChange={(event) => setVariants((current) => ({ ...current, [model]: event.target.value }))} placeholder="variante" aria-label={`Variante de ${model}`} />}
+                  {selectedModels.includes(model) && <select className="benchmark-variant" value={variants[model] ?? ''} onChange={(event) => setVariants((current) => ({ ...current, [model]: event.target.value }))} aria-label={`Variante de ${model}`}>
+                    <option value="">Sin variante</option>
+                    {VARIANTS.map((variant) => <option key={variant} value={variant}>{variant}</option>)}
+                  </select>}
                 </div>)}
               </div>
             </div> : <label>Modelos

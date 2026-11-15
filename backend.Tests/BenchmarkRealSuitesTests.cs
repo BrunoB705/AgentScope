@@ -8,6 +8,10 @@ public class BenchmarkRealSuitesTests
 
         Assert.Empty(list.Errors);
         Assert.Contains(list.Suites, suite => suite.Id == "refactor-pequeno");
+
+        var csharpSuite = list.Suites.Single(item => item.Id == "csharp-dotnet");
+        Assert.Equal("opencode-go/minimax-m3", csharpSuite.DefaultJudge);
+        Assert.DoesNotContain(csharpSuite.Tests, test => test.Type == "code" && test.Judge);
     }
 
     private static string FindBenchmarksRoot()

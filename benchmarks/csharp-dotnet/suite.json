@@ -1,0 +1,27 @@
+{
+  "name": "C# y .NET",
+  "description": "Nulabilidad, LINQ sobre secuencias vacías y revisión de async.",
+  "defaultJudge": "opencode-go/minimax-m3",
+  "tests": [
+    {
+      "name": "nullability-descuento",
+      "type": "code",
+      "promptFile": "prompts/nullability-descuento.md",
+      "fixture": "fixtures/nullability-descuento",
+      "verify": { "command": "dotnet run --project tests", "timeoutMs": 180000 }
+    },
+    {
+      "name": "linq-agrupado",
+      "type": "code",
+      "promptFile": "prompts/linq-agrupado.md",
+      "fixture": "fixtures/linq-agrupado",
+      "verify": { "command": "dotnet run --project tests", "timeoutMs": 180000 }
+    },
+    {
+      "name": "revision-async",
+      "type": "open",
+      "promptFile": "prompts/revision-async.md",
+      "rubric": ["Identifica el bloqueo por .Result", "Distingue async void de async Task", "Propone la corrección con await", "Claridad"]
+    }
+  ]
+}

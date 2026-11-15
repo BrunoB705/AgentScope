@@ -216,13 +216,13 @@ internal sealed class BenchmarkExecutor
             };
 
             var modelTitle = $"bench/{run.Id}/{result.Id}";
-            var model = await _processRunner.RunAsync(new ProcessRequest(
+            var openCode = ShellCommand.OpenCode(
                 _options.Value.OpenCodeCommand,
-                new[]
-                {
-                    "run", "--model", result.Model, "--title", modelTitle, "--format", "json", "--auto",
-                    "--file", promptPath, "Seguí las instrucciones del archivo adjunto.",
-                },
+                "run", "--model", result.Model, "--title", modelTitle, "--format", "json", "--auto",
+                "--file", promptPath, "Seguí las instrucciones del archivo adjunto.");
+            var model = await _processRunner.RunAsync(new ProcessRequest(
+                openCode.FileName,
+                openCode.Arguments,
                 workDir,
                 suite.ModelTimeoutMs,
                 environment), cancellationToken);
@@ -273,14 +273,14 @@ internal sealed class BenchmarkExecutor
                 await File.WriteAllTextAsync(judgePath, JudgePrompt.Build(test.Prompt, rubric, artifact), cancellationToken);
 
                 ResetDirectory(judgeDir);
-                var judge = await _processRunner.RunAsync(new ProcessRequest(
+                var judgeCommand = ShellCommand.OpenCode(
                     _options.Value.OpenCodeCommand,
-                    new[]
-                    {
-                        "run", "--model", run.JudgeModel, "--title", $"bench-judge/{run.Id}/{result.Id}",
-                        "--format", "json", "--archived", "--file", judgePath,
-                        "Evaluá el archivo adjunto y respondé sólo JSON.",
-                    },
+                    "run", "--model", run.JudgeModel, "--title", $"bench-judge/{run.Id}/{result.Id}",
+                    "--format", "json", "--archived", "--file", judgePath,
+                    "Evaluá el archivo adjunto y respondé sólo JSON.");
+                var judge = await _processRunner.RunAsync(new ProcessRequest(
+                    judgeCommand.FileName,
+                    judgeCommand.Arguments,
                     judgeDir,
                     _options.Value.JudgeTimeoutMs,
                     environment), cancellationToken);

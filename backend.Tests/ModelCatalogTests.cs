@@ -49,8 +49,16 @@ public sealed class ModelCatalogTests
         fake.Results.Enqueue(new ProcessResult(0, "provider/a\n", "", false, 10));
         await new ModelCatalog(fake).ListAsync();
         var request = Assert.Single(fake.Requests);
-        Assert.Equal("opencode", request.FileName);
-        Assert.Equal(new[] { "models" }, request.Arguments);
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Equal("cmd.exe", request.FileName);
+            Assert.Equal(new[] { "/c", "opencode", "models" }, request.Arguments);
+        }
+        else
+        {
+            Assert.Equal("opencode", request.FileName);
+            Assert.Equal(new[] { "models" }, request.Arguments);
+        }
         Assert.Equal(15000, request.TimeoutMs);
     }
 }

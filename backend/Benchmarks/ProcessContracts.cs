@@ -23,4 +23,14 @@ public static class ShellCommand
         OperatingSystem.IsWindows()
             ? ("cmd.exe", new[] { "/c", command })
             : ("/bin/sh", new[] { "-c", command });
+
+    public static (string FileName, string[] Arguments) OpenCode(string executable, params string[] arguments) =>
+        OperatingSystem.IsWindows()
+            ? ("cmd.exe", new[] { "/c", QuoteForCmd(executable) }.Concat(arguments.Select(QuoteForCmd)).ToArray())
+            : (executable, arguments);
+
+    private static string QuoteForCmd(string value) =>
+        value.Any(char.IsWhiteSpace) || value.Contains('"')
+            ? "\"" + value.Replace("\"", "\"\"") + "\""
+            : value;
 }

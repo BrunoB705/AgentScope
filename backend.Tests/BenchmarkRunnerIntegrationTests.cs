@@ -119,14 +119,15 @@ public sealed class BenchmarkRunnerApiFactory : BenchmarkApiFactory
             return request.Arguments.Contains("diff")
                 ? new ProcessResult(0, "diff de prueba", "", false, 10)
                 : new ProcessResult(0, "", "", false, 10);
-        if (request.FileName is "cmd.exe" or "/bin/sh")
-            return new ProcessResult(0, "", "", false, 10);
         if (request.Arguments.Contains("--archived"))
             return new ProcessResult(0, JsonText("{\"score\":4,\"rationale\":\"ok\"}", "ses_judge"), "", false, 10);
-
-        _modelCalls++;
-        if (_modelCalls == 1 && FailFirstModel) throw new InvalidOperationException("boom");
-        return new ProcessResult(0, JsonText("respuesta", "ses_model"), "", false, 1200);
+        if (IsModel(request))
+        {
+            _modelCalls++;
+            if (_modelCalls == 1 && FailFirstModel) throw new InvalidOperationException("boom");
+            return new ProcessResult(0, JsonText("respuesta", "ses_model"), "", false, 1200);
+        }
+        return new ProcessResult(0, "", "", false, 10);
     }
 
     private static bool IsModel(ProcessRequest request) =>

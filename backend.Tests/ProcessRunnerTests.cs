@@ -57,4 +57,20 @@ public sealed class ProcessRunnerTests
             Assert.Equal(new[] { "-c", "node --test" }, arguments);
         }
     }
+
+    [Fact]
+    public void ShellCommand_OpenCodeUsesCmdAndQuotesSpacesOnWindows()
+    {
+        var (file, arguments) = ShellCommand.OpenCode("opencode", "run", "--file", @"C:\tmp\a b.md");
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Equal("cmd.exe", file);
+            Assert.Equal(new[] { "/c", "opencode", "run", "--file", "\"C:\\tmp\\a b.md\"" }, arguments);
+        }
+        else
+        {
+            Assert.Equal("opencode", file);
+            Assert.Equal(new[] { "run", "--file", @"C:\tmp\a b.md" }, arguments);
+        }
+    }
 }

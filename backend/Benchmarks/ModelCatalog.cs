@@ -15,8 +15,9 @@ public sealed class ModelCatalog
     {
         try
         {
+            var openCode = ShellCommand.OpenCode(_openCodeCommand, "models");
             var result = await _processRunner.RunAsync(
-                new ProcessRequest(_openCodeCommand, new[] { "models" }, Directory.GetCurrentDirectory(), 15000),
+                new ProcessRequest(openCode.FileName, openCode.Arguments, Directory.GetCurrentDirectory(), 15000),
                 cancellationToken);
 
             if (result.TimedOut)

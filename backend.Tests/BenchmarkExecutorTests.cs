@@ -26,7 +26,8 @@ public sealed class BenchmarkExecutorTests : IDisposable
 
     private static bool IsModel(ProcessRequest request) => request.Arguments.Contains("--model") && !IsJudge(request);
 
-    private static bool IsVerify(ProcessRequest request) => request.FileName is "cmd.exe" or "/bin/sh";
+    private static bool IsVerify(ProcessRequest request) =>
+        (request.FileName is "cmd.exe" or "/bin/sh") && !request.Arguments.Contains("--model");
 
     private static ProcessResult DefaultHandler(ProcessRequest request)
     {

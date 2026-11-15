@@ -291,12 +291,23 @@ public sealed class BenchmarkExecutorTests : IDisposable
     {
         if (!OperatingSystem.IsWindows()) return;
         var harness = Create("code");
-        var work = Path.Combine(_root, "work", "benchmark");
+        var work = Path.Combine(_root, "work", harness.RunId, "res1", "benchmark");
         Directory.CreateDirectory(work);
         using var handle = new FileStream(Path.Combine(work, "locked.txt"), FileMode.Create, FileAccess.Write, FileShare.None);
         await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
         Assert.Equal("failed", harness.Db.BenchmarkRuns.Single().Status);
         Assert.DoesNotContain(harness.Process.Requests, IsModel);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_UsesUniqueWorkingDirectories()
+    {
+        var harness = Create("code", results: 2);
+        await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
+        var directories = harness.Process.Requests.Where(IsModel).Select(request => request.WorkingDirectory).ToArray();
+        Assert.Equal(2, directories.Length);
+        Assert.Equal(2, directories.Distinct().Count());
+        Assert.All(directories, directory => Assert.Equal("benchmark", Path.GetFileName(directory)));
     }
 
     private sealed record Harness(

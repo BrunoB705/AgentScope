@@ -39,7 +39,7 @@ internal sealed class BenchmarkExecutor
         if (run is null) return;
 
         var workRoot = _options.Value.WorkingRoot ?? Path.GetTempPath();
-        var promptDir = Path.Combine(workRoot, "prompts");
+        var runRoot = Path.Combine(workRoot, run.Id);
         try
         {
             var suite = _catalog.Load(run.Suite);
@@ -53,7 +53,7 @@ internal sealed class BenchmarkExecutor
             await _db.SaveChangesAsync(cancellationToken);
             await _notifier.UpdatedAsync(run.Id, run.Status, cancellationToken);
 
-            var baseline = await RunBaselineAsync(run, suite, workRoot, cancellationToken);
+            var baseline = await RunBaselineAsync(run, suite, runRoot, cancellationToken);
             if (baseline is null) return;
             run.BaselineJson = baseline;
             await _db.SaveChangesAsync(cancellationToken);
@@ -61,7 +61,7 @@ internal sealed class BenchmarkExecutor
             foreach (var result in results)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                await ExecuteResultAsync(run, result, suite, workRoot, promptDir, cancellationToken);
+                await ExecuteResultAsync(run, result, suite, runRoot, cancellationToken);
                 run.Completed++;
                 await _db.SaveChangesAsync(cancellationToken);
                 await _notifier.UpdatedAsync(run.Id, run.Status, cancellationToken);
@@ -137,23 +137,20 @@ internal sealed class BenchmarkExecutor
         }
         finally
         {
-            Cleanup(promptDir);
-            Cleanup(Path.Combine(workRoot, "benchmark-baseline"));
-            Cleanup(Path.Combine(workRoot, "benchmark"));
-            Cleanup(Path.Combine(workRoot, "benchmark-judge"));
+            Cleanup(runRoot);
         }
     }
 
     private async Task<string?> RunBaselineAsync(
         BenchmarkRunEntity run,
         BenchmarkSuite suite,
-        string workRoot,
+        string runRoot,
         CancellationToken cancellationToken)
     {
         var records = new List<object>();
         foreach (var test in suite.Tests.Where(item => item.Type == "code"))
         {
-            var directory = Path.Combine(workRoot, "benchmark-baseline");
+            var directory = Path.Combine(runRoot, "baseline");
             try
             {
                 ResetDirectory(directory);
@@ -205,8 +202,7 @@ internal sealed class BenchmarkExecutor
         BenchmarkRunEntity run,
         BenchmarkResultEntity result,
         BenchmarkSuite suite,
-        string workRoot,
-        string promptDir,
+        string runRoot,
         CancellationToken cancellationToken)
     {
         var test = suite.Tests.FirstOrDefault(item => item.Name == result.TestName);
@@ -222,8 +218,9 @@ internal sealed class BenchmarkExecutor
         result.StartedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync(cancellationToken);
 
-        var workDir = Path.Combine(workRoot, "benchmark");
-        var judgeDir = Path.Combine(workRoot, "benchmark-judge");
+        var workDir = Path.Combine(runRoot, result.Id, "benchmark");
+        var judgeDir = Path.Combine(runRoot, result.Id, "benchmark-judge");
+        var promptDir = Path.Combine(runRoot, result.Id, "prompts");
         Directory.CreateDirectory(promptDir);
         try
         {
@@ -371,8 +368,7 @@ internal sealed class BenchmarkExecutor
         }
         finally
         {
-            Cleanup(workDir);
-            Cleanup(judgeDir);
+            Cleanup(Path.Combine(runRoot, result.Id));
         }
     }
 

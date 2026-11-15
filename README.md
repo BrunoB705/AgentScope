@@ -40,6 +40,7 @@ Para ejecutar manualmente: `dotnet run --project backend --no-launch-profile --u
 - **Comportamiento:** es un detector de sesiones que merecen una mirada: no mide “el comportamiento del agente” en abstracto, sino que marca sesiones guardadas cuando encuentra bucles de herramientas, ráfagas de errores, sesiones largas o interrumpidas, con un enlace al detalle.
 - **Modelos:** muestra el consumo de tokens, la eficiencia de caché, el costo reportado por OpenCode y la cuota Go estimada por origen y modelo.
 - **Comparar:** agrupa sesiones por etiqueta de tarea y compara modelo, calificación, costo, duración, tokens y herramientas usadas.
+- **Pruebas:** corre una suite contra varios modelos, con verificación automática o un juez aparte, y compara tiempo, tokens, costo y corrección.
 
 ## Plugin OpenCode
 
@@ -53,12 +54,23 @@ El detalle distingue el costo reportado por OpenCode de la cuota Go estimada. La
 
 El waterfall usa las duraciones reportadas por OpenCode; los spans sin duración se muestran como marcadores y no se infieren tiempos.
 
+## Pruebas de modelos
+
+La pestaña **Pruebas** ejecuta una suite definida en `benchmarks/` contra los modelos que elijas. Cada prueba es de dos tipos:
+
+- `code`: copia un fixture a un directorio temporal, pide al modelo que lo modifique y ejecuta `verify` para obtener pass/fail.
+- `open`: no tiene repositorio; un juez aparte evalúa la respuesta con la rúbrica de la prueba.
+
+El juez se elige por separado y no puede ser uno de los modelos evaluados. Corre a ciegas, con `--archived`, y devuelve una nota de 1 a 5 con una justificación breve. Las respuestas de los modelos no se guardan: sólo métricas, pass/fail, nota y justificación.
+
+Las corridas usan la telemetría existente para tokens y costo, y quedan como sesiones normales con proyecto `benchmark` o `benchmark-judge`. El costo de las pruebas se cuenta como uso real. La contención es best-effort: el proceso corre con tu usuario y `--auto`, sin sandbox, así que no ejecutes pruebas que no confíes. Docker no incluye `opencode`, así que la pestaña no está disponible en ese despliegue.
+
 ## Validación
 
 ```sh
 dotnet test backend.Tests/AgentObservability.Api.Tests.csproj
 cd opencode-plugin && npm ci && npm run typecheck && npm test
-cd dashboard && npm ci && npm run build
+cd dashboard && npm ci && npm test && npm run build
 ```
 
 ## API
@@ -69,6 +81,9 @@ cd dashboard && npm ci && npm run build
 - `GET /api/v1/sessions/{id}` y `GET /api/v1/traces/{id}`
 - `GET /api/v1/analytics/tools?days=1|7|30|90` (sin `days`, consulta todo el historial)
 - `GET /api/v1/analytics/models?from=&to=&source=&model=&bucket=day|week|month`
-- SignalR `/hubs/telemetry`, evento `telemetry.updated`
+- `GET /api/v1/benchmarks/suites` y `GET /api/v1/benchmarks/models`
+- `POST /api/v1/benchmarks/runs`, `GET /api/v1/benchmarks/runs?suite=` y `GET /api/v1/benchmarks/runs/{id}`
+- `POST /api/v1/benchmarks/runs/{id}/cancel`
+- SignalR `/hubs/telemetry`, eventos `telemetry.updated` y `benchmark.updated`
 
 La deduplicación usa `source + eventId`. Las vistas permiten inspeccionar spans de modelo/herramienta y eventos no correlacionados. La política de atributos usa lista de exclusión para claves sensibles.

@@ -27,7 +27,7 @@ public sealed class BenchmarkCatalog
             if (!File.Exists(Path.Combine(directory, "suite.json"))) continue;
             try
             {
-                suites.Add(ToSummary(Load(id)));
+                suites.Add(ToSummary(Load(id, readPrompt: false)));
             }
             catch (BenchmarkValidationException ex)
             {
@@ -41,7 +41,9 @@ public sealed class BenchmarkCatalog
         return new(suites.ToArray(), errors.ToArray());
     }
 
-    public BenchmarkSuite Load(string id)
+    public BenchmarkSuite Load(string id) => Load(id, readPrompt: true);
+
+    private BenchmarkSuite Load(string id, bool readPrompt)
     {
         if (string.IsNullOrWhiteSpace(id) || id.Length > 60 || !IdPattern.IsMatch(id))
             throw new BenchmarkValidationException($"La suite '{id}' tiene un id inválido.");
@@ -98,7 +100,7 @@ public sealed class BenchmarkCatalog
             var promptPath = ResolveInside(directory, test.PromptFile, testName);
             if (!File.Exists(promptPath))
                 throw new BenchmarkValidationException($"La prueba '{testName}' apunta a un prompt que no existe.");
-            var prompt = File.ReadAllText(promptPath);
+            var prompt = readPrompt ? File.ReadAllText(promptPath) : "";
 
             if (type == "open")
             {

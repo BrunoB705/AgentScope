@@ -14,12 +14,15 @@ export type BenchmarkSuite = {
   tests: BenchmarkTest[];
 };
 
+export type BenchmarkRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type BenchmarkResultStatus = 'pending' | 'running' | 'completed' | 'failed' | 'timedout' | 'cancelled';
+
 export type BenchmarkResult = {
   id: string;
   testName: string;
   testType: 'code' | 'open';
   model: string;
-  status: string;
+  status: BenchmarkResultStatus;
   verifyPassed?: boolean | null;
   verifyExitCode?: number | null;
   sessionId?: string | null;
@@ -42,7 +45,7 @@ export type BenchmarkRun = {
   id: string;
   suite: string;
   judgeModel: string;
-  status: string;
+  status: BenchmarkRunStatus;
   total: number;
   completed: number;
   createdAt: string;

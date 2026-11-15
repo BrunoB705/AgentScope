@@ -108,6 +108,21 @@ public sealed class BenchmarkCatalogTests : IDisposable
     }
 
     [Fact]
+    public void List_DoesNotReadPromptContents()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        WriteValidSuite();
+        using var handle = new FileStream(
+            Path.Combine(_root, "demo", "prompts", "code.md"),
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.None);
+        var result = Catalog().List();
+        Assert.Single(result.Suites);
+        Assert.Empty(result.Errors);
+    }
+
+    [Fact]
     public void Load_RejectsUnknownType()
     {
         WriteSuite("bad", ValidSuite.Replace("\"code\"", "\"weird\""));

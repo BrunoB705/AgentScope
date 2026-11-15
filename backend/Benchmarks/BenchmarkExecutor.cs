@@ -276,9 +276,7 @@ internal sealed class BenchmarkExecutor
                 var diffResult = await _processRunner.RunAsync(
                     new ProcessRequest("git", new[] { "diff", "--cached" }, workDir, 30000),
                     cancellationToken);
-                diff = diffResult.StandardOutput.Length > 40000
-                    ? diffResult.StandardOutput[..40000]
-                    : diffResult.StandardOutput;
+                diff = Truncate(diffResult.StandardOutput, 40000);
 
                 var shell = ShellCommand.For(test.VerifyCommand!);
                 var verify = await _processRunner.RunAsync(
@@ -331,7 +329,7 @@ internal sealed class BenchmarkExecutor
                     else
                     {
                         result.JudgeScore = score.Score;
-                        result.JudgeRationale = score.Rationale.Length > 500 ? score.Rationale[..500] : score.Rationale;
+                        result.JudgeRationale = Truncate(score.Rationale, 500);
                     }
                 }
             }
@@ -410,7 +408,7 @@ internal sealed class BenchmarkExecutor
 
             var text = OpenCodeOutput.ExtractFinalText(verdict.StandardOutput);
             if (!string.IsNullOrWhiteSpace(text))
-                run.Verdict = text.Length > 1000 ? text[..1000] : text;
+                run.Verdict = Truncate(text, 1000);
         }
         catch (OperationCanceledException)
         {
@@ -491,9 +489,18 @@ internal sealed class BenchmarkExecutor
         foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
         {
             var relative = Path.GetRelativePath(source, file);
+            if (relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Contains(".git")) continue;
             var target = Path.Combine(destination, relative);
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             File.Copy(file, target, overwrite: true);
         }
+    }
+
+    internal static string Truncate(string value, int max)
+    {
+        if (max <= 0) return "";
+        if (value.Length <= max) return value;
+        var cut = value[..max];
+        return char.IsHighSurrogate(cut[^1]) ? cut[..^1] : cut;
     }
 }

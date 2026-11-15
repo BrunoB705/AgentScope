@@ -319,7 +319,31 @@ public class BenchmarkApiFactory : WebApplicationFactory<Program>
     protected override void Dispose(bool disposing)
     {
         base.Dispose(disposing);
-        if (disposing && File.Exists(_database)) File.Delete(_database);
-        if (disposing && Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+        if (!disposing) return;
+        try
+        {
+            if (File.Exists(_database)) File.Delete(_database);
+        }
+        catch (IOException)
+        {
+            // La limpieza del test es best-effort.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // La limpieza del test es best-effort.
+        }
+
+        try
+        {
+            if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+        }
+        catch (IOException)
+        {
+            // La limpieza del test es best-effort.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // La limpieza del test es best-effort.
+        }
     }
 }

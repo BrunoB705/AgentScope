@@ -1,8 +1,11 @@
 import React from 'react';
 import {
   combinationCount,
-  costPerPassed,
+  filterModels,
+  modelSpec,
+  quotaPerPassed,
   summarizeByModel,
+  VARIANTS,
   type BenchmarkRun,
   type BenchmarkSuite,
 } from './benchmarks';
@@ -10,13 +13,14 @@ import {
 type CatalogError = { id: string; error: string };
 type SuiteResponse = { suites: BenchmarkSuite[]; errors: CatalogError[] };
 type ModelsResponse = { models: string[]; error?: string | null };
+type RunPage = { items: BenchmarkRun[]; total: number; page: number; pageSize: number };
 
 const formatDuration = (milliseconds?: number | null) => {
   if (milliseconds == null) return 'Sin dato';
   return milliseconds < 1000 ? `${Math.round(milliseconds)} ms` : `${(milliseconds / 1000).toFixed(1)} s`;
 };
 
-const formatMoney = (value?: number | null) => value == null ? 'Sin dato' : `US$ ${value.toFixed(6)}`;
+const formatMoney = (value?: number | null) => value == null ? 'Sin dato' : `US$ ${value.toFixed(8)}`;
 
 const statusLabel = (status: string) => status === 'completed' ? 'completada' : status;
 
@@ -29,10 +33,15 @@ export function BenchmarksPage({ version, onOpenSession }: {
   const [models, setModels] = React.useState<string[]>([]);
   const [modelError, setModelError] = React.useState('');
   const [runs, setRuns] = React.useState<BenchmarkRun[]>([]);
+  const [runTotal, setRunTotal] = React.useState(0);
+  const [runPage, setRunPage] = React.useState(1);
   const [suiteId, setSuiteId] = React.useState('');
   const [selectedModels, setSelectedModels] = React.useState<string[]>([]);
+  const [variants, setVariants] = React.useState<Record<string, string>>({});
+  const [modelSearch, setModelSearch] = React.useState('');
   const [judge, setJudge] = React.useState('');
   const [manualModels, setManualModels] = React.useState('');
+  const [requestVerdict, setRequestVerdict] = React.useState(true);
   const [viewRunId, setViewRunId] = React.useState('');
   const [error, setError] = React.useState('');
   const [creating, setCreating] = React.useState(false);
@@ -42,24 +51,40 @@ export function BenchmarksPage({ version, onOpenSession }: {
       const [suiteResponse, modelResponse, runResponse] = await Promise.all([
         fetch('/api/v1/benchmarks/suites'),
         fetch('/api/v1/benchmarks/models'),
-        fetch('/api/v1/benchmarks/runs'),
+        fetch('/api/v1/benchmarks/runs?page=1&pageSize=20'),
       ]);
       if (!suiteResponse.ok) throw new Error(`Suites: HTTP ${suiteResponse.status}`);
       if (!modelResponse.ok) throw new Error(`Modelos: HTTP ${modelResponse.status}`);
       if (!runResponse.ok) throw new Error(`Corridas: HTTP ${runResponse.status}`);
       const suiteData = await suiteResponse.json() as SuiteResponse;
       const modelData = await modelResponse.json() as ModelsResponse;
-      const runData = await runResponse.json() as BenchmarkRun[];
+      const runData = await runResponse.json() as RunPage;
       setSuites(suiteData.suites);
       setCatalogErrors(suiteData.errors);
       setModels(modelData.models);
       setModelError(modelData.error ?? '');
-      setRuns(runData);
+      setRuns(runData.items);
+      setRunTotal(runData.total);
+      setRunPage(1);
       setError('');
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'No se pudieron cargar las pruebas.');
     }
   }, []);
+
+  const loadMore = async () => {
+    try {
+      const next = runPage + 1;
+      const response = await fetch(`/api/v1/benchmarks/runs?page=${next}&pageSize=20`);
+      if (!response.ok) throw new Error(`Corridas: HTTP ${response.status}`);
+      const data = await response.json() as RunPage;
+      setRuns((current) => [...current, ...data.items.filter((item) => !current.some((existing) => existing.id === item.id))]);
+      setRunTotal(data.total);
+      setRunPage(next);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'No se pudo cargar más historial.');
+    }
+  };
 
   const refreshRun = React.useCallback(async (id: string) => {
     try {
@@ -99,8 +124,11 @@ export function BenchmarksPage({ version, onOpenSession }: {
   }, [activeRun?.id, activeRun?.status, refreshRun]);
 
   const manualList = manualModels.split(/[,\s]+/).map((item) => item.trim()).filter(Boolean);
-  const chosenModels = models.length > 0 ? selectedModels : manualList;
+  const chosenModels = models.length > 0
+    ? selectedModels.map((model) => modelSpec(model, variants[model]))
+    : manualList;
   const total = suite ? combinationCount(suite, chosenModels) : 0;
+  const visibleModels = filterModels(models, modelSearch);
   const judgeOptions = models.filter((model) => !selectedModels.includes(model));
   if (judge && !judgeOptions.includes(judge)) judgeOptions.unshift(judge);
   const baselineWarnings = React.useMemo(() => {
@@ -124,18 +152,20 @@ export function BenchmarksPage({ version, onOpenSession }: {
       setError('Elegí una suite, al menos un modelo y un juez.');
       return;
     }
-    if (!window.confirm(`Se van a ejecutar ${total} combinaciones. Esto consume cuota real de los modelos. ¿Continuar?`)) return;
+    const verdictNote = requestVerdict ? ' + 1 recomendación final' : '';
+    if (!window.confirm(`Se van a ejecutar ${total} combinaciones${verdictNote}. Esto consume cuota real de los modelos. ¿Continuar?`)) return;
     setCreating(true);
     setError('');
     try {
       const response = await fetch('/api/v1/benchmarks/runs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ suite: suite.id, models: chosenModels, judge }),
+        body: JSON.stringify({ suite: suite.id, models: chosenModels, judge, requestVerdict }),
       });
       const data = await response.json() as BenchmarkRun & { error?: string };
       if (!response.ok) throw new Error(data.error ?? `HTTP ${response.status}`);
       setRuns((current) => [data, ...current]);
+      setRunTotal((current) => current + 1);
       setViewRunId(data.id);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'No se pudo iniciar la corrida.');
@@ -188,11 +218,17 @@ export function BenchmarksPage({ version, onOpenSession }: {
 
             {models.length > 0 ? <div role="group" aria-label="Modelos a comparar">
               <span className="benchmark-meta">Modelos a comparar</span>
+              <input className="benchmark-search" type="text" value={modelSearch} onChange={(event) => setModelSearch(event.target.value)} placeholder="Buscar modelo por nombre" />
+              <datalist id="benchmark-variants">{VARIANTS.map((variant) => <option key={variant} value={variant} />)}</datalist>
               <div className="benchmark-models">
-                {models.map((model) => <label key={model}>
-                  <input type="checkbox" checked={selectedModels.includes(model)} onChange={() => toggleModel(model)} />
-                  {model}
-                </label>)}
+                {visibleModels.length === 0 && <span className="benchmark-empty">Ningún modelo coincide con la búsqueda.</span>}
+                {visibleModels.map((model) => <div className="benchmark-model-row" key={model}>
+                  <label>
+                    <input type="checkbox" checked={selectedModels.includes(model)} onChange={() => toggleModel(model)} />
+                    <span>{model}</span>
+                  </label>
+                  {selectedModels.includes(model) && <input className="benchmark-variant" list="benchmark-variants" value={variants[model] ?? ''} onChange={(event) => setVariants((current) => ({ ...current, [model]: event.target.value }))} placeholder="variante" aria-label={`Variante de ${model}`} />}
+                </div>)}
               </div>
             </div> : <label>Modelos
               <input type="text" value={manualModels} onChange={(event) => setManualModels(event.target.value)} placeholder="proveedor/modelo, proveedor/otro" />
@@ -206,7 +242,12 @@ export function BenchmarksPage({ version, onOpenSession }: {
               </select> : <input type="text" value={judge} onChange={(event) => setJudge(event.target.value)} placeholder="proveedor/modelo" />}
             </label>
 
-            <p className="benchmark-meta">{total} combinaciones</p>
+            <label className="check-filter benchmark-verdict-toggle">
+              <input type="checkbox" checked={requestVerdict} onChange={(event) => setRequestVerdict(event.target.checked)} />
+              Pedir recomendación final (+1 juicio)
+            </label>
+
+            <p className="benchmark-meta">{total} combinaciones{requestVerdict ? ' + 1 recomendación final' : ''}</p>
             <div className="benchmark-actions">
               <button disabled={creating || total === 0 || !judge} onClick={() => void start()}>{creating ? 'Iniciando…' : 'Correr'}</button>
               {activeRun && <button className="benchmark-secondary" onClick={() => void cancel(activeRun.id)}>Cancelar corrida</button>}
@@ -228,17 +269,22 @@ export function BenchmarksPage({ version, onOpenSession }: {
             {baselineWarnings.length > 0 && <p className="benchmark-warning">Línea base: {baselineWarnings.map((item) => item.test).join(', ')} ya pasa sobre el fixture limpio; la prueba no distingue.</p>}
           </div>
 
+          {viewRun.verdict && <div className="benchmark-verdict">
+            <h4>Recomendación del juez</h4>
+            <p>{viewRun.verdict}</p>
+          </div>}
+
           <div className="table-wrap benchmark-table-wrap">
             <table className="benchmark-results">
-              <thead><tr><th>MODELO</th><th>APROBADAS</th><th>NOTA</th><th>DURACIÓN</th><th>TOKENS</th><th>COSTO</th><th>COSTO/APROBADA</th><th>ERRORES</th></tr></thead>
+              <thead><tr><th>MODELO</th><th>APROBADAS</th><th>NOTA</th><th>DURACIÓN</th><th>TOKENS</th><th>CUOTA GO</th><th>CUOTA/APROBADA</th><th>ERRORES</th></tr></thead>
               <tbody>{summarizeByModel(viewRun.results).map((summary) => <tr key={summary.model}>
                 <td><b>{summary.model}</b></td>
                 <td>{summary.passed}/{summary.total}</td>
                 <td>{summary.judgeAverage == null ? 'Sin dato' : summary.judgeAverage.toFixed(1)}</td>
                 <td>{formatDuration(summary.durationMs)}</td>
                 <td>{(summary.inputTokens + summary.outputTokens).toLocaleString()}</td>
-                <td>{formatMoney(summary.cost)}</td>
-                <td>{formatMoney(costPerPassed(summary))}</td>
+                <td>{formatMoney(summary.quotaCost)}</td>
+                <td>{formatMoney(quotaPerPassed(summary))}</td>
                 <td>{summary.errors}</td>
               </tr>)}</tbody>
             </table>
@@ -246,15 +292,18 @@ export function BenchmarksPage({ version, onOpenSession }: {
 
           <details className="benchmark-details">
             <summary>Detalle por prueba</summary>
-            {viewRun.results.map((result) => <div className="benchmark-result-row" key={result.id}>
-              <div><b>{result.testName}</b><small>{result.model}</small></div>
-              <div><span className={`benchmark-status ${result.status}`}>{result.status}</span>{result.verifyPassed != null && <small>{result.verifyPassed ? 'verify OK' : `verify ${result.verifyExitCode}`}</small>}</div>
-              <div>{result.judgeScore == null ? 'Sin nota' : `Juez ${result.judgeScore}/5`}{result.judgeRationale && <small>{result.judgeRationale}</small>}</div>
-              <div>{result.sessionId && <button className="text-button overview-open" onClick={() => onOpenSession(result.sessionId!)}>Ver trace</button>}
-                {result.metricsError && <small>{result.metricsError}</small>}
-                {result.error && <small>{result.error}</small>}
-              </div>
-            </div>)}
+            <div className="benchmark-results-scroll">
+              {viewRun.results.map((result) => <div className="benchmark-result-row" key={result.id}>
+                <div><b>{result.testName}</b><small>{result.model}</small></div>
+                <div><span className={`benchmark-status ${result.status}`}>{result.status}</span>{result.verifyPassed != null && <small>{result.verifyPassed ? 'verify OK' : `verify ${result.verifyExitCode}`}</small>}</div>
+                <div>{result.judgeScore == null ? 'Sin nota' : `Juez ${result.judgeScore}/5`}{result.judgeRationale && <small>{result.judgeRationale}</small>}</div>
+                <div>{result.sessionId && <button className="text-button overview-open" onClick={() => onOpenSession(result.sessionId!)}>Ver trace</button>}
+                  <small>Cuota Go: {formatMoney(result.quotaCostEstimate)} · Reportado: {formatMoney(result.cost)}</small>
+                  {result.metricsError && <small>{result.metricsError}</small>}
+                  {result.error && <small>{result.error}</small>}
+                </div>
+              </div>)}
+            </div>
           </details>
 
           <div className="benchmark-history">
@@ -263,6 +312,7 @@ export function BenchmarksPage({ version, onOpenSession }: {
               <b>{run.suite}</b>
               <small>{new Date(run.createdAt).toLocaleString()} · {run.completed}/{run.total} · {run.status}</small>
             </button>)}
+            {runs.length < runTotal && <button className="benchmark-more" onClick={() => void loadMore()}>Cargar más</button>}
           </div>
         </>}
       </article>

@@ -244,3 +244,14 @@ main{max-width:1880px;padding-left:3.5vw;padding-right:3.5vw}
 .benchmark-form code,.benchmark-warning code{font-family:'DM Mono',monospace}
 @media(max-width:900px){.benchmark-layout{grid-template-columns:1fr}}
 @media(max-width:540px){.benchmark-results{min-width:640px}.benchmark-result-row{grid-template-columns:1fr 1fr}}
+.benchmark-search{width:100%;padding:8px 10px;border:1px solid #29303a;border-radius:6px;background:#0c0f13;color:#dce0e7;font:12px 'DM Sans',sans-serif;margin-bottom:6px}
+.benchmark-model-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.benchmark-model-row label{display:flex;align-items:center;gap:8px;min-width:0;color:#c8ced8;font-size:12px}
+.benchmark-model-row label span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.benchmark-variant{flex:none;width:86px;padding:4px 6px;border:1px solid #29303a;border-radius:5px;background:#0c0f13;color:#dce0e7;font:10px 'DM Mono',monospace}
+.benchmark-verdict-toggle{margin:0;color:#858d9b;font-size:12px}
+.benchmark-results-scroll{max-height:340px;overflow-y:auto;overscroll-behavior:contain}
+.benchmark-verdict{margin:0 0 14px;padding:12px 14px;border:1px solid #315244;border-radius:8px;background:#111a16}
+.benchmark-verdict h4{margin:0 0 6px;font-size:12px;color:#a9ddc1}
+.benchmark-verdict p{margin:0;color:#c8d8cf;font-size:12px;line-height:1.6;white-space:pre-wrap}
+.benchmark-more{width:100%;padding:8px;border:1px dashed #315244;border-radius:6px;background:transparent;color:#a9ddc1;cursor:pointer;font:12px 'DM Sans',sans-serif}

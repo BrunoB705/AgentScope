@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { combinationCount, costPerPassed, summarizeByModel } from './benchmarks.ts';
+import { combinationCount, filterModels, modelSpec, quotaPerPassed, summarizeByModel } from './benchmarks.ts';
 
 const suite = {
   id: 'demo',
@@ -27,6 +27,7 @@ const result = (overrides) => ({
   cacheReadTokens: 0,
   cacheWriteTokens: 0,
   cost: null,
+  quotaCostEstimate: null,
   ...overrides,
 });
 
@@ -61,15 +62,17 @@ test('summarizeByModel promedia notas e ignora nulos', () => {
 
 test('summarizeByModel suma tokens y costo', () => {
   const summary = summarizeByModel([
-    result({ model: 'm1', inputTokens: 10, outputTokens: 5, cost: 0.001, durationMs: 100 }),
-    result({ model: 'm1', testType: 'open', verifyPassed: null, judgeScore: 4, inputTokens: 20, outputTokens: 10, cost: 0.002, durationMs: 200 }),
-    result({ model: 'm2', inputTokens: 7, outputTokens: 3, cost: null, durationMs: 50 }),
+    result({ model: 'm1', inputTokens: 10, outputTokens: 5, cost: 0.001, quotaCostEstimate: 0.002, durationMs: 100 }),
+    result({ model: 'm1', testType: 'open', verifyPassed: null, judgeScore: 4, inputTokens: 20, outputTokens: 10, cost: 0.002, quotaCostEstimate: 0.003, durationMs: 200 }),
+    result({ model: 'm2', inputTokens: 7, outputTokens: 3, cost: null, quotaCostEstimate: null, durationMs: 50 }),
   ]);
   assert.equal(summary[0].inputTokens, 30);
   assert.equal(summary[0].outputTokens, 15);
   assert.equal(summary[0].durationMs, 300);
   assert.equal(summary[0].cost, 0.003);
+  assert.equal(summary[0].quotaCost, 0.005);
   assert.equal(summary[1].cost, null);
+  assert.equal(summary[1].quotaCost, null);
 });
 
 test('summarizeByModel cuenta errores', () => {
@@ -82,13 +85,24 @@ test('summarizeByModel cuenta errores', () => {
   assert.equal(summary[0].errors, 3);
 });
 
-test('costPerPassed devuelve null sin aprobadas', () => {
-  assert.equal(costPerPassed({ model: 'm1', total: 2, passed: 0, failed: 2, judgeAverage: null, durationMs: 0, inputTokens: 0, outputTokens: 0, cost: 0.004, errors: 0 }), null);
-  assert.equal(costPerPassed({ model: 'm1', total: 2, passed: 2, failed: 0, judgeAverage: null, durationMs: 0, inputTokens: 0, outputTokens: 0, cost: null, errors: 0 }), null);
+test('quotaPerPassed devuelve null sin aprobadas', () => {
+  assert.equal(quotaPerPassed({ model: 'm1', total: 2, passed: 0, failed: 2, judgeAverage: null, durationMs: 0, inputTokens: 0, outputTokens: 0, cost: null, quotaCost: 0.004, errors: 0 }), null);
+  assert.equal(quotaPerPassed({ model: 'm1', total: 2, passed: 2, failed: 0, judgeAverage: null, durationMs: 0, inputTokens: 0, outputTokens: 0, cost: 0.004, quotaCost: null, errors: 0 }), null);
 });
 
-test('costPerPassed divide costo por aprobadas', () => {
-  assert.equal(costPerPassed({ model: 'm1', total: 2, passed: 2, failed: 0, judgeAverage: null, durationMs: 0, inputTokens: 0, outputTokens: 0, cost: 0.004, errors: 0 }), 0.002);
+test('quotaPerPassed divide la cuota Go por aprobadas', () => {
+  assert.equal(quotaPerPassed({ model: 'm1', total: 2, passed: 2, failed: 0, judgeAverage: null, durationMs: 0, inputTokens: 0, outputTokens: 0, cost: null, quotaCost: 0.004, errors: 0 }), 0.002);
+});
+
+test('filterModels busca por nombre sin distinguir mayúsculas', () => {
+  assert.deepEqual(filterModels(['opencode-go/a', 'opencode-go/b', 'nvidia/c'], 'GO/B'), ['opencode-go/b']);
+  assert.deepEqual(filterModels(['a', 'b'], ''), ['a', 'b']);
+});
+
+test('modelSpec agrega la variante solo si existe', () => {
+  assert.equal(modelSpec('provider/model'), 'provider/model');
+  assert.equal(modelSpec('provider/model', 'high'), 'provider/model#high');
+  assert.equal(modelSpec('provider/model', '  '), 'provider/model');
 });
 
 test('summarizeByModel con lista vacía devuelve []', () => {

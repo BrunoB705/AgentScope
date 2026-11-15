@@ -60,6 +60,13 @@ main{max-width:1880px;padding-left:3.5vw;padding-right:3.5vw}
 @media(max-width:1280px){.layout{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:540px){.timeline{max-height:55vh;padding:0 16px}.tool-list{padding-left:16px;padding-right:16px}}
 
+/* La lista de sesiones scrollea dentro de su panel, como el trace. */
+.sessions-table{max-height:min(58vh,680px);overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.sessions-table thead th{position:sticky;top:0;z-index:1;background:#11141a;border-bottom:1px solid #3a414c}
+.sessions-table:focus-visible{outline:1px solid #315244;outline-offset:2px}
+.layout{align-items:start}
+@media(max-width:540px){.sessions-table{max-height:55vh}}
+
 .budgets-panel{margin:0 0 20px;background:#11141a;border:1px solid #222731;border-radius:9px}
 .budgets-panel summary{cursor:pointer;padding:17px 20px;font-size:14px;font-weight:600;list-style-position:inside}
 .budgets-panel summary span{float:right;color:#858d9b;font:12px 'DM Mono',monospace}

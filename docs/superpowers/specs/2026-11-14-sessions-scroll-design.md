@@ -75,3 +75,22 @@ El trace ya resolvió el mismo problema con scroll propio y techo de altura
 Build del dashboard más revisión visual del usuario en la pestaña de
 Observabilidad. El dashboard no tiene suite de tests, así que la verificación
 visual es el control del comportamiento.
+
+## Correcciones posteriores al review
+
+- **Altura del documento.** El criterio "con 5 o con 100 sesiones, la altura del
+  documento es la misma" no se cumple sin sesión seleccionada: ahí el panel de
+  detalle mide 429 px y la altura la termina definiendo el panel izquierdo, que
+  se encoje con pocas filas. Medido: 1446 px con 100 filas y 1201 px con 4, sin
+  trace cargado. Ese criterio literal contradice el de "sin hueco vacío con
+  pocas filas": solo se cumple fijando el alto de la lista, que es justo lo que
+  el otro criterio prohíbe. Se mantiene `max-height`; la diferencia queda
+  acotada por el techo de la lista y no crece con la cantidad de sesiones. Con
+  un trace cargado la altura sí es idéntica (medido: 2198 px con 4 y con 100
+  filas).
+- **Anillo de foco.** Se dibuja hacia adentro (`outline-offset:-3px`) porque
+  `.panel` recorta con `overflow:hidden` todo lo que sale de su caja; con
+  `offset:2px` los costados quedaban invisibles.
+- **Suite.** El dashboard sí tiene runner: `npm test` corre 8 tests de
+  `src/trace.test.mjs`. Cubre lógica pura de `trace.ts`, no DOM ni CSS.
+

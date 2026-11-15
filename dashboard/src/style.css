@@ -63,7 +63,7 @@ main{max-width:1880px;padding-left:3.5vw;padding-right:3.5vw}
 /* La lista de sesiones scrollea dentro de su panel, como el trace. */
 .sessions-table{max-height:min(58vh,680px);overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
 .sessions-table thead th{position:sticky;top:0;z-index:1;background:#11141a;border-bottom:1px solid #3a414c}
-.sessions-table:focus-visible{outline:1px solid #315244;outline-offset:2px}
+.sessions-table:focus-visible{outline:1px solid #315244;outline-offset:-3px}
 .layout{align-items:start}
 @media(max-width:540px){.sessions-table{max-height:55vh}}
 

@@ -83,7 +83,7 @@ public sealed class BenchmarkExecutorTests : IDisposable
         File.WriteAllText(Path.Combine(suite, "fixtures", "app", "app.txt"), "app");
     }
 
-    private Harness Create(string type = "code", bool judge = false, int results = 1)
+    private Harness Create(string type = "code", bool judge = false, int results = 1, bool verdict = false)
     {
         WriteSuite(type, judge);
         var db = new TelemetryDb(new DbContextOptionsBuilder<TelemetryDb>()
@@ -101,6 +101,7 @@ public sealed class BenchmarkExecutorTests : IDisposable
             Status = "queued",
             Total = results,
             CreatedAt = DateTime.UtcNow,
+            RequestVerdict = verdict,
         };
         db.BenchmarkRuns.Add(run);
         for (var index = 0; index < results; index++)
@@ -313,6 +314,26 @@ public sealed class BenchmarkExecutorTests : IDisposable
         Assert.StartsWith("[BENCHMARK]", captured);
         Assert.Contains("superpowers", captured);
         Assert.Contains("sdd", captured);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_Verdict_StoresRecommendation()
+    {
+        var harness = Create("code", verdict: true);
+        string? verdictPrompt = null;
+        harness.Process.Handler = request =>
+        {
+            if (request.Arguments.Any(argument => argument.Contains("bench-verdict")))
+            {
+                verdictPrompt = File.ReadAllText(ArgValue(request, "--file"));
+                return new ProcessResult(0, JsonText("Mejor: provider/model-a.", "ses_verdict"), "", false, 10);
+            }
+            return DefaultHandler(request);
+        };
+        await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
+        var run = harness.Db.BenchmarkRuns.Single();
+        Assert.False(string.IsNullOrWhiteSpace(run.Verdict));
+        Assert.Contains("RESULTADOS", verdictPrompt);
     }
 
     [Fact]

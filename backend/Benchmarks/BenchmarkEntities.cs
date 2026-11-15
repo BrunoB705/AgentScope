@@ -10,6 +10,8 @@ public sealed class BenchmarkRunEntity
     public DateTime? StartedAt { get; set; }
     public DateTime? CompletedAt { get; set; }
     public string? BaselineJson { get; set; }
+    public bool RequestVerdict { get; set; } = true;
+    public string? Verdict { get; set; }
     public string? Error { get; set; }
 }
 

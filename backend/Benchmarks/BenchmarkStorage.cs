@@ -16,6 +16,8 @@ public static class BenchmarkStorage
           StartedAt TEXT NULL,
           CompletedAt TEXT NULL,
           BaselineJson TEXT NULL,
+          RequestVerdict INTEGER NOT NULL DEFAULT 1,
+          Verdict TEXT NULL,
           Error TEXT NULL
         );
         """);
@@ -46,6 +48,36 @@ public static class BenchmarkStorage
           CompletedAt TEXT NULL
         );
         """);
+        await EnsureColumnAsync(db, "RequestVerdict", "INTEGER NOT NULL DEFAULT 1");
+        await EnsureColumnAsync(db, "Verdict", "TEXT NULL");
+    }
+
+    private static async Task EnsureColumnAsync(DbContext db, string column, string definition)
+    {
+        var exists = false;
+        await db.Database.OpenConnectionAsync();
+        try
+        {
+            await using var command = db.Database.GetDbConnection().CreateCommand();
+            command.CommandText = "PRAGMA table_info('BenchmarkRuns')";
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+                if (reader.GetString(1) == column) exists = true;
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+        if (!exists)
+        {
+            var sql = (column, definition) switch
+            {
+                ("RequestVerdict", "INTEGER NOT NULL DEFAULT 1") => "ALTER TABLE BenchmarkRuns ADD COLUMN RequestVerdict INTEGER NOT NULL DEFAULT 1",
+                ("Verdict", "TEXT NULL") => "ALTER TABLE BenchmarkRuns ADD COLUMN Verdict TEXT NULL",
+                _ => throw new ArgumentOutOfRangeException(nameof(column)),
+            };
+            await db.Database.ExecuteSqlRawAsync(sql);
+        }
     }
 
     public static async Task MarkStaleAsync(DbContext db)

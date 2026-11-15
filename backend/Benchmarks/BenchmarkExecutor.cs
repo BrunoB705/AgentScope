@@ -69,6 +69,9 @@ internal sealed class BenchmarkExecutor
                 await _notifier.UpdatedAsync(run.Id, run.Status, cancellationToken);
             }
 
+            if (run.RequestVerdict)
+                await CreateVerdictAsync(run, results, runRoot, cancellationToken);
+
             cancellationToken.ThrowIfCancellationRequested();
             run.Status = "completed";
             run.CompletedAt = DateTime.UtcNow;
@@ -242,11 +245,7 @@ internal sealed class BenchmarkExecutor
             var promptPath = Path.Combine(promptDir, $"{result.Id}-prompt.md");
             await File.WriteAllTextAsync(promptPath, BenchmarkPrefix + test.Prompt, cancellationToken);
 
-            var environment = new Dictionary<string, string>
-            {
-                ["OPENCODE_OBSERVABILITY_URL"] = _options.Value.TelemetryUrl,
-                ["OPENCODE_OBSERVABILITY_KEY"] = _configuration["Telemetry:ApiKey"] ?? "",
-            };
+            var environment = TelemetryEnvironment();
 
             var modelTitle = $"bench/{run.Id}/{result.Id}";
             var openCode = ShellCommand.OpenCode(
@@ -373,6 +372,66 @@ internal sealed class BenchmarkExecutor
             Cleanup(Path.Combine(runRoot, result.Id));
         }
     }
+
+    private async Task CreateVerdictAsync(
+        BenchmarkRunEntity run,
+        IReadOnlyList<BenchmarkResultEntity> results,
+        string runRoot,
+        CancellationToken cancellationToken)
+    {
+        var verdictRoot = Path.Combine(runRoot, "verdict");
+        var promptDir = Path.Combine(verdictRoot, "prompt");
+        var judgeDir = Path.Combine(verdictRoot, "benchmark-judge");
+        try
+        {
+            ResetDirectory(verdictRoot);
+            Directory.CreateDirectory(promptDir);
+            ResetDirectory(judgeDir);
+
+            var promptPath = Path.Combine(promptDir, "verdict.md");
+            await File.WriteAllTextAsync(promptPath, VerdictPrompt.Build(run, results), cancellationToken);
+
+            var command = ShellCommand.OpenCode(
+                _options.Value.OpenCodeCommand,
+                "--standalone", "run", "--model", run.JudgeModel, "--title", $"bench-verdict/{run.Id}",
+                "--format", "json", "--archived", "--file", promptPath,
+                "Leé el resumen adjunto y recomendá un modelo.");
+            var verdict = await _processRunner.RunAsync(new ProcessRequest(
+                command.FileName,
+                command.Arguments,
+                judgeDir,
+                _options.Value.JudgeTimeoutMs,
+                TelemetryEnvironment()), cancellationToken);
+
+            if (verdict.TimedOut)
+            {
+                run.Verdict = "La recomendación final superó el timeout.";
+                return;
+            }
+
+            var text = OpenCodeOutput.ExtractFinalText(verdict.StandardOutput);
+            if (!string.IsNullOrWhiteSpace(text))
+                run.Verdict = text.Length > 1000 ? text[..1000] : text;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "No se pudo generar la recomendación final de {RunId}", run.Id);
+        }
+        finally
+        {
+            Cleanup(verdictRoot);
+        }
+    }
+
+    private Dictionary<string, string> TelemetryEnvironment() => new()
+    {
+        ["OPENCODE_OBSERVABILITY_URL"] = _options.Value.TelemetryUrl,
+        ["OPENCODE_OBSERVABILITY_KEY"] = _configuration["Telemetry:ApiKey"] ?? "",
+    };
 
     private async Task FailRunAsync(BenchmarkRunEntity run, string error, CancellationToken cancellationToken)
     {

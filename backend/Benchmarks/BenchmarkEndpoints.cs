@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 
 public static class BenchmarkEndpoints
@@ -50,14 +51,23 @@ public static class BenchmarkEndpoints
             var judge = dto.Judge?.Trim();
             if (string.IsNullOrWhiteSpace(judge))
                 return Results.BadRequest(new { error = "Elegí un juez." });
-            if (modelList.Contains(judge, StringComparer.Ordinal))
+
+            var specs = modelList.Select(model =>
+            {
+                var parts = model.Split('#', 2);
+                return (Full: model, Base: parts[0], Variant: parts.Length == 2 ? parts[1] : null);
+            }).ToArray();
+            if (specs.Any(spec => string.IsNullOrWhiteSpace(spec.Base)
+                || (spec.Variant is not null && !Regex.IsMatch(spec.Variant, "^[A-Za-z0-9][A-Za-z0-9-]*$"))))
+                return Results.BadRequest(new { error = "Alguna variante de modelo es inválida." });
+            if (specs.Any(spec => spec.Base == judge))
                 return Results.BadRequest(new { error = "El juez no puede ser uno de los modelos evaluados." });
 
             var available = await models.ListAsync(cancellationToken);
             if (available.Error is not null)
                 return Results.Json(new { error = available.Error }, statusCode: StatusCodes.Status409Conflict);
             var catalogModels = new HashSet<string>(available.Models, StringComparer.Ordinal);
-            if (!modelList.All(catalogModels.Contains))
+            if (!specs.All(spec => catalogModels.Contains(spec.Base)))
                 return Results.BadRequest(new { error = "Uno de los modelos no está en el catálogo de opencode." });
             if (!catalogModels.Contains(judge))
                 return Results.BadRequest(new { error = "El juez no está en el catálogo de opencode." });
@@ -70,6 +80,7 @@ public static class BenchmarkEndpoints
                 Status = "queued",
                 Total = modelList.Length * suite.Tests.Length,
                 CreatedAt = DateTime.UtcNow,
+                RequestVerdict = dto.RequestVerdict ?? true,
             };
             var results = new List<BenchmarkResultEntity>();
             foreach (var test in suite.Tests)
@@ -95,16 +106,28 @@ public static class BenchmarkEndpoints
             return Results.Json(ToDto(run, results), statusCode: StatusCodes.Status202Accepted);
         });
 
-        app.MapGet("/api/v1/benchmarks/runs", async (string? suite, TelemetryDb db, CancellationToken cancellationToken) =>
+        app.MapGet("/api/v1/benchmarks/runs", async (string? suite, int? page, int? pageSize, TelemetryDb db, CancellationToken cancellationToken) =>
         {
+            var pageNumber = Math.Max(1, page ?? 1);
+            var size = Math.Clamp(pageSize ?? 20, 1, 100);
             var query = db.BenchmarkRuns.AsNoTracking().AsQueryable();
             if (!string.IsNullOrWhiteSpace(suite)) query = query.Where(run => run.Suite == suite);
-            var runs = await query.OrderByDescending(run => run.CreatedAt).ToListAsync(cancellationToken);
+            var total = await query.CountAsync(cancellationToken);
+            var runs = await query.OrderByDescending(run => run.CreatedAt)
+                .Skip((pageNumber - 1) * size)
+                .Take(size)
+                .ToListAsync(cancellationToken);
             var ids = runs.Select(run => run.Id).ToArray();
             var results = await db.BenchmarkResults.AsNoTracking()
                 .Where(result => ids.Contains(result.RunId))
                 .ToListAsync(cancellationToken);
-            return Results.Ok(runs.Select(run => ToDto(run, results.Where(result => result.RunId == run.Id))).ToArray());
+            return Results.Ok(new
+            {
+                items = runs.Select(run => ToDto(run, results.Where(result => result.RunId == run.Id))).ToArray(),
+                total,
+                page = pageNumber,
+                pageSize = size,
+            });
         });
 
         app.MapGet("/api/v1/benchmarks/runs/{id}", async (string id, TelemetryDb db, CancellationToken cancellationToken) =>
@@ -155,6 +178,8 @@ public static class BenchmarkEndpoints
         startedAt = run.StartedAt,
         completedAt = run.CompletedAt,
         baselineJson = run.BaselineJson,
+        requestVerdict = run.RequestVerdict,
+        verdict = run.Verdict,
         error = run.Error,
         results = results.Select(result => new
         {

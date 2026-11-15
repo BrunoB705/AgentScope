@@ -100,6 +100,26 @@ public sealed class BenchmarkApiTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateRun_AcceptsVariant()
+    {
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(new[] { "provider/model-a#high" }));
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var result = json.RootElement.GetProperty("results")[0];
+        Assert.Equal("provider/model-a#high", result.GetProperty("model").GetString());
+    }
+
+    [Fact]
+    public async Task CreateRun_RejectsInvalidVariant()
+    {
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(new[] { "provider/model-a#a&calc" }));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("variante", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task CreateRun_CreatesOneResultPerCombination()
     {
         using var client = Client();
@@ -142,7 +162,23 @@ public sealed class BenchmarkApiTests : IDisposable
         await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody());
         await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody());
         using var json = JsonDocument.Parse(await client.GetStringAsync("/api/v1/benchmarks/runs?suite=demo"));
-        Assert.Equal(2, json.RootElement.GetArrayLength());
+        Assert.Equal(2, json.RootElement.GetProperty("total").GetInt32());
+        Assert.Equal(2, json.RootElement.GetProperty("items").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Runs_PaginatesHistory()
+    {
+        using var client = Client();
+        for (var index = 0; index < 3; index++)
+            await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody());
+
+        using var first = JsonDocument.Parse(await client.GetStringAsync("/api/v1/benchmarks/runs?suite=demo&page=1&pageSize=2"));
+        Assert.Equal(3, first.RootElement.GetProperty("total").GetInt32());
+        Assert.Equal(2, first.RootElement.GetProperty("items").GetArrayLength());
+
+        using var second = JsonDocument.Parse(await client.GetStringAsync("/api/v1/benchmarks/runs?suite=demo&page=2&pageSize=2"));
+        Assert.Equal(1, second.RootElement.GetProperty("items").GetArrayLength());
     }
 }
 

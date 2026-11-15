@@ -43,6 +43,15 @@ public sealed class ModelCatalogTests
     }
 
     [Fact]
+    public async Task ListAsync_FiltersNvidiaAndLmstudio()
+    {
+        var fake = new FakeProcessRunner();
+        fake.Results.Enqueue(new ProcessResult(0, "opencode-go/a\nnvidia/b\nlmstudio/c\nopencode-go/d\n", "", false, 10));
+        var result = await new ModelCatalog(fake).ListAsync();
+        Assert.Equal(new[] { "opencode-go/a", "opencode-go/d" }, result.Models);
+    }
+
+    [Fact]
     public async Task ListAsync_UsesOpenCodeModelsCommand()
     {
         var fake = new FakeProcessRunner();

@@ -51,6 +51,7 @@ public sealed class BenchmarkRunnerIntegrationTests : IDisposable
         Assert.All(results, result => Assert.Equal("completed", result.GetProperty("status").GetString()));
         Assert.Contains(results, result => result.TryGetProperty("verifyPassed", out var passed) && passed.ValueKind == JsonValueKind.True);
         Assert.Contains(results, result => result.GetProperty("judgeScore").GetInt32() == 4);
+        Assert.False(string.IsNullOrWhiteSpace(run.GetProperty("verdict").GetString()));
     }
 
     [Fact]

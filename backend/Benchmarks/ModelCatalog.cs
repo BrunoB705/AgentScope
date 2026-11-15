@@ -2,6 +2,8 @@ public sealed record ModelCatalogResult(string[] Models, string? Error);
 
 public sealed class ModelCatalog
 {
+    private static readonly string[] ExcludedPrefixes = { "nvidia/", "lmstudio/" };
+
     private readonly IProcessRunner _processRunner;
     private readonly string _openCodeCommand;
 
@@ -27,7 +29,9 @@ public sealed class ModelCatalog
                     ? $"opencode models terminó con código {result.ExitCode}."
                     : result.StandardError.Trim());
 
-            return new(Parse(result.StandardOutput), null);
+            return new(Parse(result.StandardOutput)
+                .Where(model => !ExcludedPrefixes.Any(prefix => model.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+                .ToArray(), null);
         }
         catch (OperationCanceledException)
         {

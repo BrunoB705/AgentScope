@@ -4,6 +4,8 @@ using Microsoft.Extensions.Options;
 
 internal sealed class BenchmarkExecutor
 {
+    private const string BenchmarkPrefix = "[BENCHMARK] Esta es una corrida automatizada. No hagas preguntas de contexto, no preguntes si el proyecto es universitario o personal y no pidas confirmación. Ejecutá la tarea y respondé con el resultado.\n\n";
+
     private readonly TelemetryDb _db;
     private readonly BenchmarkCatalog _catalog;
     private readonly IProcessRunner _processRunner;
@@ -238,7 +240,7 @@ internal sealed class BenchmarkExecutor
             }
 
             var promptPath = Path.Combine(promptDir, $"{result.Id}-prompt.md");
-            await File.WriteAllTextAsync(promptPath, test.Prompt, cancellationToken);
+            await File.WriteAllTextAsync(promptPath, BenchmarkPrefix + test.Prompt, cancellationToken);
 
             var environment = new Dictionary<string, string>
             {

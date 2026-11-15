@@ -43,6 +43,15 @@ public sealed class ProcessRunnerTests
     }
 
     [Fact]
+    public async Task RunAsync_DecodesUtf8()
+    {
+        var result = await _runner.RunAsync(
+            new ProcessRequest("node", new[] { "-e", "console.log('caché')" }, Path.GetTempPath(), 15000),
+            CancellationToken.None);
+        Assert.Contains("caché", result.StandardOutput);
+    }
+
+    [Fact]
     public void ShellCommand_UsesCmdOnWindows()
     {
         var (file, arguments) = ShellCommand.For("node --test");

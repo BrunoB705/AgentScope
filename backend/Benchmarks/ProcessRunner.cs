@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text;
 
 public sealed class ProcessRunner : IProcessRunner
 {
@@ -11,6 +12,8 @@ public sealed class ProcessRunner : IProcessRunner
             WorkingDirectory = request.WorkingDirectory,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
             UseShellExecute = false,
             CreateNoWindow = true,
         };

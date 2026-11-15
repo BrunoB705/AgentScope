@@ -300,6 +300,20 @@ public sealed class BenchmarkExecutorTests : IDisposable
     }
 
     [Fact]
+    public async Task ExecuteAsync_PromptIncludesBenchmarkMarker()
+    {
+        var harness = Create("code");
+        string? captured = null;
+        harness.Process.Handler = request =>
+        {
+            if (IsModel(request)) captured = File.ReadAllText(ArgValue(request, "--file"));
+            return DefaultHandler(request);
+        };
+        await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
+        Assert.StartsWith("[BENCHMARK]", captured);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_UsesUniqueWorkingDirectories()
     {
         var harness = Create("code", results: 2);

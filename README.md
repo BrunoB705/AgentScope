@@ -65,6 +65,8 @@ El juez se elige por separado y no puede ser uno de los modelos evaluados. Corre
 
 Las corridas usan la telemetría existente para tokens y costo, y quedan como sesiones normales con proyecto `benchmark` o `benchmark-judge`. El costo de las pruebas se cuenta como uso real. La contención es best-effort: el proceso corre con tu usuario y `--auto`, sin sandbox, así que no ejecutes pruebas que no confíes. Docker no incluye `opencode`, así que la pestaña no está disponible en ese despliegue.
 
+En la pestaña podés filtrar modelos por nombre y elegir una variante (`low`, `high`, `max`, `thinking` o escribir otra). La tabla usa la cuota Go estimada de cada resultado. El historial se carga de a 20 corridas con “Cargar más”. Si activás la recomendación final, un juicio extra —una llamada más al mismo juez— sugiere qué modelo conviene para la suite.
+
 ## Validación
 
 ```sh

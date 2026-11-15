@@ -128,12 +128,15 @@ public sealed class BenchmarkApiTests : IDisposable
     }
 }
 
-public sealed class BenchmarkApiFactory : WebApplicationFactory<Program>
+public class BenchmarkApiFactory : WebApplicationFactory<Program>
 {
     private readonly string _database = Path.Combine(Path.GetTempPath(), $"bench-api-{Guid.NewGuid():N}.db");
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"bench-api-{Guid.NewGuid():N}");
 
     public FakeProcessRunner Fake { get; } = new();
+    public FakeSessionReader Sessions { get; } = new();
+
+    protected virtual bool WorkerEnabled => false;
 
     public BenchmarkApiFactory()
     {
@@ -186,9 +189,19 @@ public sealed class BenchmarkApiFactory : WebApplicationFactory<Program>
             ["Benchmarks:Root"] = _root,
             ["Benchmarks:WorkingRoot"] = Path.Combine(_root, "work"),
             ["Benchmarks:TelemetryUrl"] = "http://127.0.0.1:9",
+            ["Benchmarks:WorkerEnabled"] = WorkerEnabled ? "true" : "false",
             ["ASPNETCORE_ENVIRONMENT"] = "Development",
         }));
-        builder.ConfigureTestServices(services => services.AddSingleton<IProcessRunner>(Fake));
+        builder.ConfigureTestServices(services =>
+        {
+            services.AddSingleton<IProcessRunner>(Fake);
+            services.AddSingleton<IBenchmarkSessionReader>(Sessions);
+            if (!WorkerEnabled)
+            {
+                var worker = services.FirstOrDefault(item => item.ImplementationType == typeof(BenchmarkWorker));
+                if (worker is not null) services.Remove(worker);
+            }
+        });
         builder.ConfigureLogging(logging => logging.ClearProviders());
     }
 

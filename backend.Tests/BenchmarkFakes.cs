@@ -3,16 +3,18 @@ public sealed class FakeProcessRunner : IProcessRunner
     public Queue<ProcessResult> Results { get; } = new();
     public List<ProcessRequest> Requests { get; } = new();
     public Func<ProcessRequest, ProcessResult>? Handler { get; set; }
+    public Func<ProcessRequest, CancellationToken, Task<ProcessResult>>? AsyncHandler { get; set; }
 
-    public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken)
+    public async Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken)
     {
         Requests.Add(request);
+        if (AsyncHandler is not null) return await AsyncHandler(request, cancellationToken);
         var result = Handler is not null
             ? Handler(request)
             : Results.Count > 0
                 ? Results.Dequeue()
                 : new ProcessResult(0, "", "", false, 0);
-        return Task.FromResult(result);
+        return result;
     }
 }
 

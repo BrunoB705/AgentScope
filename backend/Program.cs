@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -26,6 +27,11 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddSingleton<BenchmarkQueue>();
 builder.Services.AddSingleton<BenchmarkCancellationRegistry>();
+builder.Services.AddScoped<BenchmarkExecutor>();
+builder.Services.AddSingleton<IBenchmarkSessionReader, BenchmarkSessionReader>();
+builder.Services.AddSingleton<IBenchmarkNotifier, SignalRBenchmarkNotifier>();
+if (builder.Configuration.GetValue("Benchmarks:WorkerEnabled", true))
+    builder.Services.AddHostedService<BenchmarkWorker>();
 var app = builder.Build();
 using (var scope = app.Services.CreateScope()) {
     var db = scope.ServiceProvider.GetRequiredService<TelemetryDb>();

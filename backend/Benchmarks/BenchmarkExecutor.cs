@@ -218,7 +218,7 @@ internal sealed class BenchmarkExecutor
             var modelTitle = $"bench/{run.Id}/{result.Id}";
             var openCode = ShellCommand.OpenCode(
                 _options.Value.OpenCodeCommand,
-                "run", "--model", result.Model, "--title", modelTitle, "--format", "json", "--auto",
+                "--standalone", "run", "--model", result.Model, "--title", modelTitle, "--format", "json", "--auto",
                 "--file", promptPath, "Seguí las instrucciones del archivo adjunto.");
             var model = await _processRunner.RunAsync(new ProcessRequest(
                 openCode.FileName,
@@ -275,7 +275,7 @@ internal sealed class BenchmarkExecutor
                 ResetDirectory(judgeDir);
                 var judgeCommand = ShellCommand.OpenCode(
                     _options.Value.OpenCodeCommand,
-                    "run", "--model", run.JudgeModel, "--title", $"bench-judge/{run.Id}/{result.Id}",
+                    "--standalone", "run", "--model", run.JudgeModel, "--title", $"bench-judge/{run.Id}/{result.Id}",
                     "--format", "json", "--archived", "--file", judgePath,
                     "Evaluá el archivo adjunto y respondé sólo JSON.");
                 var judge = await _processRunner.RunAsync(new ProcessRequest(
@@ -375,13 +375,35 @@ internal sealed class BenchmarkExecutor
 
     private static void ResetDirectory(string path)
     {
-        if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+        try
+        {
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+        }
+        catch (IOException)
+        {
+            // Un proceso puede mantener archivos abiertos; se reutiliza el directorio.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Igual que IOException: la limpieza es best-effort.
+        }
         Directory.CreateDirectory(path);
     }
 
     private static void Cleanup(string path)
     {
-        if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+        try
+        {
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+        }
+        catch (IOException)
+        {
+            // La limpieza es best-effort; el sistema operativo liberará el temporal.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // La limpieza es best-effort.
+        }
     }
 
     private static void CopyDirectory(string source, string destination)

@@ -167,6 +167,7 @@ public sealed class BenchmarkExecutorTests : IDisposable
         Assert.Equal(4, result.JudgeScore);
         Assert.Equal("ok", result.JudgeRationale);
         Assert.Equal("ses_judge", result.JudgeSessionId);
+        Assert.Contains("--standalone", harness.Process.Requests.First(IsJudge).Arguments);
     }
 
     [Fact]
@@ -281,6 +282,7 @@ public sealed class BenchmarkExecutorTests : IDisposable
         var request = harness.Process.Requests.First(IsModel);
         Assert.Equal("http://127.0.0.1:9", request.Environment!["OPENCODE_OBSERVABILITY_URL"]);
         Assert.Equal("test-key", request.Environment!["OPENCODE_OBSERVABILITY_KEY"]);
+        Assert.Contains("--standalone", request.Arguments);
     }
 
     private sealed record Harness(

@@ -35,7 +35,7 @@ Para ejecutar manualmente: `dotnet run --project backend --no-launch-profile --u
 ## Pestañas del dashboard
 
 - **Inicio:** es la vista por defecto; resume la actividad del período con sesiones por estado, tasa de éxito, duración promedio, tokens, costos, las herramientas y los modelos más usados, y las últimas sesiones.
-- **Observabilidad:** lista las sesiones con filtros y muestra el detalle del trace, las herramientas, los tokens, los errores y la evaluación manual.
+- **Observabilidad:** lista las sesiones con filtros y muestra el detalle del trace con un waterfall proporcional, el panel del span seleccionado, las herramientas, los tokens, los errores y la evaluación manual; desde un error se puede saltar al span que lo produjo.
 - **Herramientas:** resume el uso, la duración promedio y los fallos de cada herramienta en el período elegido.
 - **Comportamiento:** es un detector de sesiones que merecen una mirada: no mide “el comportamiento del agente” en abstracto, sino que marca sesiones guardadas cuando encuentra bucles de herramientas, ráfagas de errores, sesiones largas o interrumpidas, con un enlace al detalle.
 - **Modelos:** muestra el consumo de tokens, la eficiencia de caché, el costo reportado por OpenCode y la cuota Go estimada por origen y modelo.
@@ -50,6 +50,8 @@ El plugin usa `OPENCODE_OBSERVABILITY_KEY` si está definida; si no, lee la clav
 El plugin registra sesiones, el proveedor y modelo informados por OpenCode al iniciar cada paso, y las herramientas completadas o fallidas. Correlaciona herramientas con el paso del modelo y sólo transmite metadatos seleccionados: nombres, estados, códigos de error y tokens. No serializa prompts, respuestas ni contenido/argumentos de herramientas.
 
 El detalle distingue el costo reportado por OpenCode de la cuota Go estimada. La cuota se calcula por paso con el desglose de entrada, salida y caché y las tarifas del catálogo de modelos que OpenCode sirve localmente; si falta una tarifa, no se inventa una estimación. Es una atribución de consumo, no un cargo real ni el importe de la suscripción.
+
+El waterfall usa las duraciones reportadas por OpenCode; los spans sin duración se muestran como marcadores y no se infieren tiempos.
 
 ## Validación
 

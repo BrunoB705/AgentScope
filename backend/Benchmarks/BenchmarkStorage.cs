@@ -36,6 +36,7 @@ public static class BenchmarkStorage
           DurationMs INTEGER NULL,
           InputTokens INTEGER NOT NULL DEFAULT 0,
           OutputTokens INTEGER NOT NULL DEFAULT 0,
+          ReasoningTokens INTEGER NOT NULL DEFAULT 0,
           CacheReadTokens INTEGER NOT NULL DEFAULT 0,
           CacheWriteTokens INTEGER NOT NULL DEFAULT 0,
           Cost REAL NULL,
@@ -50,6 +51,34 @@ public static class BenchmarkStorage
         """);
         await EnsureColumnAsync(db, "RequestVerdict", "INTEGER NOT NULL DEFAULT 1");
         await EnsureColumnAsync(db, "Verdict", "TEXT NULL");
+        await EnsureResultColumnAsync(db, "ReasoningTokens", "INTEGER NOT NULL DEFAULT 0");
+    }
+
+    private static async Task EnsureResultColumnAsync(DbContext db, string column, string definition)
+    {
+        var exists = false;
+        await db.Database.OpenConnectionAsync();
+        try
+        {
+            await using var command = db.Database.GetDbConnection().CreateCommand();
+            command.CommandText = "PRAGMA table_info('BenchmarkResults')";
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+                if (reader.GetString(1) == column) exists = true;
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+        if (!exists)
+        {
+            var sql = (column, definition) switch
+            {
+                ("ReasoningTokens", "INTEGER NOT NULL DEFAULT 0") => "ALTER TABLE BenchmarkResults ADD COLUMN ReasoningTokens INTEGER NOT NULL DEFAULT 0",
+                _ => throw new ArgumentOutOfRangeException(nameof(column)),
+            };
+            await db.Database.ExecuteSqlRawAsync(sql);
+        }
     }
 
     private static async Task EnsureColumnAsync(DbContext db, string column, string definition)

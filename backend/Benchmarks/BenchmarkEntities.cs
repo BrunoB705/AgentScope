@@ -30,6 +30,7 @@ public sealed class BenchmarkResultEntity
     public long? DurationMs { get; set; }
     public int InputTokens { get; set; }
     public int OutputTokens { get; set; }
+    public int ReasoningTokens { get; set; }
     public int CacheReadTokens { get; set; }
     public int CacheWriteTokens { get; set; }
     public double? Cost { get; set; }

@@ -164,6 +164,36 @@ public static class BenchmarkEndpoints
             registry.Cancel(id);
             return Results.Json(new { status = "cancelled" }, statusCode: StatusCodes.Status202Accepted);
         });
+
+        app.MapDelete("/api/v1/benchmarks/runs/{id}", async (string id, TelemetryDb db, CancellationToken cancellationToken) =>
+        {
+            var run = await db.BenchmarkRuns.AsNoTracking().FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+            if (run is null) return Results.NotFound(new { error = "La corrida no existe." });
+            if (run.Status is "queued" or "running")
+                return Results.Conflict(new { error = "Cancelá la corrida antes de eliminarla." });
+
+            var results = await db.BenchmarkResults.AsNoTracking()
+                .Where(item => item.RunId == id)
+                .ToListAsync(cancellationToken);
+            var sessionIds = results
+                .SelectMany(result => new[] { result.SessionId, result.JudgeSessionId })
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+            if (sessionIds.Length > 0)
+            {
+                await db.Events.Where(item => sessionIds.Contains(item.SessionId)).ExecuteDeleteAsync(cancellationToken);
+                await db.Spans.Where(item => sessionIds.Contains(item.SessionId)).ExecuteDeleteAsync(cancellationToken);
+                await db.Sessions.Where(item => sessionIds.Contains(item.Id)).ExecuteDeleteAsync(cancellationToken);
+            }
+            await db.BenchmarkResults.Where(item => item.RunId == id).ExecuteDeleteAsync(cancellationToken);
+            await db.BenchmarkRuns.Where(item => item.Id == id).ExecuteDeleteAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return Results.NoContent();
+        });
     }
 
     private static object ToDto(BenchmarkRunEntity run, IEnumerable<BenchmarkResultEntity> results) => new
@@ -195,6 +225,7 @@ public static class BenchmarkEndpoints
             durationMs = result.DurationMs,
             inputTokens = result.InputTokens,
             outputTokens = result.OutputTokens,
+            reasoningTokens = result.ReasoningTokens,
             cacheReadTokens = result.CacheReadTokens,
             cacheWriteTokens = result.CacheWriteTokens,
             cost = result.Cost,

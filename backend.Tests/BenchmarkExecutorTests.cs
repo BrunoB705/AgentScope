@@ -126,7 +126,6 @@ public sealed class BenchmarkExecutorTests : IDisposable
         {
             Root = _root,
             OpenCodeCommand = "opencode",
-            ModelTimeoutMs = 300000,
             JudgeTimeoutMs = 120000,
             TelemetryWaitMs = 15000,
             TelemetryUrl = "http://127.0.0.1:9",
@@ -151,6 +150,7 @@ public sealed class BenchmarkExecutorTests : IDisposable
         Assert.Equal(0, result.VerifyExitCode);
         Assert.Equal(1200, result.DurationMs);
         Assert.Equal(100, result.InputTokens);
+        Assert.Equal(7, result.ReasoningTokens);
         Assert.Equal("ses_model", result.SessionId);
         var run = harness.Db.BenchmarkRuns.Single();
         Assert.Equal("completed", run.Status);
@@ -336,6 +336,32 @@ public sealed class BenchmarkExecutorTests : IDisposable
         Assert.StartsWith("[BENCHMARK]", verdictPrompt);
         Assert.Contains("RESULTADOS", verdictPrompt);
         Assert.Contains("universitario", verdictPrompt);
+    }
+
+    [Fact]
+    public void Truncate_DoesNotSplitSurrogatePair()
+    {
+        var value = new string('a', 4) + "\uD83D\uDE00";
+        Assert.Equal("aaaa", BenchmarkExecutor.Truncate(value, 5));
+        Assert.Equal(value, BenchmarkExecutor.Truncate(value, 6));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_DoesNotCopyFixtureGitDirectory()
+    {
+        var harness = Create("code");
+        var gitDirectory = Path.Combine(_root, "demo", "fixtures", "app", ".git");
+        Directory.CreateDirectory(gitDirectory);
+        File.WriteAllText(Path.Combine(gitDirectory, "config"), "fixture");
+        string? workDirectory = null;
+        harness.Process.Handler = request =>
+        {
+            if (IsModel(request)) workDirectory = request.WorkingDirectory;
+            return DefaultHandler(request);
+        };
+        await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
+        Assert.NotNull(workDirectory);
+        Assert.False(Directory.Exists(Path.Combine(workDirectory!, ".git")));
     }
 
     [Fact]

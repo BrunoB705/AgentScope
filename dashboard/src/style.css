@@ -218,6 +218,7 @@ main{max-width:1880px;padding-left:3.5vw;padding-right:3.5vw}
 .benchmark-actions button{border:1px solid #315244;border-radius:6px;background:#18221f;color:#a9ddc1;padding:9px 12px;cursor:pointer;font:12px 'DM Sans',sans-serif}
 .benchmark-actions button:disabled{opacity:.5;cursor:default}
 .benchmark-actions .benchmark-secondary{border-color:#2a3039;background:#101319;color:#b7bdc8}
+.benchmark-actions .benchmark-danger{border-color:#633333;background:#1a1010;color:#ff8787}
 .benchmark-meta{margin:0;color:#858d9b;font-size:12px}
 .benchmark-run{display:grid;gap:8px;margin-bottom:14px}
 .benchmark-bar{height:6px;overflow:hidden;border-radius:6px;background:#252b33}

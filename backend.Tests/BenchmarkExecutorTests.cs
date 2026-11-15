@@ -333,7 +333,9 @@ public sealed class BenchmarkExecutorTests : IDisposable
         await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
         var run = harness.Db.BenchmarkRuns.Single();
         Assert.False(string.IsNullOrWhiteSpace(run.Verdict));
+        Assert.StartsWith("[BENCHMARK]", verdictPrompt);
         Assert.Contains("RESULTADOS", verdictPrompt);
+        Assert.Contains("universitario", verdictPrompt);
     }
 
     [Fact]

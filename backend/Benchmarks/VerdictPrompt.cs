@@ -16,7 +16,8 @@ public static class VerdictPrompt
                 return $"- {group.Key}: {passed}/{group.Count()} aprobadas; nota media {(average is null ? "sin dato" : average.Value.ToString("0.0"))}; {group.Sum(result => result.DurationMs ?? 0)} ms; {group.Sum(result => result.InputTokens + result.OutputTokens)} tokens; cuota Go US$ {quota:0.000000}; errores {errors}.";
             });
 
-        return "Sos el juez final de una comparación de modelos. Recibís sólo métricas agregadas, no las respuestas de los modelos.\n\n"
+        return BenchmarkPrompt.Prefix
+            + "Sos el juez final de una comparación de modelos. Recibís sólo métricas agregadas, no las respuestas de los modelos.\n\n"
             + $"SUITE\n{run.Suite}\n\nRESULTADOS\n{string.Join('\n', lines)}\n\n"
             + "Recomendá el modelo que parece mejor para esta suite y justificá en 3 a 6 líneas. "
             + "Tené en cuenta aprobadas, nota del juez, duración, tokens y cuota Go. "

@@ -4,6 +4,7 @@ import {
   filterModels,
   modelSpec,
   quotaPerPassed,
+  renderMarkdown,
   summarizeByModel,
   VARIANTS,
   type BenchmarkRun,
@@ -273,7 +274,7 @@ export function BenchmarksPage({ version, onOpenSession }: {
 
           {viewRun.verdict && <div className="benchmark-verdict">
             <h4>Recomendación del juez</h4>
-            <p>{viewRun.verdict}</p>
+            <div className="benchmark-verdict-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(viewRun.verdict) }} />
           </div>}
 
           <div className="table-wrap benchmark-table-wrap">
@@ -298,7 +299,7 @@ export function BenchmarksPage({ version, onOpenSession }: {
               {viewRun.results.map((result) => <div className="benchmark-result-row" key={result.id}>
                 <div><b>{result.testName}</b><small>{result.model}</small></div>
                 <div><span className={`benchmark-status ${result.status}`}>{result.status}</span>{result.verifyPassed != null && <small>{result.verifyPassed ? 'verify OK' : `verify ${result.verifyExitCode}`}</small>}</div>
-                <div>{result.judgeScore == null ? 'Sin nota' : `Juez ${result.judgeScore}/5`}{result.judgeRationale && <small>{result.judgeRationale}</small>}</div>
+                <div>{result.judgeScore == null ? 'Sin nota' : `Juez ${result.judgeScore}/5`}{result.judgeRationale && <small dangerouslySetInnerHTML={{ __html: renderMarkdown(result.judgeRationale) }} />}</div>
                 <div>{result.sessionId && <button className="text-button overview-open" onClick={() => onOpenSession(result.sessionId!)}>Ver trace</button>}
                   <small>Cuota Go: {formatMoney(result.quotaCostEstimate)} · Reportado: {formatMoney(result.cost)}</small>
                   {result.metricsError && <small>{result.metricsError}</small>}

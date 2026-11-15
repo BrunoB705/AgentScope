@@ -255,5 +255,7 @@ main{max-width:1880px;padding-left:3.5vw;padding-right:3.5vw}
 .benchmark-results-scroll{max-height:340px;overflow-y:auto;overscroll-behavior:contain}
 .benchmark-verdict{margin:0 0 14px;padding:12px 14px;border:1px solid #315244;border-radius:8px;background:#111a16}
 .benchmark-verdict h4{margin:0 0 6px;font-size:12px;color:#a9ddc1}
-.benchmark-verdict p{margin:0;color:#c8d8cf;font-size:12px;line-height:1.6;white-space:pre-wrap}
+.benchmark-verdict-text{color:#c8d8cf;font-size:12px;line-height:1.6}
+.benchmark-verdict-text strong{color:#e1e4ea;font-weight:600}
+.benchmark-verdict-text code{padding:1px 4px;border-radius:4px;background:#0c0f13;color:#a9ddc1;font:11px 'DM Mono',monospace}
 .benchmark-more{width:100%;padding:8px;border:1px dashed #315244;border-radius:6px;background:transparent;color:#a9ddc1;cursor:pointer;font:12px 'DM Sans',sans-serif}

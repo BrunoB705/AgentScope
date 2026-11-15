@@ -84,6 +84,20 @@ export function filterModels(models: string[], query: string): string[] {
   return needle ? models.filter((model) => model.toLowerCase().includes(needle)) : models;
 }
 
+const escapeHtml = (value: string) => value
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;');
+
+export function renderMarkdown(text: string): string {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/\n/g, '<br />');
+}
+
 function isPassed(result: BenchmarkResult): boolean {
   if (result.testType === 'code') return result.verifyPassed === true;
   return result.judgeScore != null && result.judgeScore >= 3;

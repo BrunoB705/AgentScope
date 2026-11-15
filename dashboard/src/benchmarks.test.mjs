@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { combinationCount, filterModels, modelSpec, quotaPerPassed, summarizeByModel } from './benchmarks.ts';
+import { combinationCount, filterModels, modelSpec, quotaPerPassed, renderMarkdown, summarizeByModel } from './benchmarks.ts';
 
 const suite = {
   id: 'demo',
@@ -103,6 +103,14 @@ test('modelSpec agrega la variante solo si existe', () => {
   assert.equal(modelSpec('provider/model'), 'provider/model');
   assert.equal(modelSpec('provider/model', 'high'), 'provider/model#high');
   assert.equal(modelSpec('provider/model', '  '), 'provider/model');
+});
+
+test('renderMarkdown convierte negritas, código y escapa HTML', () => {
+  assert.equal(renderMarkdown('**hola**'), '<strong>hola</strong>');
+  assert.equal(renderMarkdown('`código`'), '<code>código</code>');
+  assert.equal(renderMarkdown('*énfasis*'), '<em>énfasis</em>');
+  assert.equal(renderMarkdown('<b>x</b>'), '&lt;b&gt;x&lt;/b&gt;');
+  assert.equal(renderMarkdown('a\nb'), 'a<br />b');
 });
 
 test('summarizeByModel con lista vacía devuelve []', () => {

@@ -28,6 +28,8 @@ public sealed record BenchmarkCatalogList(BenchmarkSuiteSummary[] Suites, Benchm
 
 public sealed record BenchmarkCatalogError(string Id, string Error);
 
+public sealed record CreateBenchmarkRunDto(string? Suite, string[]? Models, string? Judge);
+
 public sealed class BenchmarkValidationException : Exception
 {
     public BenchmarkValidationException(string message) : base(message) { }

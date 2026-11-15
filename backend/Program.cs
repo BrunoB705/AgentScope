@@ -3,12 +3,29 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 if (string.IsNullOrWhiteSpace(builder.Configuration["Telemetry:ApiKey"])) throw new InvalidOperationException("Telemetry:ApiKey must be set through environment configuration.");
 builder.Services.AddDbContext<TelemetryDb>(o => o.UseSqlite(builder.Configuration.GetConnectionString("Telemetry") ?? "Data Source=telemetry.db"));
 builder.Services.AddSignalR();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.WithOrigins("http://localhost:5173", "http://127.0.0.1:5173").AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
+var benchmarkContentRoot = builder.Environment.ContentRootPath;
+builder.Services.Configure<BenchmarkOptions>(builder.Configuration.GetSection("Benchmarks"));
+builder.Services.AddSingleton<IProcessRunner, ProcessRunner>();
+builder.Services.AddSingleton(sp =>
+{
+    var options = sp.GetRequiredService<IOptions<BenchmarkOptions>>().Value;
+    var root = string.IsNullOrWhiteSpace(options.Root) ? Path.Combine(benchmarkContentRoot, "benchmarks") : options.Root;
+    return new BenchmarkCatalog(root);
+});
+builder.Services.AddSingleton(sp =>
+{
+    var options = sp.GetRequiredService<IOptions<BenchmarkOptions>>().Value;
+    return new ModelCatalog(sp.GetRequiredService<IProcessRunner>(), options.OpenCodeCommand);
+});
+builder.Services.AddSingleton<BenchmarkQueue>();
+builder.Services.AddSingleton<BenchmarkCancellationRegistry>();
 var app = builder.Build();
 using (var scope = app.Services.CreateScope()) {
     var db = scope.ServiceProvider.GetRequiredService<TelemetryDb>();
@@ -23,6 +40,8 @@ using (var scope = app.Services.CreateScope()) {
     await EnsureSessionTitleColumnAsync(db);
     await EnsureSessionReviewColumnsAsync(db);
     await db.Database.ExecuteSqlRawAsync("CREATE TABLE IF NOT EXISTS Budgets (Project TEXT NOT NULL PRIMARY KEY, MonthlyLimit REAL NOT NULL, Metric TEXT NOT NULL)");
+    await BenchmarkStorage.EnsureAsync(db);
+    await BenchmarkStorage.MarkStaleAsync(db);
 }
 app.UseCors();
 app.MapHub<TelemetryHub>("/hubs/telemetry");
@@ -342,6 +361,7 @@ app.MapGet("/api/v1/sessions/{id}", async (string id, TelemetryDb db) => {
     return Results.Ok(new { session=s, spans, events, metrics=new { spanCount=spans.Count,errorCount=events.Count(x=>x.Status=="error"),inputTokens=spans.Sum(x=>x.InputTokens),outputTokens=spans.Sum(x=>x.OutputTokens),reasoningTokens=spans.Sum(x=>x.ReasoningTokens),cacheReadTokens=spans.Sum(x=>x.CacheReadTokens),cacheWriteTokens=spans.Sum(x=>x.CacheWriteTokens),cost=spans.Where(x=>x.Cost.HasValue).Sum(x=>x.Cost),quotaCostEstimate=spans.Where(x=>x.QuotaCostEstimate.HasValue).Sum(x=>x.QuotaCostEstimate),durationMs=s.EndedAt.HasValue?(long?)(s.EndedAt.Value-s.StartedAt).TotalMilliseconds:null } });
 });
 app.MapGet("/api/v1/traces/{id}", async (string id, TelemetryDb db) => { var s=await db.Sessions.AsNoTracking().FirstOrDefaultAsync(x=>x.Id==id); if(s is null)return Results.NotFound(); var spans=await db.Spans.AsNoTracking().Where(x=>x.SessionId==id).OrderBy(x=>x.StartedAt).ToListAsync(); var events=await db.Events.AsNoTracking().Where(x=>x.SessionId==id && !x.Type.StartsWith("tool.") && !x.Type.StartsWith("model.")).OrderBy(x=>x.Timestamp).ToListAsync(); return Results.Ok(new { traceId=s.Id,session=s,spans,unrelatedEvents=events }); });
+BenchmarkEndpoints.Map(app);
 app.Run();
 
 static bool CryptographicEquals(string a,string b) { var x=System.Text.Encoding.UTF8.GetBytes(a);var y=System.Text.Encoding.UTF8.GetBytes(b);return x.Length==y.Length && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(x,y); }
@@ -362,7 +382,7 @@ record OverviewModelDto(string Name, int Calls, long TotalTokens, double? Report
 record OverviewSessionDto(string Id, string? Title, string? Project, string? Model, string Status, DateTime StartedAt, DateTime UpdatedAt);
 record BehaviorSignalDto(string Kind, string Severity, string Title, string Explanation, object Evidence);
 record BehaviorSessionDto(string Id, string? Title, string? Project, string? Model, string Status, DateTime StartedAt, DateTime UpdatedAt, BehaviorSignalDto[] Signals);
-class TelemetryDb(DbContextOptions<TelemetryDb> options):DbContext(options) { public DbSet<Session> Sessions=>Set<Session>();public DbSet<TelemetryEvent> Events=>Set<TelemetryEvent>();public DbSet<Span> Spans=>Set<Span>();public DbSet<Budget> Budgets=>Set<Budget>(); protected override void OnModelCreating(ModelBuilder b){var utc=new ValueConverter<DateTime,DateTime>(v=>DateTime.SpecifyKind(v,DateTimeKind.Utc),v=>DateTime.SpecifyKind(v,DateTimeKind.Utc));var utcNullable=new ValueConverter<DateTime?,DateTime?>(v=>v.HasValue?DateTime.SpecifyKind(v.Value,DateTimeKind.Utc):null,v=>v.HasValue?DateTime.SpecifyKind(v.Value,DateTimeKind.Utc):null);b.Entity<TelemetryEvent>().HasIndex(x=>new{x.Source,x.EventId});b.Entity<TelemetryEvent>().Property(x=>x.Timestamp).HasConversion(utc);b.Entity<Session>().HasKey(x=>x.Id);b.Entity<Session>().Property(x=>x.StartedAt).HasConversion(utc);b.Entity<Session>().Property(x=>x.EndedAt).HasConversion(utcNullable);b.Entity<Session>().Property(x=>x.UpdatedAt).HasConversion(utc);b.Entity<Span>().HasKey(x=>x.Id);b.Entity<Span>().Property(x=>x.StartedAt).HasConversion(utc);b.Entity<Budget>().HasKey(x=>x.Project);} }
+class TelemetryDb(DbContextOptions<TelemetryDb> options):DbContext(options) { public DbSet<Session> Sessions=>Set<Session>();public DbSet<TelemetryEvent> Events=>Set<TelemetryEvent>();public DbSet<Span> Spans=>Set<Span>();public DbSet<Budget> Budgets=>Set<Budget>();public DbSet<BenchmarkRunEntity> BenchmarkRuns=>Set<BenchmarkRunEntity>();public DbSet<BenchmarkResultEntity> BenchmarkResults=>Set<BenchmarkResultEntity>(); protected override void OnModelCreating(ModelBuilder b){var utc=new ValueConverter<DateTime,DateTime>(v=>DateTime.SpecifyKind(v,DateTimeKind.Utc),v=>DateTime.SpecifyKind(v,DateTimeKind.Utc));var utcNullable=new ValueConverter<DateTime?,DateTime?>(v=>v.HasValue?DateTime.SpecifyKind(v.Value,DateTimeKind.Utc):null,v=>v.HasValue?DateTime.SpecifyKind(v.Value,DateTimeKind.Utc):null);b.Entity<TelemetryEvent>().HasIndex(x=>new{x.Source,x.EventId});b.Entity<TelemetryEvent>().Property(x=>x.Timestamp).HasConversion(utc);b.Entity<Session>().HasKey(x=>x.Id);b.Entity<Session>().Property(x=>x.StartedAt).HasConversion(utc);b.Entity<Session>().Property(x=>x.EndedAt).HasConversion(utcNullable);b.Entity<Session>().Property(x=>x.UpdatedAt).HasConversion(utc);b.Entity<Span>().HasKey(x=>x.Id);b.Entity<Span>().Property(x=>x.StartedAt).HasConversion(utc);b.Entity<Budget>().HasKey(x=>x.Project);b.Entity<BenchmarkRunEntity>().HasKey(x=>x.Id);b.Entity<BenchmarkResultEntity>().HasKey(x=>x.Id);b.Entity<BenchmarkRunEntity>().Property(x=>x.CreatedAt).HasConversion(utc);b.Entity<BenchmarkRunEntity>().Property(x=>x.StartedAt).HasConversion(utcNullable);b.Entity<BenchmarkRunEntity>().Property(x=>x.CompletedAt).HasConversion(utcNullable);b.Entity<BenchmarkResultEntity>().Property(x=>x.StartedAt).HasConversion(utcNullable);b.Entity<BenchmarkResultEntity>().Property(x=>x.CompletedAt).HasConversion(utcNullable);} }
 class Session { public string Id{get;set;}="";public string Source{get;set;}="";public string? Project{get;set;} public string? Title{get;set;} public int? Rating{get;set;} public string? ReviewNote{get;set;} public string? ReviewTask{get;set;} public string Status{get;set;}="active";public string? Model{get;set;}public DateTime StartedAt{get;set;}public DateTime? EndedAt{get;set;}public DateTime UpdatedAt{get;set;} }
 class Budget { public string Project{get;set;}="";public double MonthlyLimit{get;set;}public string Metric{get;set;}="cost"; }
 class TelemetryEvent { public long Id{get;set;}public string EventId{get;set;}="";public string Source{get;set;}="";public string SessionId{get;set;}="";public DateTime Timestamp{get;set;}public string Type{get;set;}="";public string? Status{get;set;}public long? DurationMs{get;set;}public string? Model{get;set;}public int InputTokens{get;set;}public int OutputTokens{get;set;}public int ReasoningTokens{get;set;}public int CacheReadTokens{get;set;}public int CacheWriteTokens{get;set;}public double? Cost{get;set;}public double? QuotaCostEstimate{get;set;}public string AttributesJson{get;set;}="{}"; }

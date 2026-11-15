@@ -249,7 +249,9 @@ main{max-width:1880px;padding-left:3.5vw;padding-right:3.5vw}
 .benchmark-model-row label{display:flex;align-items:center;gap:8px;min-width:0;color:#c8ced8;font-size:12px}
 .benchmark-model-row label span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .benchmark-variant{flex:none;width:86px;padding:4px 6px;border:1px solid #29303a;border-radius:5px;background:#0c0f13;color:#dce0e7;font:10px 'DM Mono',monospace}
-.benchmark-verdict-toggle{margin:0;color:#858d9b;font-size:12px}
+.benchmark-verdict-toggle{display:flex;align-items:center;gap:8px;margin:0;color:#858d9b;font-size:12px}
+.benchmark-form .benchmark-verdict-toggle{display:flex;align-items:center;gap:8px}
+.benchmark-verdict-toggle span{color:#aeb4bf;font-size:12px}
 .benchmark-results-scroll{max-height:340px;overflow-y:auto;overscroll-behavior:contain}
 .benchmark-verdict{margin:0 0 14px;padding:12px 14px;border:1px solid #315244;border-radius:8px;background:#111a16}
 .benchmark-verdict h4{margin:0 0 6px;font-size:12px;color:#a9ddc1}

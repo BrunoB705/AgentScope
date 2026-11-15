@@ -242,9 +242,9 @@ export function BenchmarksPage({ version, onOpenSession }: {
               </select> : <input type="text" value={judge} onChange={(event) => setJudge(event.target.value)} placeholder="proveedor/modelo" />}
             </label>
 
-            <label className="check-filter benchmark-verdict-toggle">
+            <label className="benchmark-verdict-toggle" title="Una llamada extra al juez que recomienda el mejor modelo de la corrida">
               <input type="checkbox" checked={requestVerdict} onChange={(event) => setRequestVerdict(event.target.checked)} />
-              Pedir recomendación final (+1 juicio)
+              <span>Pedir recomendación final del juez (+1 llamada)</span>
             </label>
 
             <p className="benchmark-meta">{total} combinaciones{requestVerdict ? ' + 1 recomendación final' : ''}</p>

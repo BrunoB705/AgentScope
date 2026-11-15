@@ -311,6 +311,8 @@ public sealed class BenchmarkExecutorTests : IDisposable
         };
         await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
         Assert.StartsWith("[BENCHMARK]", captured);
+        Assert.Contains("superpowers", captured);
+        Assert.Contains("sdd", captured);
     }
 
     [Fact]

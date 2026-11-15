@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 
 internal sealed class BenchmarkExecutor
 {
-    private const string BenchmarkPrefix = "[BENCHMARK] Esta es una corrida automatizada. No hagas preguntas de contexto, no preguntes si el proyecto es universitario o personal y no pidas confirmación. Ejecutá la tarea y respondé con el resultado.\n\n";
+    private const string BenchmarkPrefix = "[BENCHMARK] Esta es una corrida automatizada. No hagas preguntas de contexto, no preguntes si el proyecto es universitario o personal y no pidas confirmación. No uses skills de proceso como superpowers, kiro o sdd, ni escribas planes, specs o documentos de diseño. Ejecutá la tarea directamente y respondé con el resultado.\n\n";
 
     private readonly TelemetryDb _db;
     private readonly BenchmarkCatalog _catalog;

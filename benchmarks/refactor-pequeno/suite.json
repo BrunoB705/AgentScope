@@ -1,0 +1,22 @@
+{
+  "name": "Refactor pequeño",
+  "description": "Un bug de código y una explicación abierta.",
+  "defaultJudge": "opencode-go/minimax-m3",
+  "modelTimeoutMs": 300000,
+  "tests": [
+    {
+      "name": "off-by-one",
+      "type": "code",
+      "promptFile": "prompts/off-by-one.md",
+      "fixture": "fixtures/off-by-one",
+      "verify": { "command": "node --test", "timeoutMs": 120000 },
+      "judge": true
+    },
+    {
+      "name": "explicar-cache",
+      "type": "open",
+      "promptFile": "prompts/explicar-cache.md",
+      "rubric": ["Claridad", "Correctitud técnica", "Ejemplo concreto"]
+    }
+  ]
+}

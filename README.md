@@ -67,6 +67,31 @@ Las corridas usan la telemetría existente para tokens y costo, y quedan como se
 
 En la pestaña podés filtrar modelos por nombre y elegir una variante (`low`, `high`, `max`, `thinking` o escribir otra). La tabla usa la cuota Go estimada de cada resultado. El historial se carga de a 20 corridas con “Cargar más”. Si activás la recomendación final, un juicio extra —una llamada más al mismo juez— sugiere qué modelo conviene para la suite. Una corrida terminada se puede eliminar junto con sus sesiones; deja de contar como uso real.
 
+### Suites y prerrequisitos
+
+Hay cuatro suites:
+
+- `refactor-pequeno`: un bug de código en JavaScript y una explicación abierta.
+- `csharp-dotnet`: nulabilidad, LINQ sobre secuencias vacías y revisión de `async`.
+- `react-typescript`: inmutabilidad de estado, uniones discriminadas y estado derivado.
+- `python-fastapi`: validación de campos, códigos de error y diseño de endpoints.
+
+Cada suite combina pruebas `code`, que se ejecutan de verdad contra un fixture, y pruebas `open`, que evalúa un juez con una rúbrica.
+
+Los prerrequisitos dependen de la suite. Las de C# usan el SDK de .NET 10 y las de TypeScript, Node 22.18 o superior, que ejecuta archivos `.ts` sin compilar; ninguna de las dos necesita instalar paquetes. Las de Python sí, porque `fastapi` y `httpx` no vienen con la aplicación:
+
+```powershell
+pip install -r benchmarks/python-fastapi/requirements.txt
+```
+
+Es una instalación única por máquina. Para saber qué falta antes de correr una suite, sin instalar nada:
+
+```powershell
+powershell -File benchmarks/check-prerequisites.ps1
+```
+
+El script informa cada prerrequisito y sale con código distinto de cero si falta alguno.
+
 ## Validación
 
 ```sh

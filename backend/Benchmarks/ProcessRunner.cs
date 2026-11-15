@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 
 public sealed class ProcessRunner : IProcessRunner
@@ -55,6 +56,10 @@ public sealed class ProcessRunner : IProcessRunner
         {
             // El proceso ya terminó entre la comprobación y el kill.
         }
+        catch (Win32Exception)
+        {
+            // El handle ya no está disponible; se intenta el respaldo.
+        }
 
         try
         {
@@ -63,6 +68,45 @@ public sealed class ProcessRunner : IProcessRunner
         catch (InvalidOperationException)
         {
             // Sin proceso que esperar.
+        }
+        catch (Win32Exception)
+        {
+            // Sin handle para esperar.
+        }
+
+        try
+        {
+            if (process.HasExited) return;
+        }
+        catch (InvalidOperationException)
+        {
+            return;
+        }
+        catch (Win32Exception)
+        {
+            return;
+        }
+
+        TryTaskkill(process);
+    }
+
+    private static void TryTaskkill(Process process)
+    {
+        try
+        {
+            var startInfo = new ProcessStartInfo("taskkill")
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false,
+            };
+            foreach (var argument in new[] { "/PID", process.Id.ToString(), "/T", "/F" })
+                startInfo.ArgumentList.Add(argument);
+            using var killer = Process.Start(startInfo);
+            killer?.WaitForExit(5000);
+        }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
+        {
+            // Si taskkill no está disponible, no hay más que hacer.
         }
     }
 }

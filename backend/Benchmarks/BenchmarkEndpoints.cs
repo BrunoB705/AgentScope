@@ -56,6 +56,11 @@ public static class BenchmarkEndpoints
             var available = await models.ListAsync(cancellationToken);
             if (available.Error is not null)
                 return Results.Json(new { error = available.Error }, statusCode: StatusCodes.Status409Conflict);
+            var catalogModels = new HashSet<string>(available.Models, StringComparer.Ordinal);
+            if (!modelList.All(catalogModels.Contains))
+                return Results.BadRequest(new { error = "Uno de los modelos no está en el catálogo de opencode." });
+            if (!catalogModels.Contains(judge))
+                return Results.BadRequest(new { error = "El juez no está en el catálogo de opencode." });
 
             var run = new BenchmarkRunEntity
             {
@@ -125,7 +130,14 @@ public static class BenchmarkEndpoints
             run.CompletedAt = DateTime.UtcNow;
             var pending = await db.BenchmarkResults.Where(item => item.RunId == id && item.Status == "pending").ToListAsync(cancellationToken);
             foreach (var result in pending) result.Status = "cancelled";
-            await db.SaveChangesAsync(cancellationToken);
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                return Results.Conflict(new { error = "La corrida terminó mientras se cancelaba." });
+            }
             registry.Cancel(id);
             return Results.Json(new { status = "cancelled" }, statusCode: StatusCodes.Status202Accepted);
         });

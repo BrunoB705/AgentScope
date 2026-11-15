@@ -79,12 +79,46 @@ internal sealed class BenchmarkExecutor
         }
         catch (OperationCanceledException)
         {
-            run.Status = "cancelled";
-            run.CompletedAt = DateTime.UtcNow;
-            foreach (var item in await _db.BenchmarkResults
+            await _db.BenchmarkResults
                 .Where(result => result.RunId == runId && (result.Status == "pending" || result.Status == "running"))
-                .ToListAsync(CancellationToken.None))
-                item.Status = "cancelled";
+                .ExecuteUpdateAsync(setters => setters.SetProperty(result => result.Status, "cancelled"), CancellationToken.None);
+            await _db.BenchmarkRuns
+                .Where(item => item.Id == runId && item.Status != "cancelled")
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.Status, "cancelled")
+                    .SetProperty(item => item.CompletedAt, DateTime.UtcNow), CancellationToken.None);
+            await _db.Entry(run).ReloadAsync(CancellationToken.None);
+            await _notifier.UpdatedAsync(run.Id, run.Status, CancellationToken.None);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            try
+            {
+                await _db.Entry(run).ReloadAsync(CancellationToken.None);
+            }
+            catch (Exception)
+            {
+                return;
+            }
+
+            if (run.Status == "cancelled")
+            {
+                foreach (var item in await _db.BenchmarkResults
+                    .Where(result => result.RunId == runId && (result.Status == "pending" || result.Status == "running"))
+                    .ToListAsync(CancellationToken.None))
+                    item.Status = "cancelled";
+            }
+            else
+            {
+                run.Status = "failed";
+                run.Error = "La corrida cambió de estado mientras se ejecutaba.";
+                run.CompletedAt = DateTime.UtcNow;
+                foreach (var item in await _db.BenchmarkResults
+                    .Where(result => result.RunId == runId && (result.Status == "pending" || result.Status == "running"))
+                    .ToListAsync(CancellationToken.None))
+                    item.Status = "failed";
+            }
+
             await _db.SaveChangesAsync(CancellationToken.None);
             await _notifier.UpdatedAsync(run.Id, run.Status, CancellationToken.None);
         }
@@ -375,18 +409,7 @@ internal sealed class BenchmarkExecutor
 
     private static void ResetDirectory(string path)
     {
-        try
-        {
-            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
-        }
-        catch (IOException)
-        {
-            // Un proceso puede mantener archivos abiertos; se reutiliza el directorio.
-        }
-        catch (UnauthorizedAccessException)
-        {
-            // Igual que IOException: la limpieza es best-effort.
-        }
+        if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
         Directory.CreateDirectory(path);
     }
 

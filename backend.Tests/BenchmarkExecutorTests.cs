@@ -237,6 +237,7 @@ public sealed class BenchmarkExecutorTests : IDisposable
         };
         await harness.Executor.ExecuteAsync(harness.RunId, cancellation.Token);
 
+        harness.Db.ChangeTracker.Clear();
         var results = harness.Db.BenchmarkResults.OrderBy(item => item.Id).ToList();
         Assert.All(results, result => Assert.Equal("cancelled", result.Status));
         Assert.Equal("cancelled", harness.Db.BenchmarkRuns.Single().Status);
@@ -283,6 +284,19 @@ public sealed class BenchmarkExecutorTests : IDisposable
         Assert.Equal("http://127.0.0.1:9", request.Environment!["OPENCODE_OBSERVABILITY_URL"]);
         Assert.Equal("test-key", request.Environment!["OPENCODE_OBSERVABILITY_KEY"]);
         Assert.Contains("--standalone", request.Arguments);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_DirtyWorkDirectory_FailsRunWithoutModel()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var harness = Create("code");
+        var work = Path.Combine(_root, "work", "benchmark");
+        Directory.CreateDirectory(work);
+        using var handle = new FileStream(Path.Combine(work, "locked.txt"), FileMode.Create, FileAccess.Write, FileShare.None);
+        await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
+        Assert.Equal("failed", harness.Db.BenchmarkRuns.Single().Status);
+        Assert.DoesNotContain(harness.Process.Requests, IsModel);
     }
 
     private sealed record Harness(

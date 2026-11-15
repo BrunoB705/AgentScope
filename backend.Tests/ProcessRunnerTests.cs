@@ -73,4 +73,14 @@ public sealed class ProcessRunnerTests
             Assert.Equal(new[] { "run", "--file", @"C:\tmp\a b.md" }, arguments);
         }
     }
+
+    [Fact]
+    public void ShellCommand_OpenCodeQuotesCmdMetacharacters()
+    {
+        var (_, arguments) = ShellCommand.OpenCode("opencode", "--model", "a&calc");
+        if (OperatingSystem.IsWindows())
+            Assert.Contains("\"a&calc\"", arguments);
+        else
+            Assert.Contains("a&calc", arguments);
+    }
 }

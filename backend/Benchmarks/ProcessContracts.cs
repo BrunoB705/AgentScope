@@ -29,8 +29,10 @@ public static class ShellCommand
             ? ("cmd.exe", new[] { "/c", QuoteForCmd(executable) }.Concat(arguments.Select(QuoteForCmd)).ToArray())
             : (executable, arguments);
 
+    private static readonly char[] CmdSpecials = { '&', '|', '<', '>', '^', '(', ')', '%', '!', '"' };
+
     private static string QuoteForCmd(string value) =>
-        value.Any(char.IsWhiteSpace) || value.Contains('"')
+        value.Length == 0 || value.Any(character => char.IsWhiteSpace(character) || CmdSpecials.Contains(character))
             ? "\"" + value.Replace("\"", "\"\"") + "\""
             : value;
 }

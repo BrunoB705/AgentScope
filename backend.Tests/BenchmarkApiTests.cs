@@ -82,6 +82,24 @@ public sealed class BenchmarkApiTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateRun_RejectsUnknownModel()
+    {
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(new[] { "a&calc" }));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("catálogo", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task CreateRun_RejectsUnknownJudge()
+    {
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(judge: "provider/model-z"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("juez", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task CreateRun_CreatesOneResultPerCombination()
     {
         using var client = Client();
@@ -143,7 +161,7 @@ public class BenchmarkApiFactory : WebApplicationFactory<Program>
         Directory.CreateDirectory(_root);
         WriteSuite();
         Fake.Handler = request => request.Arguments.Contains("models")
-            ? new ProcessResult(0, "provider/model-a\nprovider/model-b\n", "", false, 10)
+            ? new ProcessResult(0, "provider/model-a\nprovider/model-b\nprovider/model-c\n", "", false, 10)
             : new ProcessResult(0, "", "", false, 0);
     }
 

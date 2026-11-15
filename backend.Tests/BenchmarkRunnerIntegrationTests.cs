@@ -114,7 +114,7 @@ public sealed class BenchmarkRunnerApiFactory : BenchmarkApiFactory
     private ProcessResult Handle(ProcessRequest request)
     {
         if (request.Arguments.Contains("models"))
-            return new ProcessResult(0, "provider/model-a\nprovider/model-b\n", "", false, 10);
+            return new ProcessResult(0, "provider/model-a\nprovider/model-b\nprovider/model-c\n", "", false, 10);
         if (request.FileName == "git")
             return request.Arguments.Contains("diff")
                 ? new ProcessResult(0, "diff de prueba", "", false, 10)

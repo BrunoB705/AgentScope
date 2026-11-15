@@ -19,11 +19,18 @@ public sealed class BenchmarkCancellationRegistry
     public CancellationToken Get(string runId) =>
         _sources.GetOrAdd(runId, _ => new CancellationTokenSource()).Token;
 
-    public void Cancel(string runId) =>
-        _sources.GetOrAdd(runId, _ => new CancellationTokenSource()).Cancel();
-
-    public void Remove(string runId)
+    public void Cancel(string runId)
     {
-        if (_sources.TryRemove(runId, out var source)) source.Dispose();
+        var source = _sources.GetOrAdd(runId, _ => new CancellationTokenSource());
+        try
+        {
+            source.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // La corrida ya terminó y el token se liberó.
+        }
     }
+
+    public void Remove(string runId) => _sources.TryRemove(runId, out _);
 }

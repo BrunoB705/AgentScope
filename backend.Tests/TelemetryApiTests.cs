@@ -477,14 +477,14 @@ public sealed class TelemetryApiTests : IDisposable
         Assert.DoesNotContain(recent, session => session.GetProperty("id").GetString() == "overview-recent-0");
     }
 
-    private async Task<HttpResponseMessage> Post(TelemetryEventDto dto)
+    private async Task<HttpResponseMessage> Post(TestTelemetryEventDto dto)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/telemetry/events") { Content = JsonContent.Create(dto) };
         request.Headers.Add("X-Telemetry-Key", TestCredentials.ApiKey);
         return await _client.SendAsync(request);
     }
 
-    private static TelemetryEventDto Fixture(string eventId, string sessionId, string type, DateTimeOffset? timestamp = null) => new(
+    private static TestTelemetryEventDto Fixture(string eventId, string sessionId, string type, DateTimeOffset? timestamp = null) => new(
         eventId, "opencode", sessionId, timestamp ?? DateTimeOffset.UtcNow, type, Project: "fixture", Status: "ok");
 }
 
@@ -508,7 +508,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     }
 }
 
-public sealed record TelemetryEventDto(
+public sealed record TestTelemetryEventDto(
     string EventId, string Source, string SessionId, DateTimeOffset Timestamp, string Type,
     string? Project = null, string? Status = null, long? DurationMs = null, string? Model = null,
     int InputTokens = 0, int OutputTokens = 0, string? ParentId = null, string? Name = null,

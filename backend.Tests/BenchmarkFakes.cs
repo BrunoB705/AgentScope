@@ -15,3 +15,22 @@ public sealed class FakeProcessRunner : IProcessRunner
         return Task.FromResult(result);
     }
 }
+
+public sealed class FakeSessionReader : IBenchmarkSessionReader
+{
+    public BenchmarkSessionMetrics? Result { get; set; } = new("ses_model", 100, 50, 20, 5, 0.001, 0.0005);
+
+    public Task<BenchmarkSessionMetrics?> FindByTitleAsync(string title, TimeSpan timeout, CancellationToken cancellationToken) =>
+        Task.FromResult(Result);
+}
+
+public sealed class FakeNotifier : IBenchmarkNotifier
+{
+    public List<(string RunId, string Status)> Calls { get; } = new();
+
+    public Task UpdatedAsync(string runId, string status, CancellationToken cancellationToken)
+    {
+        Calls.Add((runId, status));
+        return Task.CompletedTask;
+    }
+}

@@ -350,6 +350,7 @@ internal sealed class BenchmarkExecutor
                 result.SessionId = metrics.SessionId;
                 result.InputTokens = metrics.InputTokens;
                 result.OutputTokens = metrics.OutputTokens;
+                result.ReasoningTokens = metrics.ReasoningTokens;
                 result.CacheReadTokens = metrics.CacheReadTokens;
                 result.CacheWriteTokens = metrics.CacheWriteTokens;
                 result.Cost = metrics.Cost;

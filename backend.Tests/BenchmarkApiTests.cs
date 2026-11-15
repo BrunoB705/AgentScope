@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -153,6 +154,62 @@ public sealed class BenchmarkApiTests : IDisposable
         var response = await client.PostAsync("/api/v1/benchmarks/runs/missing/cancel", null);
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Contains("no existe", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task DeleteRun_RejectsQueuedRun()
+    {
+        using var client = Client();
+        using var created = JsonDocument.Parse(await (await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody())).Content.ReadAsStringAsync());
+        var id = created.RootElement.GetProperty("id").GetString();
+        var response = await client.DeleteAsync($"/api/v1/benchmarks/runs/{id}");
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task DeleteRun_RemovesRunAndResults()
+    {
+        using var client = Client();
+        using var created = JsonDocument.Parse(await (await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody())).Content.ReadAsStringAsync());
+        var id = created.RootElement.GetProperty("id").GetString();
+        await client.PostAsync($"/api/v1/benchmarks/runs/{id}/cancel", null);
+
+        var response = await client.DeleteAsync($"/api/v1/benchmarks/runs/{id}");
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        var detail = await client.GetAsync($"/api/v1/benchmarks/runs/{id}");
+        Assert.Equal(HttpStatusCode.NotFound, detail.StatusCode);
+    }
+
+    [Fact]
+    public async Task DeleteRun_RemovesLinkedTelemetry()
+    {
+        using var client = Client();
+        using var created = JsonDocument.Parse(await (await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody())).Content.ReadAsStringAsync());
+        var id = created.RootElement.GetProperty("id").GetString();
+        await client.PostAsync($"/api/v1/benchmarks/runs/{id}/cancel", null);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TelemetryDb>();
+            var result = await db.BenchmarkResults.FirstAsync(item => item.RunId == id);
+            result.SessionId = "bench-session";
+            result.JudgeSessionId = "bench-judge";
+            db.Sessions.Add(new Session { Id = "bench-session", Source = "opencode", Status = "completed", StartedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow });
+            db.Sessions.Add(new Session { Id = "bench-judge", Source = "opencode", Status = "completed", StartedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow });
+            db.Spans.Add(new Span { Id = "span-1", SessionId = "bench-session", Name = "model", Kind = "inference", Status = "ok", StartedAt = DateTime.UtcNow });
+            db.Events.Add(new TelemetryEvent { EventId = "event-1", Source = "opencode", SessionId = "bench-session", Timestamp = DateTime.UtcNow, Type = "model.completed" });
+            await db.SaveChangesAsync();
+        }
+
+        var response = await client.DeleteAsync($"/api/v1/benchmarks/runs/{id}");
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+        using var verifyScope = _factory.Services.CreateScope();
+        var verify = verifyScope.ServiceProvider.GetRequiredService<TelemetryDb>();
+        Assert.False(await verify.Sessions.AnyAsync(item => item.Id == "bench-session" || item.Id == "bench-judge"));
+        Assert.False(await verify.Spans.AnyAsync(item => item.SessionId == "bench-session"));
+        Assert.False(await verify.Events.AnyAsync(item => item.SessionId == "bench-session"));
+        Assert.False(await verify.BenchmarkRuns.AnyAsync(item => item.Id == id));
     }
 
     [Fact]

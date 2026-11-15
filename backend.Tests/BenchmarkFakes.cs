@@ -20,7 +20,7 @@ public sealed class FakeProcessRunner : IProcessRunner
 
 public sealed class FakeSessionReader : IBenchmarkSessionReader
 {
-    public BenchmarkSessionMetrics? Result { get; set; } = new("ses_model", 100, 50, 20, 5, 0.001, 0.0005);
+    public BenchmarkSessionMetrics? Result { get; set; } = new("ses_model", 100, 50, 7, 20, 5, 0.001, 0.0005);
 
     public Task<BenchmarkSessionMetrics?> FindByTitleAsync(string title, TimeSpan timeout, CancellationToken cancellationToken) =>
         Task.FromResult(Result);

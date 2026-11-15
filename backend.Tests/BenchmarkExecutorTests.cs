@@ -151,6 +151,7 @@ public sealed class BenchmarkExecutorTests : IDisposable
         Assert.Equal(0, result.VerifyExitCode);
         Assert.Equal(1200, result.DurationMs);
         Assert.Equal(100, result.InputTokens);
+        Assert.Equal(7, result.ReasoningTokens);
         Assert.Equal("ses_model", result.SessionId);
         var run = harness.Db.BenchmarkRuns.Single();
         Assert.Equal("completed", run.Status);

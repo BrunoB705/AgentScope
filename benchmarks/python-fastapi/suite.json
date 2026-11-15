@@ -1,0 +1,27 @@
+{
+  "name": "Python y FastAPI",
+  "description": "Validación de campos, códigos de error y diseño de endpoints.",
+  "defaultJudge": "opencode-go/minimax-m3",
+  "tests": [
+    {
+      "name": "validacion-campos",
+      "type": "code",
+      "promptFile": "prompts/validacion-campos.md",
+      "fixture": "fixtures/validacion-campos",
+      "verify": { "command": "python -m pytest", "timeoutMs": 120000 }
+    },
+    {
+      "name": "errores-http",
+      "type": "code",
+      "promptFile": "prompts/errores-http.md",
+      "fixture": "fixtures/errores-http",
+      "verify": { "command": "python -m pytest", "timeoutMs": 120000 }
+    },
+    {
+      "name": "diseno-paginacion",
+      "type": "open",
+      "promptFile": "prompts/diseno-paginacion.md",
+      "rubric": ["Usa Query con límites", "Respuesta con total y página", "Maneja página fuera de rango", "Claridad"]
+    }
+  ]
+}

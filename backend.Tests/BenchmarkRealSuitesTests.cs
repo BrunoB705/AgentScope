@@ -16,6 +16,10 @@ public class BenchmarkRealSuitesTests
         var reactSuite = list.Suites.Single(item => item.Id == "react-typescript");
         Assert.Equal("opencode-go/minimax-m3", reactSuite.DefaultJudge);
         Assert.DoesNotContain(reactSuite.Tests, test => test.Type == "code" && test.Judge);
+
+        var pythonSuite = list.Suites.Single(item => item.Id == "python-fastapi");
+        Assert.Equal("opencode-go/minimax-m3", pythonSuite.DefaultJudge);
+        Assert.DoesNotContain(pythonSuite.Tests, test => test.Type == "code" && test.Judge);
     }
 
     private static string FindBenchmarksRoot()

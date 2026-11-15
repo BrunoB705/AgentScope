@@ -451,6 +451,20 @@ public sealed class TelemetryApiTests : IDisposable
     }
 
     [Fact]
+    public async Task OverviewFiltersByOneDay()
+    {
+        var old = DateTimeOffset.UtcNow.AddDays(-2);
+        await Post(Fixture("old-day", "overview-old-day", "session.created", old));
+        await Post(Fixture("recent-day", "overview-recent-day", "session.created"));
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/overview?days=1"));
+        Assert.Equal(1, json.RootElement.GetProperty("totals").GetProperty("sessions").GetInt32());
+        var recent = json.RootElement.GetProperty("recentSessions").EnumerateArray().ToArray();
+        Assert.Contains(recent, session => session.GetProperty("id").GetString() == "overview-recent-day");
+        Assert.DoesNotContain(recent, session => session.GetProperty("id").GetString() == "overview-old-day");
+    }
+
+    [Fact]
     public async Task OverviewReturnsFiveRecentSessions()
     {
         for (var i = 0; i < 6; i++)

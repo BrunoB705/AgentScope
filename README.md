@@ -78,7 +78,7 @@ Hay cuatro suites:
 
 Cada suite combina pruebas `code`, que se ejecutan de verdad contra un fixture, y pruebas `open`, que evalúa un juez con una rúbrica.
 
-Los prerrequisitos dependen de la suite. Las de C# usan el SDK de .NET 10 y las de TypeScript, Node 22.18 o superior, que ejecuta archivos `.ts` sin compilar; ninguna de las dos necesita instalar paquetes. Las de Python sí, porque `fastapi` y `httpx` no vienen con la aplicación:
+El SDK de .NET 10, Node 22.18 o superior, `git` y `opencode` los necesita toda la aplicación, no una suite en particular. Lo único que agrega una suite son tres paquetes de Python —`fastapi`, `httpx` y `pytest`—, que no vienen con la aplicación:
 
 ```powershell
 pip install -r benchmarks/python-fastapi/requirements.txt

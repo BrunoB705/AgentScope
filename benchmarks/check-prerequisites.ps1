@@ -47,12 +47,12 @@ else {
 $python = Test-Comando 'python'
 if ($python) {
     $pythonVersion = (& python --version 2>&1 | Select-Object -First 1)
-    & python -c "import fastapi, httpx" 2>$null
+    & python -c "import fastapi, httpx, pytest" 2>$null
     if ($LASTEXITCODE -eq 0) {
-        "OK     python ($pythonVersion, con fastapi y httpx)"
+        "OK     python ($pythonVersion, con fastapi, httpx y pytest)"
     }
     else {
-        "FALTA  python (esta $pythonVersion, pero faltan los paquetes fastapi y httpx)"
+        "FALTA  python (esta $pythonVersion, pero faltan fastapi, httpx o pytest)"
         $faltantes += 'python'
         $pythonPaquetesFaltantes = $true
     }

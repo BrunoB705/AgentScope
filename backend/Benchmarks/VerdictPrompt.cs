@@ -21,6 +21,31 @@ public static class VerdictPrompt
             + $"SUITE\n{run.Suite}\n\nRESULTADOS\n{string.Join('\n', lines)}\n\n"
             + "Recomendá el modelo que parece mejor para esta suite y justificá en 3 a 6 líneas. "
             + "Tené en cuenta aprobadas, nota del juez, duración, tokens y cuota Go. "
-            + "Si no hay datos suficientes, decilo. No inventes métricas.";
+            + "Si no hay datos suficientes, decilo. No inventes métricas. "
+            + $"Encerrá tu recomendación entre una línea que diga exactamente {VerdictText.Start} y otra que diga exactamente {VerdictText.End}. "
+            + "No escribas nada fuera de esas dos líneas. No narres tu proceso ni menciones instrucciones, habilidades o herramientas.";
+    }
+}
+
+public static class VerdictText
+{
+    public const string Start = "---RECOMENDACION---";
+    public const string End = "---FIN---";
+
+    /// <summary>
+    /// Devuelve sólo el contenido entre los marcadores. El juez tiende a narrar
+    /// qué instrucciones siguió antes de recomendar, y ese preámbulo no se guarda
+    /// ni se muestra. Si faltan los marcadores, se conserva el texto completo para
+    /// no perder la recomendación.
+    /// </summary>
+    public static string Extract(string text)
+    {
+        var trimmed = text.Trim();
+        var start = trimmed.IndexOf(Start, StringComparison.Ordinal);
+        if (start < 0) return trimmed;
+        var end = trimmed.IndexOf(End, start + Start.Length, StringComparison.Ordinal);
+        if (end < 0) return trimmed;
+        var inner = trimmed[(start + Start.Length)..end].Trim();
+        return inner.Length == 0 ? trimmed : inner;
     }
 }

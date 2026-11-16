@@ -1,0 +1,27 @@
+{
+  "name": "React y TypeScript",
+  "description": "Inmutabilidad de estado, uniones discriminadas y estado derivado.",
+  "defaultJudge": "opencode-go/minimax-m3",
+  "tests": [
+    {
+      "name": "reducer-inmutable",
+      "type": "code",
+      "promptFile": "prompts/reducer-inmutable.md",
+      "fixture": "fixtures/reducer-inmutable",
+      "verify": { "command": "node --test", "timeoutMs": 60000 }
+    },
+    {
+      "name": "union-exhaustiva",
+      "type": "code",
+      "promptFile": "prompts/union-exhaustiva.md",
+      "fixture": "fixtures/union-exhaustiva",
+      "verify": { "command": "node --test", "timeoutMs": 60000 }
+    },
+    {
+      "name": "componente-estado-derivado",
+      "type": "open",
+      "promptFile": "prompts/componente-estado-derivado.md",
+      "rubric": ["Elimina el estado duplicado", "Deriva el valor en el render", "Sin any", "Claridad"]
+    }
+  ]
+}

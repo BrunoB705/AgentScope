@@ -408,7 +408,7 @@ internal sealed class BenchmarkExecutor
 
             var text = OpenCodeOutput.ExtractFinalText(verdict.StandardOutput);
             if (!string.IsNullOrWhiteSpace(text))
-                run.Verdict = Truncate(text, 1000);
+                run.Verdict = Truncate(VerdictText.Extract(text), 1000);
         }
         catch (OperationCanceledException)
         {

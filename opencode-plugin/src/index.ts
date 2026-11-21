@@ -9,7 +9,8 @@ export type TelemetryQueueOptions = { max?: number; attempts?: number; attemptDe
 type ModelCost = { tier?: { type?: string; size?: number }; input?: number; output?: number; cache?: { read?: number; write?: number } };
 const get = (value: unknown, key: string): unknown => value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
 const str = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined;
-const numeric = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+/** Un contador ausente no es cero: se omite para que el backend guarde NULL. */
+const count = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : undefined;
 const finite = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 const date = (value?: number) => new Date(typeof value === 'number' ? value : Date.now()).toISOString();
 const basename = (path?: string) => path?.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
@@ -21,23 +22,46 @@ const modelLabel = (data: Record<string, unknown>) => {
   const provider = str(get(model, 'providerID'));
   return provider ? `${provider}/${id}` : id;
 };
-function estimateGoAllowance(tokens: unknown, modelInfo?: Record<string, unknown>): number | undefined {
+export type QuotaEstimate = { value?: number; missingReason?: string; snapshot?: string };
+
+/**
+ * La cuota Go es una estimación local: el número solo no alcanza para auditarla.
+ * Se devuelve además el motivo cuando no hay valor y el snapshot de tarifas
+ * aplicadas, para que una estimación histórica se pueda reproducir.
+ */
+export function estimateGoAllowance(
+  model: string | undefined,
+  tokens: unknown,
+  modelInfo?: Record<string, unknown>,
+): QuotaEstimate {
+  if (!model?.startsWith('opencode-go/')) return { missingReason: 'not_applicable' };
   const costTiers = get(modelInfo, 'cost');
-  if (!Array.isArray(costTiers) || costTiers.length === 0) return undefined;
+  if (!Array.isArray(costTiers) || costTiers.length === 0) return { missingReason: 'no_catalog' };
   const input = finite(get(tokens, 'input'));
   const output = finite(get(tokens, 'output'));
   const cache = get(tokens, 'cache');
   const cacheRead = finite(get(cache, 'read'));
   const cacheWrite = finite(get(cache, 'write'));
-  if (input === undefined || output === undefined || cacheRead === undefined || cacheWrite === undefined) return undefined;
+  if (input === undefined || output === undefined || cacheRead === undefined || cacheWrite === undefined)
+    return { missingReason: 'tokens_missing' };
   const contextSize = input + cacheRead + cacheWrite;
   const applicable = (costTiers as ModelCost[])
     .filter(tier => !tier.tier || tier.tier.type !== 'context' || contextSize >= (tier.tier.size ?? Number.POSITIVE_INFINITY))
     .sort((a, b) => (a.tier?.size ?? 0) - (b.tier?.size ?? 0))
     .at(-1);
-  if (!applicable || ![applicable.input, applicable.output, applicable.cache?.read, applicable.cache?.write].every(value => typeof value === 'number' && Number.isFinite(value) && value >= 0)) return undefined;
+  if (!applicable) return { missingReason: 'no_rate' };
+  if (![applicable.input, applicable.output, applicable.cache?.read, applicable.cache?.write].every(value => typeof value === 'number' && Number.isFinite(value) && value >= 0))
+    return { missingReason: 'incomplete_rate' };
   // OpenCode output tokens already include reasoning; input excludes cached tokens.
-  return (input * applicable.input! + output * applicable.output! + cacheRead * applicable.cache!.read! + cacheWrite * applicable.cache!.write!) / 1_000_000;
+  const value = (input * applicable.input! + output * applicable.output! + cacheRead * applicable.cache!.read! + cacheWrite * applicable.cache!.write!) / 1_000_000;
+  const snapshot = JSON.stringify({
+    input: applicable.input,
+    output: applicable.output,
+    cacheRead: applicable.cache!.read,
+    cacheWrite: applicable.cache!.write,
+    tier: applicable.tier ?? null,
+  });
+  return { value, snapshot };
 }
 
 async function resolveApiKey(): Promise<string | undefined> {
@@ -188,7 +212,7 @@ export class TelemetryQueue {
 }
 
 /** Maps only scalar metadata from OpenCode v2 events; message, tool input/output are never copied. */
-export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', step?: { model?: string; started?: number; modelInfo?: Record<string, unknown>; toolName?: string }): Telemetry[] {
+export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', step?: { model?: string; started?: number; modelInfo?: Record<string, unknown>; toolName?: string; catalogFetchedAt?: string }): Telemetry[] {
   const sid = session(event);
   if (!sid) return [];
   const data = event.data ?? {};
@@ -225,6 +249,7 @@ export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', ste
     case 'session.step.ended': {
       const tokens = get(data, 'tokens');
       const finish = str(get(data, 'finish'));
+      const quota = estimateGoAllowance(step?.model, tokens, step?.modelInfo);
       return [payload('model.completed', {
         eventId: `model:${str(get(data, 'assistantMessageID')) ?? event.id ?? sid}`,
         name: step?.model ?? 'model', model: step?.model,
@@ -232,11 +257,14 @@ export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', ste
         timestamp: date(step?.started ?? event.created),
         durationMs: typeof step?.started === 'number' && typeof event.created === 'number' ? Math.max(0, event.created - step.started) : undefined,
         cost: finite(get(data, 'cost')),
-        inputTokens: numeric(get(tokens, 'input')), outputTokens: numeric(get(tokens, 'output')),
-        reasoningTokens: numeric(get(tokens, 'reasoning')),
-        cacheReadTokens: numeric(get(get(tokens, 'cache'), 'read')),
-        cacheWriteTokens: numeric(get(get(tokens, 'cache'), 'write')),
-        quotaCostEstimate: step?.model?.startsWith('opencode-go/') ? estimateGoAllowance(tokens, step.modelInfo) : undefined,
+        inputTokens: count(get(tokens, 'input')), outputTokens: count(get(tokens, 'output')),
+        reasoningTokens: count(get(tokens, 'reasoning')),
+        cacheReadTokens: count(get(get(tokens, 'cache'), 'read')),
+        cacheWriteTokens: count(get(get(tokens, 'cache'), 'write')),
+        quotaCostEstimate: quota.value,
+        quotaMissingReason: quota.missingReason,
+        quotaRateSnapshot: quota.snapshot,
+        quotaCatalogFetchedAt: quota.value === undefined ? undefined : step?.catalogFetchedAt,
         attributes: { opencode_event: event.type, ...(finish === 'error' ? { error_code: 'model_error' } : {}) },
       })];
     }
@@ -267,16 +295,18 @@ export default Plugin.define({
     const apiKey = (await resolveApiKey()) ?? '';
     if (!apiKey) { console.warn('Agent Observability: configura OPENCODE_OBSERVABILITY_KEY para habilitar la ingesta.'); return; }
     const fallbackProject = process.env.OPENCODE_OBSERVABILITY_PROJECT ?? basename(ctx.location.directory) ?? 'opencode';
-    const stepByMessage = new Map<string, { model: string; started: number; modelInfo?: Record<string, unknown> }>();
+    const stepByMessage = new Map<string, { model: string; started: number; modelInfo?: Record<string, unknown>; catalogFetchedAt?: string }>();
     const modelBySession = new Map<string, string>();
     const modelInfoById = new Map<string, Record<string, unknown>>();
     const titleLookupAt = new Map<string, number>();
     const titleBySession = new Map<string, string>();
     const toolNameById = new Map<string, string>();
     const toolStartedAtById = new Map<string, number>();
+    let catalogFetchedAt: string | undefined;
     try {
       const models = await ctx.model.list({ location: { directory: ctx.location.directory } });
       for (const model of models.data) modelInfoById.set(`${model.providerID}/${model.modelID}`, model as unknown as Record<string, unknown>);
+      catalogFetchedAt = new Date().toISOString();
     } catch { /* Model pricing is optional; keep collecting usage when unavailable. */ }
     const controller = new AbortController();
     let credentialsWarned = false;
@@ -378,13 +408,13 @@ export default Plugin.define({
           }
           const step = current.type === 'session.step.ended' ? (messageId ? stepByMessage.get(messageId) : undefined) : undefined;
           const model = step?.model ?? (sid ? modelBySession.get(sid) : undefined);
-          for (const mapped of mapOpenCodeEvent(current, fallbackProject, { model, started: step?.started ?? toolStartedAt, modelInfo: step?.modelInfo ?? (model ? modelInfoById.get(model) : undefined), toolName })) queue.enqueue(mapped);
+          for (const mapped of mapOpenCodeEvent(current, fallbackProject, { model, started: step?.started ?? toolStartedAt, modelInfo: step?.modelInfo ?? (model ? modelInfoById.get(model) : undefined), toolName, catalogFetchedAt: step?.catalogFetchedAt ?? catalogFetchedAt })) queue.enqueue(mapped);
           if (sid && (current.type === 'session.model.selected' || current.type === 'session.step.started')) {
             const model = modelLabel(current.data ?? {});
             if (model) modelBySession.set(sid, model);
             if (current.type === 'session.step.started' && messageId && model) {
               const started = finite(get(current.data, 'started'));
-              stepByMessage.set(messageId, { model, started: started ?? current.created ?? Date.now(), modelInfo: modelInfoById.get(model) });
+              stepByMessage.set(messageId, { model, started: started ?? current.created ?? Date.now(), modelInfo: modelInfoById.get(model), catalogFetchedAt });
             }
           }
           if (current.type === 'session.step.ended' && messageId) stepByMessage.delete(messageId);

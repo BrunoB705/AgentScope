@@ -11,20 +11,52 @@ public sealed class TelemetryApiTests : IDisposable
 {
     private readonly ApiFactory _factory = new();
     private readonly HttpClient _client;
-    public TelemetryApiTests() => _client = _factory.CreateClient();
+    public TelemetryApiTests()
+    {
+        _client = _factory.CreateClient();
+        _client.DefaultRequestHeaders.Add("X-Telemetry-Key", TestCredentials.ApiKey);
+    }
     public void Dispose() { _client.Dispose(); _factory.Dispose(); }
 
     [Fact]
     public async Task HealthEndpointIsAvailable()
     {
-        var response = await _client.GetAsync("/api/v1/health");
+        var response = await _factory.CreateClient().GetAsync("/api/v1/health");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("/api/v1/sessions")]
+    [InlineData("/api/v1/overview")]
+    [InlineData("/api/v1/analytics/tools")]
+    [InlineData("/api/v1/analytics/models")]
+    [InlineData("/api/v1/behavior")]
+    [InlineData("/api/v1/comparisons")]
+    [InlineData("/api/v1/budgets")]
+    [InlineData("/api/v1/benchmarks/suites")]
+    public async Task ReadEndpointsRequireLocalKey(string path)
+    {
+        using var anonymous = _factory.CreateClient();
+        var response = await anonymous.GetAsync(path);
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+
+        var authorized = await _client.GetAsync(path);
+        Assert.Equal(HttpStatusCode.OK, authorized.StatusCode);
+    }
+
+    [Fact]
+    public async Task MutatingEndpointsRequireLocalKey()
+    {
+        using var anonymous = _factory.CreateClient();
+        var response = await anonymous.PutAsJsonAsync("/api/v1/budgets", new { project = "x", monthlyLimit = 10, metric = "cost" });
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
     [Fact]
     public async Task IngestionRequiresLocalKey()
     {
-        var response = await _client.PostAsJsonAsync("/api/v1/telemetry/events", Fixture("no-key", "session-no-key", "session.created"));
+        using var anonymous = _factory.CreateClient();
+        var response = await anonymous.PostAsJsonAsync("/api/v1/telemetry/events", Fixture("no-key", "session-no-key", "session.created"));
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
@@ -52,6 +84,103 @@ public sealed class TelemetryApiTests : IDisposable
         Assert.DoesNotContain("private", attributes);
         Assert.DoesNotContain("prompt", attributes);
         Assert.DoesNotContain("command", attributes);
+    }
+
+    [Fact]
+    public async Task MissingTokenCountersStayNullInsteadOfZero()
+    {
+        var payload = Fixture("model-null-tokens", "session-null-tokens", "model.completed") with { Name = "opencode-go/model-z" };
+        Assert.Equal(HttpStatusCode.OK, (await Post(payload)).StatusCode);
+
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-null-tokens"));
+        var metrics = detail.RootElement.GetProperty("metrics");
+        Assert.Equal(JsonValueKind.Null, metrics.GetProperty("inputTokens").ValueKind);
+        Assert.Equal(JsonValueKind.Null, metrics.GetProperty("outputTokens").ValueKind);
+
+        using var overview = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/overview"));
+        Assert.Equal(JsonValueKind.Null, overview.RootElement.GetProperty("totals").GetProperty("totalTokens").ValueKind);
+    }
+
+    [Fact]
+    public async Task ReportedZeroTokensStayZero()
+    {
+        var payload = Fixture("model-zero-tokens", "session-zero-tokens", "model.completed") with
+        {
+            Name = "opencode-go/model-z", InputTokens = 0, OutputTokens = 0,
+        };
+        Assert.Equal(HttpStatusCode.OK, (await Post(payload)).StatusCode);
+
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-zero-tokens"));
+        var metrics = detail.RootElement.GetProperty("metrics");
+        Assert.Equal(0, metrics.GetProperty("inputTokens").GetInt64());
+        Assert.Equal(0, metrics.GetProperty("outputTokens").GetInt64());
+    }
+
+    [Fact]
+    public async Task LateTitleDoesNotOverwriteNewerTitle()
+    {
+        var newer = DateTimeOffset.UtcNow;
+        Assert.Equal(HttpStatusCode.OK, (await Post(Fixture("title-new", "session-title-order", "session.title.updated", newer) with { Title = "nuevo" })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Post(Fixture("title-old", "session-title-order", "session.title.updated", newer.AddMinutes(-5)) with { Title = "viejo" })).StatusCode);
+
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-title-order"));
+        Assert.Equal("nuevo", detail.RootElement.GetProperty("session").GetProperty("title").GetString());
+    }
+
+    [Fact]
+    public async Task LateModelDoesNotOverwriteNewerModel()
+    {
+        var newer = DateTimeOffset.UtcNow;
+        Assert.Equal(HttpStatusCode.OK, (await Post(Fixture("model-new", "session-model-order", "session.model.selected", newer) with { Model = "opencode-go/nuevo" })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Post(Fixture("model-old", "session-model-order", "session.model.selected", newer.AddMinutes(-5)) with { Model = "opencode-go/viejo" })).StatusCode);
+
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-model-order"));
+        Assert.Equal("opencode-go/nuevo", detail.RootElement.GetProperty("session").GetProperty("model").GetString());
+    }
+
+    [Fact]
+    public async Task QuotaProvenanceIsPersistedOnTheSpan()
+    {
+        var payload = Fixture("model-prov", "session-provenance", "model.completed") with
+        {
+            Name = "opencode-go/model-x", Status = "ok", InputTokens = 1000, OutputTokens = 500,
+            QuotaCostEstimate = 0.004325,
+            QuotaCatalogFetchedAt = "2026-11-17T10:22:00.000Z",
+            QuotaRateSnapshot = "{\"input\":0.15,\"output\":0.6,\"cacheRead\":0.015,\"cacheWrite\":0.1875,\"tier\":null}",
+        };
+        Assert.Equal(HttpStatusCode.OK, (await Post(payload)).StatusCode);
+
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-provenance"));
+        var span = detail.RootElement.GetProperty("spans")[0];
+        Assert.Equal(0.004325, span.GetProperty("quotaCostEstimate").GetDouble(), 9);
+        Assert.Equal("2026-11-17T10:22:00.000Z", span.GetProperty("quotaCatalogFetchedAt").GetString());
+        Assert.Contains("\"cacheWrite\":0.1875", span.GetProperty("quotaRateSnapshot").GetString()!);
+        Assert.Equal(JsonValueKind.Null, span.GetProperty("quotaMissingReason").ValueKind);
+    }
+
+    [Fact]
+    public async Task MissingQuotaPersistsItsReason()
+    {
+        var payload = Fixture("model-missing", "session-provenance-missing", "model.completed") with
+        {
+            Name = "opencode-go/model-y", Status = "ok", QuotaMissingReason = "no_catalog",
+        };
+        Assert.Equal(HttpStatusCode.OK, (await Post(payload)).StatusCode);
+
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/session-provenance-missing"));
+        var span = detail.RootElement.GetProperty("spans")[0];
+        Assert.Equal(JsonValueKind.Null, span.GetProperty("quotaCostEstimate").ValueKind);
+        Assert.Equal("no_catalog", span.GetProperty("quotaMissingReason").GetString());
+    }
+
+    [Fact]
+    public async Task OversizedQuotaSnapshotIsRejected()
+    {
+        var payload = Fixture("model-big", "session-provenance-big", "model.completed") with
+        {
+            QuotaRateSnapshot = new string('x', 501),
+        };
+        Assert.Equal(HttpStatusCode.BadRequest, (await Post(payload)).StatusCode);
     }
 
     [Fact]
@@ -480,7 +609,6 @@ public sealed class TelemetryApiTests : IDisposable
     private async Task<HttpResponseMessage> Post(TestTelemetryEventDto dto)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/telemetry/events") { Content = JsonContent.Create(dto) };
-        request.Headers.Add("X-Telemetry-Key", TestCredentials.ApiKey);
         return await _client.SendAsync(request);
     }
 
@@ -511,9 +639,11 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
 public sealed record TestTelemetryEventDto(
     string EventId, string Source, string SessionId, DateTimeOffset Timestamp, string Type,
     string? Project = null, string? Status = null, long? DurationMs = null, string? Model = null,
-    int InputTokens = 0, int OutputTokens = 0, string? ParentId = null, string? Name = null,
-    Dictionary<string, string>? Attributes = null, double? Cost = null, int ReasoningTokens = 0,
-    int CacheReadTokens = 0, int CacheWriteTokens = 0, double? QuotaCostEstimate = null);
+    int? InputTokens = null, int? OutputTokens = null, string? ParentId = null, string? Name = null,
+    Dictionary<string, string>? Attributes = null, double? Cost = null, int? ReasoningTokens = null,
+    int? CacheReadTokens = null, int? CacheWriteTokens = null, double? QuotaCostEstimate = null,
+    string? QuotaCatalogFetchedAt = null, string? QuotaRateSnapshot = null, string? QuotaMissingReason = null,
+    string? Title = null);
 
 internal static class TestCredentials
 {

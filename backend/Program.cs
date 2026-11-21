@@ -35,21 +35,31 @@ if (builder.Configuration.GetValue("Benchmarks:WorkerEnabled", true))
 var app = builder.Build();
 using (var scope = app.Services.CreateScope()) {
     var db = scope.ServiceProvider.GetRequiredService<TelemetryDb>();
-    await db.Database.EnsureCreatedAsync();
-    foreach (var table in new[] { "Events", "Spans" }) {
-        await EnsureColumnAsync(db, table, "Cost", "REAL NULL");
-        await EnsureColumnAsync(db, table, "ReasoningTokens", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(db, table, "CacheReadTokens", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(db, table, "CacheWriteTokens", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(db, table, "QuotaCostEstimate", "REAL NULL");
-    }
-    await EnsureSessionTitleColumnAsync(db);
-    await EnsureSessionReviewColumnsAsync(db);
-    await db.Database.ExecuteSqlRawAsync("CREATE TABLE IF NOT EXISTS Budgets (Project TEXT NOT NULL PRIMARY KEY, MonthlyLimit REAL NOT NULL, Metric TEXT NOT NULL)");
+    await SchemaMigrator.ApplyAsync(db);
     await BenchmarkStorage.EnsureAsync(db);
     await BenchmarkStorage.MarkStaleAsync(db);
 }
 app.UseCors();
+// Toda la superficie de lectura exige la misma clave que la ingesta; sólo el health
+// check queda público porque start.ps1 lo usa para saber si la API ya está lista.
+var surfaceKey = app.Configuration["Telemetry:ApiKey"]!;
+app.Use(async (context, next) =>
+{
+    var path = context.Request.Path;
+    var isApiSurface = path.StartsWithSegments("/api") || path.StartsWithSegments("/hubs");
+    if (!isApiSurface || path.StartsWithSegments("/api/v1/health"))
+    {
+        await next();
+        return;
+    }
+    if (!CryptographicEquals(context.Request.Headers["X-Telemetry-Key"].ToString(), surfaceKey))
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        await context.Response.WriteAsJsonAsync(new { error = "Falta o no coincide la cabecera X-Telemetry-Key." });
+        return;
+    }
+    await next();
+});
 app.MapHub<TelemetryHub>("/hubs/telemetry");
 app.MapGet("/api/v1/health", () => Results.Ok(new { status = "ok" }));
 var ingestLock = new SemaphoreSlim(1, 1);
@@ -77,7 +87,7 @@ app.MapGet("/api/v1/comparisons", async (TelemetryDb db) => {
     var runs = sessions.Select(session => {
         var sessionSpans = spans.Where(span => span.SessionId == session.Id).ToList();
         var elapsed = (session.EndedAt ?? session.UpdatedAt) - session.StartedAt;
-        return new ComparisonRunDto(session.Id, session.Title, session.Project, session.Model, session.Status, session.Rating, session.ReviewNote, session.ReviewTask!, session.UpdatedAt, Math.Max(0, (long)elapsed.TotalMilliseconds), sessionSpans.Sum(span => span.InputTokens), sessionSpans.Sum(span => span.OutputTokens), sessionSpans.Any(span => span.Cost.HasValue) ? sessionSpans.Where(span => span.Cost.HasValue).Sum(span => span.Cost!.Value) : null, sessionSpans.Any(span => span.QuotaCostEstimate.HasValue) ? sessionSpans.Where(span => span.QuotaCostEstimate.HasValue).Sum(span => span.QuotaCostEstimate!.Value) : null, sessionSpans.Where(span => span.Kind == "execute_tool").Select(span => span.Name).Distinct().Order().ToArray());
+        return new ComparisonRunDto(session.Id, session.Title, session.Project, session.Model, session.Status, session.Rating, session.ReviewNote, session.ReviewTask!, session.UpdatedAt, Math.Max(0, (long)elapsed.TotalMilliseconds), SumOrNull(sessionSpans, span => span.InputTokens), SumOrNull(sessionSpans, span => span.OutputTokens), sessionSpans.Any(span => span.Cost.HasValue) ? sessionSpans.Where(span => span.Cost.HasValue).Sum(span => span.Cost!.Value) : null, sessionSpans.Any(span => span.QuotaCostEstimate.HasValue) ? sessionSpans.Where(span => span.QuotaCostEstimate.HasValue).Sum(span => span.QuotaCostEstimate!.Value) : null, sessionSpans.Where(span => span.Kind == "execute_tool").Select(span => span.Name).Distinct().Order().ToArray());
     }).ToList();
     var groups = runs.GroupBy(run => run.TaskLabel.Trim(), StringComparer.OrdinalIgnoreCase).OrderBy(group => group.Key).Select(group => new { taskLabel = group.Key, sessions = group.OrderByDescending(run => run.UpdatedAt).ToArray() });
     return Results.Ok(groups);
@@ -148,12 +158,15 @@ app.MapGet("/api/v1/analytics/models", async (TelemetryDb db, DateTimeOffset? fr
     var availableSources = allRows.Select(row => row.Source).Distinct().Order().ToArray();
     var availableModels = allRows.Select(row => row.Model).Distinct().Order().ToArray();
     var rows = allRows.Where(row => (string.IsNullOrWhiteSpace(source) || row.Source == source) && (string.IsNullOrWhiteSpace(model) || row.Model == model)).ToArray();
-    long inputTokens = rows.Sum(row => (long)row.InputTokens);
-    long outputTokens = rows.Sum(row => (long)row.OutputTokens);
-    long cacheReadTokens = rows.Sum(row => (long)row.CacheReadTokens);
-    long cacheWriteTokens = rows.Sum(row => (long)row.CacheWriteTokens);
-    long reasoningTokens = rows.Sum(row => (long)row.ReasoningTokens);
-    long totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
+    long? inputTokens = SumOrNull(rows, row => row.InputTokens);
+    long? outputTokens = SumOrNull(rows, row => row.OutputTokens);
+    long? cacheReadTokens = SumOrNull(rows, row => row.CacheReadTokens);
+    long? cacheWriteTokens = SumOrNull(rows, row => row.CacheWriteTokens);
+    long? reasoningTokens = SumOrNull(rows, row => row.ReasoningTokens);
+    long? totalTokens = TotalTokensOf(inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
+    double? cacheEfficiency = null;
+    var cacheBase = (inputTokens ?? 0) + (cacheReadTokens ?? 0);
+    if ((inputTokens.HasValue || cacheReadTokens.HasValue) && cacheBase > 0) cacheEfficiency = (double)(cacheReadTokens ?? 0) / cacheBase;
     var costRows = rows.Where(row => row.Cost.HasValue).ToArray();
     var quotaRows = rows.Where(row => row.QuotaCostEstimate.HasValue).ToArray();
     DateTime BucketDate(DateTime date) => bucketType switch {
@@ -163,25 +176,25 @@ app.MapGet("/api/v1/analytics/models", async (TelemetryDb db, DateTimeOffset? fr
     };
     var trend = rows.GroupBy(row => BucketDate(row.StartedAt)).OrderBy(group => group.Key).Select(group => new {
         period = group.Key,
-        inputTokens = group.Sum(row => (long)row.InputTokens),
-        outputTokens = group.Sum(row => (long)row.OutputTokens),
-        cacheReadTokens = group.Sum(row => (long)row.CacheReadTokens),
-        cacheWriteTokens = group.Sum(row => (long)row.CacheWriteTokens),
-        totalTokens = group.Sum(row => (long)row.InputTokens + row.OutputTokens + row.CacheReadTokens + row.CacheWriteTokens),
+        inputTokens = SumOrNull(group, row => row.InputTokens),
+        outputTokens = SumOrNull(group, row => row.OutputTokens),
+        cacheReadTokens = SumOrNull(group, row => row.CacheReadTokens),
+        cacheWriteTokens = SumOrNull(group, row => row.CacheWriteTokens),
+        totalTokens = TotalTokensOf(SumOrNull(group, row => row.InputTokens), SumOrNull(group, row => row.OutputTokens), SumOrNull(group, row => row.CacheReadTokens), SumOrNull(group, row => row.CacheWriteTokens)),
     }).ToArray();
-    var agents = rows.GroupBy(row => row.Source).OrderByDescending(group => group.Sum(row => (long)row.InputTokens + row.OutputTokens + row.CacheReadTokens + row.CacheWriteTokens)).Select(group => {
-        var tokens = group.Sum(row => (long)row.InputTokens + row.OutputTokens + row.CacheReadTokens + row.CacheWriteTokens);
-        return new { name = group.Key, calls = group.Count(), tokens, share = totalTokens == 0 ? 0d : (double)tokens / totalTokens };
+    var agents = rows.GroupBy(row => row.Source).OrderByDescending(group => TotalTokensOf(SumOrNull(group, row => row.InputTokens), SumOrNull(group, row => row.OutputTokens), SumOrNull(group, row => row.CacheReadTokens), SumOrNull(group, row => row.CacheWriteTokens)) ?? -1).Select(group => {
+        var tokens = TotalTokensOf(SumOrNull(group, row => row.InputTokens), SumOrNull(group, row => row.OutputTokens), SumOrNull(group, row => row.CacheReadTokens), SumOrNull(group, row => row.CacheWriteTokens));
+        return new { name = group.Key, calls = group.Count(), tokens, share = totalTokens is > 0 && tokens.HasValue ? (double?)tokens.Value / totalTokens.Value : null };
     }).ToArray();
-    var models = rows.GroupBy(row => row.Model).OrderByDescending(group => group.Sum(row => (long)row.InputTokens + row.OutputTokens + row.CacheReadTokens + row.CacheWriteTokens)).Select(group => {
-        var tokens = group.Sum(row => (long)row.InputTokens + row.OutputTokens + row.CacheReadTokens + row.CacheWriteTokens);
+    var models = rows.GroupBy(row => row.Model).OrderByDescending(group => TotalTokensOf(SumOrNull(group, row => row.InputTokens), SumOrNull(group, row => row.OutputTokens), SumOrNull(group, row => row.CacheReadTokens), SumOrNull(group, row => row.CacheWriteTokens)) ?? -1).Select(group => {
+        var tokens = TotalTokensOf(SumOrNull(group, row => row.InputTokens), SumOrNull(group, row => row.OutputTokens), SumOrNull(group, row => row.CacheReadTokens), SumOrNull(group, row => row.CacheWriteTokens));
         var costs = group.Where(row => row.Cost.HasValue).ToArray();
         var quotas = group.Where(row => row.QuotaCostEstimate.HasValue).ToArray();
-        return new { name = group.Key, calls = group.Count(), inputTokens = group.Sum(row => (long)row.InputTokens), outputTokens = group.Sum(row => (long)row.OutputTokens), cacheReadTokens = group.Sum(row => (long)row.CacheReadTokens), cacheWriteTokens = group.Sum(row => (long)row.CacheWriteTokens), tokens, share = totalTokens == 0 ? 0d : (double)tokens / totalTokens, reportedCost = costs.Length == 0 ? (double?)null : costs.Sum(row => row.Cost!.Value), quotaEstimate = quotas.Length == 0 ? (double?)null : quotas.Sum(row => row.QuotaCostEstimate!.Value), errorCount = group.Count(row => row.Status == "error" || row.Status == "failed") };
+        return new { name = group.Key, calls = group.Count(), inputTokens = SumOrNull(group, row => row.InputTokens), outputTokens = SumOrNull(group, row => row.OutputTokens), cacheReadTokens = SumOrNull(group, row => row.CacheReadTokens), cacheWriteTokens = SumOrNull(group, row => row.CacheWriteTokens), tokens, share = totalTokens is > 0 && tokens.HasValue ? (double?)tokens.Value / totalTokens.Value : null, reportedCost = costs.Length == 0 ? (double?)null : costs.Sum(row => row.Cost!.Value), quotaEstimate = quotas.Length == 0 ? (double?)null : quotas.Sum(row => row.QuotaCostEstimate!.Value), errorCount = group.Count(row => row.Status == "error" || row.Status == "failed") };
     }).ToArray();
     return Results.Ok(new {
         bucket = bucketType, availableSources, availableModels,
-        totals = new { calls = rows.Length, totalTokens, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, cacheEfficiency = inputTokens + cacheReadTokens == 0 ? (double?)null : (double)cacheReadTokens / (inputTokens + cacheReadTokens), reportedCost = costRows.Length == 0 ? (double?)null : costRows.Sum(row => row.Cost!.Value), quotaEstimate = quotaRows.Length == 0 ? (double?)null : quotaRows.Sum(row => row.QuotaCostEstimate!.Value), errorCount = rows.Count(row => row.Status == "error" || row.Status == "failed") },
+        totals = new { calls = rows.Length, totalTokens, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, cacheEfficiency, reportedCost = costRows.Length == 0 ? (double?)null : costRows.Sum(row => row.Cost!.Value), quotaEstimate = quotaRows.Length == 0 ? (double?)null : quotaRows.Sum(row => row.QuotaCostEstimate!.Value), errorCount = rows.Count(row => row.Status == "error" || row.Status == "failed") },
         trend, agents, models,
     });
 });
@@ -245,11 +258,11 @@ app.MapGet("/api/v1/overview", async (TelemetryDb db, int? days) => {
     var finishedWithEnd = sessions.Where(s => s.EndedAt.HasValue && s.Status is "completed" or "error" or "interrupted").ToArray();
     var inference = spans.Where(s => s.Kind == "inference").ToArray();
     var toolSpans = spans.Where(s => s.Kind == "execute_tool").ToArray();
-    long inputTokens = inference.Sum(s => (long)s.InputTokens);
-    long outputTokens = inference.Sum(s => (long)s.OutputTokens);
-    long reasoningTokens = inference.Sum(s => (long)s.ReasoningTokens);
-    long cacheReadTokens = inference.Sum(s => (long)s.CacheReadTokens);
-    long cacheWriteTokens = inference.Sum(s => (long)s.CacheWriteTokens);
+    long? inputTokens = SumOrNull(inference, s => s.InputTokens);
+    long? outputTokens = SumOrNull(inference, s => s.OutputTokens);
+    long? reasoningTokens = SumOrNull(inference, s => s.ReasoningTokens);
+    long? cacheReadTokens = SumOrNull(inference, s => s.CacheReadTokens);
+    long? cacheWriteTokens = SumOrNull(inference, s => s.CacheWriteTokens);
     var costRows = inference.Where(s => s.Cost.HasValue).ToArray();
     var quotaRows = inference.Where(s => s.QuotaCostEstimate.HasValue).ToArray();
     var totals = new OverviewTotalsDto(
@@ -258,7 +271,7 @@ app.MapGet("/api/v1/overview", async (TelemetryDb db, int? days) => {
         finished == 0 ? null : (double)error / finished,
         finishedWithEnd.Length == 0 ? null : finishedWithEnd.Average(s => (s.EndedAt!.Value - s.StartedAt).TotalMilliseconds),
         inputTokens, outputTokens, reasoningTokens, cacheReadTokens, cacheWriteTokens,
-        inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+        TotalTokensOf(inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens),
         costRows.Length == 0 ? null : costRows.Sum(s => s.Cost!.Value),
         quotaRows.Length == 0 ? null : quotaRows.Sum(s => s.QuotaCostEstimate!.Value));
     var topTools = toolSpans.GroupBy(s => s.Name)
@@ -273,7 +286,7 @@ app.MapGet("/api/v1/overview", async (TelemetryDb db, int? days) => {
         .ToArray();
     var topModels = inference.GroupBy(s => s.Name)
         .Select(group => {
-            var tokens = group.Sum(s => (long)s.InputTokens + s.OutputTokens + s.CacheReadTokens + s.CacheWriteTokens);
+            var tokens = TotalTokensOf(SumOrNull(group, s => s.InputTokens), SumOrNull(group, s => s.OutputTokens), SumOrNull(group, s => s.CacheReadTokens), SumOrNull(group, s => s.CacheWriteTokens));
             var costs = group.Where(s => s.Cost.HasValue).ToArray();
             var quotas = group.Where(s => s.QuotaCostEstimate.HasValue).ToArray();
             return new OverviewModelDto(
@@ -299,7 +312,7 @@ app.MapGet("/api/v1/overview", async (TelemetryDb db, int? days) => {
 app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEventDto dto, TelemetryDb db, IConfiguration config, IHubContext<TelemetryHub> hub) => {
     var key = config["Telemetry:ApiKey"]!;
     if (!CryptographicEquals(request.Headers["X-Telemetry-Key"].ToString(), key)) return Results.Unauthorized();
-    if (string.IsNullOrWhiteSpace(dto.EventId) || dto.EventId.Length > 200 || string.IsNullOrWhiteSpace(dto.Source) || dto.Source.Length > 80 || string.IsNullOrWhiteSpace(dto.SessionId) || dto.SessionId.Length > 200 || string.IsNullOrWhiteSpace(dto.Type) || dto.Type.Length > 120 || dto.Timestamp == default || dto.DurationMs < 0 || dto.InputTokens < 0 || dto.OutputTokens < 0 || dto.ReasoningTokens < 0 || dto.CacheReadTokens < 0 || dto.CacheWriteTokens < 0 || dto.Cost is < 0 || dto.Cost is double cost && !double.IsFinite(cost) || dto.QuotaCostEstimate is < 0 || dto.QuotaCostEstimate is double estimate && !double.IsFinite(estimate)) return Results.BadRequest(new { error = "Required fields are missing or exceed supported limits" });
+    if (string.IsNullOrWhiteSpace(dto.EventId) || dto.EventId.Length > 200 || string.IsNullOrWhiteSpace(dto.Source) || dto.Source.Length > 80 || string.IsNullOrWhiteSpace(dto.SessionId) || dto.SessionId.Length > 200 || string.IsNullOrWhiteSpace(dto.Type) || dto.Type.Length > 120 || dto.Timestamp == default || dto.DurationMs < 0 || dto.InputTokens < 0 || dto.OutputTokens < 0 || dto.ReasoningTokens < 0 || dto.CacheReadTokens < 0 || dto.CacheWriteTokens < 0 || dto.Cost is < 0 || dto.Cost is double cost && !double.IsFinite(cost) || dto.QuotaCostEstimate is < 0 || dto.QuotaCostEstimate is double estimate && !double.IsFinite(estimate) || dto.QuotaCatalogFetchedAt?.Length > 40 || dto.QuotaRateSnapshot?.Length > 500 || dto.QuotaMissingReason?.Length > 40) return Results.BadRequest(new { error = "Required fields are missing or exceed supported limits" });
     await ingestLock.WaitAsync();
     try {
         var existing = await db.Events.AnyAsync(e => e.Source == dto.Source && e.EventId == dto.EventId);
@@ -333,13 +346,21 @@ app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEve
                 session.EndedAt = null;
             }
         }
-        if (!string.IsNullOrWhiteSpace(dto.Model)) session.Model = Safe(dto.Model, 120);
-        if (dto.Type == "session.title.updated" && !string.IsNullOrWhiteSpace(dto.Title)) session.Title = Safe(dto.Title, 200);
+        if (!string.IsNullOrWhiteSpace(dto.Model) && (!session.ModelAt.HasValue || eventTime >= session.ModelAt.Value))
+        {
+            session.Model = Safe(dto.Model, 120);
+            session.ModelAt = eventTime;
+        }
+        if (dto.Type == "session.title.updated" && !string.IsNullOrWhiteSpace(dto.Title) && (!session.TitleAt.HasValue || eventTime >= session.TitleAt.Value))
+        {
+            session.Title = Safe(dto.Title, 200);
+            session.TitleAt = eventTime;
+        }
         var attrs = SafeAttributes(dto.Attributes);
-        var ev = new TelemetryEvent { EventId = dto.EventId, Source = dto.Source, SessionId = dto.SessionId, Timestamp = dto.Timestamp.UtcDateTime, Type = dto.Type, Status = dto.Status, DurationMs = dto.DurationMs, Model = Safe(dto.Model, 120), InputTokens = dto.InputTokens, OutputTokens = dto.OutputTokens, ReasoningTokens = dto.ReasoningTokens, CacheReadTokens = dto.CacheReadTokens, CacheWriteTokens = dto.CacheWriteTokens, Cost = dto.Cost, QuotaCostEstimate = dto.QuotaCostEstimate, AttributesJson = JsonSerializer.Serialize(attrs) };
+        var ev = new TelemetryEvent { EventId = dto.EventId, Source = dto.Source, SessionId = dto.SessionId, Timestamp = dto.Timestamp.UtcDateTime, Type = dto.Type, Status = dto.Status, DurationMs = dto.DurationMs, Model = Safe(dto.Model, 120), InputTokens = dto.InputTokens, OutputTokens = dto.OutputTokens, ReasoningTokens = dto.ReasoningTokens, CacheReadTokens = dto.CacheReadTokens, CacheWriteTokens = dto.CacheWriteTokens, Cost = dto.Cost, QuotaCostEstimate = dto.QuotaCostEstimate, QuotaCatalogFetchedAt = dto.QuotaCatalogFetchedAt, QuotaRateSnapshot = dto.QuotaRateSnapshot, QuotaMissingReason = dto.QuotaMissingReason, AttributesJson = JsonSerializer.Serialize(attrs) };
         db.Events.Add(ev);
         if (dto.Type.StartsWith("tool.")) db.Spans.Add(new Span { Id = SpanId(dto.Source, dto.EventId), SessionId = dto.SessionId, ParentId = ParentSpanId(dto.Source, dto.ParentId), Name = Safe(dto.Name ?? "tool", 160) ?? "tool", Kind = "execute_tool", Status = dto.Status ?? "ok", StartedAt = dto.Timestamp.UtcDateTime, DurationMs = dto.DurationMs, AttributesJson = JsonSerializer.Serialize(attrs) });
-        else if (dto.Type.StartsWith("model.")) db.Spans.Add(new Span { Id = SpanId(dto.Source, dto.EventId), SessionId = dto.SessionId, ParentId = ParentSpanId(dto.Source, dto.ParentId), Name = Safe(dto.Name ?? dto.Model ?? "model", 160) ?? "model", Kind = "inference", Status = dto.Status ?? "ok", StartedAt = dto.Timestamp.UtcDateTime, DurationMs = dto.DurationMs, InputTokens = dto.InputTokens, OutputTokens = dto.OutputTokens, ReasoningTokens = dto.ReasoningTokens, CacheReadTokens = dto.CacheReadTokens, CacheWriteTokens = dto.CacheWriteTokens, Cost = dto.Cost, QuotaCostEstimate = dto.QuotaCostEstimate, AttributesJson = JsonSerializer.Serialize(attrs) });
+        else if (dto.Type.StartsWith("model.")) db.Spans.Add(new Span { Id = SpanId(dto.Source, dto.EventId), SessionId = dto.SessionId, ParentId = ParentSpanId(dto.Source, dto.ParentId), Name = Safe(dto.Name ?? dto.Model ?? "model", 160) ?? "model", Kind = "inference", Status = dto.Status ?? "ok", StartedAt = dto.Timestamp.UtcDateTime, DurationMs = dto.DurationMs, InputTokens = dto.InputTokens, OutputTokens = dto.OutputTokens, ReasoningTokens = dto.ReasoningTokens, CacheReadTokens = dto.CacheReadTokens, CacheWriteTokens = dto.CacheWriteTokens, Cost = dto.Cost, QuotaCostEstimate = dto.QuotaCostEstimate, QuotaCatalogFetchedAt = dto.QuotaCatalogFetchedAt, QuotaRateSnapshot = dto.QuotaRateSnapshot, QuotaMissingReason = dto.QuotaMissingReason, AttributesJson = JsonSerializer.Serialize(attrs) });
         try { await db.SaveChangesAsync(); }
         catch (DbUpdateException e) when (e.InnerException is SqliteException { SqliteErrorCode: 19, SqliteExtendedErrorCode: 2067 })
         {
@@ -358,40 +379,45 @@ app.MapGet("/api/v1/sessions", async (TelemetryDb db, string? status, string? mo
     var fromUtc = from?.UtcDateTime; var toUtc = to?.UtcDateTime;
     if (fromUtc.HasValue) q = q.Where(s => s.StartedAt >= fromUtc.Value); if (toUtc.HasValue) q = q.Where(s => s.StartedAt <= toUtc.Value);
     var total = await q.CountAsync(); var p = Math.Max(1,page ?? 1); var size = Math.Clamp(pageSize ?? 30,1,100);
-    var rows = await q.OrderByDescending(s => s.UpdatedAt).Skip((p-1)*size).Take(size).Select(s => new { s.Id,s.Source,s.Project,s.Title,s.Status,s.Model,s.StartedAt,s.EndedAt,s.UpdatedAt, SpanCount=db.Spans.Count(x=>x.SessionId==s.Id), ErrorCount=db.Events.Count(x=>x.SessionId==s.Id && x.Status=="error"), InputTokens=db.Spans.Where(x=>x.SessionId==s.Id).Sum(x=>(long?)x.InputTokens)??0, OutputTokens=db.Spans.Where(x=>x.SessionId==s.Id).Sum(x=>(long?)x.OutputTokens)??0, Cost=db.Spans.Where(x=>x.SessionId==s.Id).Sum(x=>(double?)x.Cost), QuotaCostEstimate=db.Spans.Where(x=>x.SessionId==s.Id).Sum(x=>(double?)x.QuotaCostEstimate) }).ToListAsync();
+    var rows = await q.OrderByDescending(s => s.UpdatedAt).Skip((p-1)*size).Take(size).Select(s => new { s.Id,s.Source,s.Project,s.Title,s.Status,s.Model,s.StartedAt,s.EndedAt,s.UpdatedAt, SpanCount=db.Spans.Count(x=>x.SessionId==s.Id), ErrorCount=db.Events.Count(x=>x.SessionId==s.Id && x.Status=="error"), InputTokens=db.Spans.Where(x=>x.SessionId==s.Id).Sum(x=>(long?)x.InputTokens), OutputTokens=db.Spans.Where(x=>x.SessionId==s.Id).Sum(x=>(long?)x.OutputTokens), Cost=db.Spans.Where(x=>x.SessionId==s.Id).Sum(x=>(double?)x.Cost), QuotaCostEstimate=db.Spans.Where(x=>x.SessionId==s.Id).Sum(x=>(double?)x.QuotaCostEstimate) }).ToListAsync();
     return Results.Ok(new { items=rows,total,page=p,pageSize=size });
 });
 app.MapGet("/api/v1/sessions/{id}", async (string id, TelemetryDb db) => {
     var s=await db.Sessions.AsNoTracking().FirstOrDefaultAsync(x=>x.Id==id); if(s is null)return Results.NotFound();
     var events=await db.Events.AsNoTracking().Where(x=>x.SessionId==id).OrderBy(x=>x.Timestamp).ToListAsync(); var spans=await db.Spans.AsNoTracking().Where(x=>x.SessionId==id).OrderBy(x=>x.StartedAt).ToListAsync();
-    return Results.Ok(new { session=s, spans, events, metrics=new { spanCount=spans.Count,errorCount=events.Count(x=>x.Status=="error"),inputTokens=spans.Sum(x=>x.InputTokens),outputTokens=spans.Sum(x=>x.OutputTokens),reasoningTokens=spans.Sum(x=>x.ReasoningTokens),cacheReadTokens=spans.Sum(x=>x.CacheReadTokens),cacheWriteTokens=spans.Sum(x=>x.CacheWriteTokens),cost=spans.Where(x=>x.Cost.HasValue).Sum(x=>x.Cost),quotaCostEstimate=spans.Where(x=>x.QuotaCostEstimate.HasValue).Sum(x=>x.QuotaCostEstimate),durationMs=s.EndedAt.HasValue?(long?)(s.EndedAt.Value-s.StartedAt).TotalMilliseconds:null } });
+    return Results.Ok(new { session=s, spans, events, metrics=new { spanCount=spans.Count,errorCount=events.Count(x=>x.Status=="error"),inputTokens=SumOrNull(spans, x => x.InputTokens),outputTokens=SumOrNull(spans, x => x.OutputTokens),reasoningTokens=SumOrNull(spans, x => x.ReasoningTokens),cacheReadTokens=SumOrNull(spans, x => x.CacheReadTokens),cacheWriteTokens=SumOrNull(spans, x => x.CacheWriteTokens),cost=spans.Where(x=>x.Cost.HasValue).Sum(x=>x.Cost),quotaCostEstimate=spans.Where(x=>x.QuotaCostEstimate.HasValue).Sum(x=>x.QuotaCostEstimate),durationMs=s.EndedAt.HasValue?(long?)(s.EndedAt.Value-s.StartedAt).TotalMilliseconds:null } });
 });
 app.MapGet("/api/v1/traces/{id}", async (string id, TelemetryDb db) => { var s=await db.Sessions.AsNoTracking().FirstOrDefaultAsync(x=>x.Id==id); if(s is null)return Results.NotFound(); var spans=await db.Spans.AsNoTracking().Where(x=>x.SessionId==id).OrderBy(x=>x.StartedAt).ToListAsync(); var events=await db.Events.AsNoTracking().Where(x=>x.SessionId==id && !x.Type.StartsWith("tool.") && !x.Type.StartsWith("model.")).OrderBy(x=>x.Timestamp).ToListAsync(); return Results.Ok(new { traceId=s.Id,session=s,spans,unrelatedEvents=events }); });
 BenchmarkEndpoints.Map(app);
 app.Run();
 
 static bool CryptographicEquals(string a,string b) { var x=System.Text.Encoding.UTF8.GetBytes(a);var y=System.Text.Encoding.UTF8.GetBytes(b);return x.Length==y.Length && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(x,y); }
-static async Task EnsureSessionTitleColumnAsync(TelemetryDb db) { var exists=false; await db.Database.OpenConnectionAsync(); try { await using var command=db.Database.GetDbConnection().CreateCommand(); command.CommandText="PRAGMA table_info('Sessions')"; await using var reader=await command.ExecuteReaderAsync(); while(await reader.ReadAsync()) if(reader.GetString(1)=="Title") exists=true; } finally { await db.Database.CloseConnectionAsync(); } if(!exists) await db.Database.ExecuteSqlRawAsync("ALTER TABLE Sessions ADD COLUMN Title TEXT NULL"); }
-static async Task EnsureSessionReviewColumnsAsync(TelemetryDb db) { foreach (var (name, sql) in new[] { ("Rating", "ALTER TABLE Sessions ADD COLUMN Rating INTEGER NULL"), ("ReviewNote", "ALTER TABLE Sessions ADD COLUMN ReviewNote TEXT NULL"), ("ReviewTask", "ALTER TABLE Sessions ADD COLUMN ReviewTask TEXT NULL") }) { var exists=false; await db.Database.OpenConnectionAsync(); try { await using var command=db.Database.GetDbConnection().CreateCommand(); command.CommandText="PRAGMA table_info('Sessions')"; await using var reader=await command.ExecuteReaderAsync(); while(await reader.ReadAsync()) if(reader.GetString(1)==name) exists=true; } finally { await db.Database.CloseConnectionAsync(); } if(!exists) await db.Database.ExecuteSqlRawAsync(sql); } }
-static async Task EnsureColumnAsync(TelemetryDb db, string table, string column, string definition) { var tableName=table switch { "Events"=>"Events", "Spans"=>"Spans", _=>throw new ArgumentOutOfRangeException(nameof(table)) }; var columnName=column switch { "Cost"=>"Cost", "ReasoningTokens"=>"ReasoningTokens", "CacheReadTokens"=>"CacheReadTokens", "CacheWriteTokens"=>"CacheWriteTokens", "QuotaCostEstimate"=>"QuotaCostEstimate", _=>throw new ArgumentOutOfRangeException(nameof(column)) }; var alterQuery=(tableName,columnName,definition) switch { ("Events","Cost","REAL NULL")=>"ALTER TABLE Events ADD COLUMN Cost REAL NULL", ("Spans","Cost","REAL NULL")=>"ALTER TABLE Spans ADD COLUMN Cost REAL NULL", ("Events","ReasoningTokens","INTEGER NOT NULL DEFAULT 0")=>"ALTER TABLE Events ADD COLUMN ReasoningTokens INTEGER NOT NULL DEFAULT 0", ("Spans","ReasoningTokens","INTEGER NOT NULL DEFAULT 0")=>"ALTER TABLE Spans ADD COLUMN ReasoningTokens INTEGER NOT NULL DEFAULT 0", ("Events","CacheReadTokens","INTEGER NOT NULL DEFAULT 0")=>"ALTER TABLE Events ADD COLUMN CacheReadTokens INTEGER NOT NULL DEFAULT 0", ("Spans","CacheReadTokens","INTEGER NOT NULL DEFAULT 0")=>"ALTER TABLE Spans ADD COLUMN CacheReadTokens INTEGER NOT NULL DEFAULT 0", ("Events","CacheWriteTokens","INTEGER NOT NULL DEFAULT 0")=>"ALTER TABLE Events ADD COLUMN CacheWriteTokens INTEGER NOT NULL DEFAULT 0", ("Spans","CacheWriteTokens","INTEGER NOT NULL DEFAULT 0")=>"ALTER TABLE Spans ADD COLUMN CacheWriteTokens INTEGER NOT NULL DEFAULT 0", ("Events","QuotaCostEstimate","REAL NULL")=>"ALTER TABLE Events ADD COLUMN QuotaCostEstimate REAL NULL", ("Spans","QuotaCostEstimate","REAL NULL")=>"ALTER TABLE Spans ADD COLUMN QuotaCostEstimate REAL NULL", _=>throw new ArgumentOutOfRangeException(nameof(column)) }; var exists=false; await db.Database.OpenConnectionAsync(); try { await using var command=db.Database.GetDbConnection().CreateCommand(); command.CommandText=$"PRAGMA table_info('{tableName}')"; await using var reader=await command.ExecuteReaderAsync(); while(await reader.ReadAsync()) if(reader.GetString(1)==columnName) exists=true; } finally { await db.Database.CloseConnectionAsync(); } if(!exists) await db.Database.ExecuteSqlRawAsync(alterQuery); }
+static long? SumOrNull<T>(IEnumerable<T> rows, Func<T, int?> selector) =>
+    rows.Any(row => selector(row).HasValue)
+        ? rows.Sum(row => (long?)selector(row))
+        : null;
+static long? TotalTokensOf(long? input, long? output, long? cacheRead, long? cacheWrite) =>
+    input is null && output is null && cacheRead is null && cacheWrite is null
+        ? null
+        : (input ?? 0) + (output ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0);
 static string SpanId(string source,string eventId) => $"{source}:{eventId}";
 static string? ParentSpanId(string source,string? parentId) => string.IsNullOrWhiteSpace(parentId) ? null : SpanId(source,parentId);
 static string? Safe(string? s,int max) => string.IsNullOrWhiteSpace(s)?null:s[..Math.Min(s.Length,max)];
 static Dictionary<string,string> SafeAttributes(Dictionary<string,string>? input) { var result=new Dictionary<string,string>(); if(input is null)return result; var blocked=new[]{"prompt","response","content","output","arguments","args","command","file","path","body","secret","token","api_key","key"}; foreach(var kv in input.Take(32)) { var k=kv.Key.ToLowerInvariant(); if(blocked.Any(k.Contains)) continue; result[Safe(kv.Key,100)!]=Safe(kv.Value,500)??""; } return result; }
-record TelemetryEventDto(string EventId,string Source,string SessionId,DateTimeOffset Timestamp,string Type,string? Project=null,string? Status=null,long? DurationMs=null,string? Model=null,int InputTokens=0,int OutputTokens=0,string? ParentId=null,string? Name=null,Dictionary<string,string>? Attributes=null,double? Cost=null,int ReasoningTokens=0,int CacheReadTokens=0,int CacheWriteTokens=0,double? QuotaCostEstimate=null,string? Title=null);
+record TelemetryEventDto(string EventId,string Source,string SessionId,DateTimeOffset Timestamp,string Type,string? Project=null,string? Status=null,long? DurationMs=null,string? Model=null,int? InputTokens=null,int? OutputTokens=null,string? ParentId=null,string? Name=null,Dictionary<string,string>? Attributes=null,double? Cost=null,int? ReasoningTokens=null,int? CacheReadTokens=null,int? CacheWriteTokens=null,double? QuotaCostEstimate=null,string? Title=null,string? QuotaCatalogFetchedAt=null,string? QuotaRateSnapshot=null,string? QuotaMissingReason=null);
 record SessionReviewDto(int? Rating, string? Note, string? TaskLabel);
-record ComparisonRunDto(string Id, string? Title, string? Project, string? Model, string Status, int? Rating, string? Note, string TaskLabel, DateTime UpdatedAt, long DurationMs, int InputTokens, int OutputTokens, double? Cost, double? QuotaCostEstimate, string[] Tools);
+record ComparisonRunDto(string Id, string? Title, string? Project, string? Model, string Status, int? Rating, string? Note, string TaskLabel, DateTime UpdatedAt, long DurationMs, long? InputTokens, long? OutputTokens, double? Cost, double? QuotaCostEstimate, string[] Tools);
 record BudgetDto(string? Project, double MonthlyLimit, string Metric);
-record OverviewTotalsDto(int Sessions, int Active, int Completed, int Error, int Interrupted, int Finished, double? SuccessRate, double? ErrorRate, double? AverageDurationMs, long InputTokens, long OutputTokens, long ReasoningTokens, long CacheReadTokens, long CacheWriteTokens, long TotalTokens, double? ReportedCost, double? QuotaEstimate);
+record OverviewTotalsDto(int Sessions, int Active, int Completed, int Error, int Interrupted, int Finished, double? SuccessRate, double? ErrorRate, double? AverageDurationMs, long? InputTokens, long? OutputTokens, long? ReasoningTokens, long? CacheReadTokens, long? CacheWriteTokens, long? TotalTokens, double? ReportedCost, double? QuotaEstimate);
 record OverviewToolDto(string Name, int Calls, int Errors, double ErrorRate, int Sessions);
-record OverviewModelDto(string Name, int Calls, long TotalTokens, double? ReportedCost, double? QuotaEstimate, int Errors);
+record OverviewModelDto(string Name, int Calls, long? TotalTokens, double? ReportedCost, double? QuotaEstimate, int Errors);
 record OverviewSessionDto(string Id, string? Title, string? Project, string? Model, string Status, DateTime StartedAt, DateTime UpdatedAt);
 record BehaviorSignalDto(string Kind, string Severity, string Title, string Explanation, object Evidence);
 record BehaviorSessionDto(string Id, string? Title, string? Project, string? Model, string Status, DateTime StartedAt, DateTime UpdatedAt, BehaviorSignalDto[] Signals);
-class TelemetryDb(DbContextOptions<TelemetryDb> options):DbContext(options) { public DbSet<Session> Sessions=>Set<Session>();public DbSet<TelemetryEvent> Events=>Set<TelemetryEvent>();public DbSet<Span> Spans=>Set<Span>();public DbSet<Budget> Budgets=>Set<Budget>();public DbSet<BenchmarkRunEntity> BenchmarkRuns=>Set<BenchmarkRunEntity>();public DbSet<BenchmarkResultEntity> BenchmarkResults=>Set<BenchmarkResultEntity>(); protected override void OnModelCreating(ModelBuilder b){var utc=new ValueConverter<DateTime,DateTime>(v=>DateTime.SpecifyKind(v,DateTimeKind.Utc),v=>DateTime.SpecifyKind(v,DateTimeKind.Utc));var utcNullable=new ValueConverter<DateTime?,DateTime?>(v=>v.HasValue?DateTime.SpecifyKind(v.Value,DateTimeKind.Utc):null,v=>v.HasValue?DateTime.SpecifyKind(v.Value,DateTimeKind.Utc):null);b.Entity<TelemetryEvent>().HasIndex(x=>new{x.Source,x.EventId});b.Entity<TelemetryEvent>().Property(x=>x.Timestamp).HasConversion(utc);b.Entity<Session>().HasKey(x=>x.Id);b.Entity<Session>().Property(x=>x.StartedAt).HasConversion(utc);b.Entity<Session>().Property(x=>x.EndedAt).HasConversion(utcNullable);b.Entity<Session>().Property(x=>x.UpdatedAt).HasConversion(utc);b.Entity<Span>().HasKey(x=>x.Id);b.Entity<Span>().Property(x=>x.StartedAt).HasConversion(utc);b.Entity<Budget>().HasKey(x=>x.Project);b.Entity<BenchmarkRunEntity>().HasKey(x=>x.Id);b.Entity<BenchmarkResultEntity>().HasKey(x=>x.Id);b.Entity<BenchmarkRunEntity>().Property(x=>x.Status).IsConcurrencyToken();b.Entity<BenchmarkRunEntity>().Property(x=>x.CreatedAt).HasConversion(utc);b.Entity<BenchmarkRunEntity>().Property(x=>x.StartedAt).HasConversion(utcNullable);b.Entity<BenchmarkRunEntity>().Property(x=>x.CompletedAt).HasConversion(utcNullable);b.Entity<BenchmarkResultEntity>().Property(x=>x.StartedAt).HasConversion(utcNullable);b.Entity<BenchmarkResultEntity>().Property(x=>x.CompletedAt).HasConversion(utcNullable);} }
-class Session { public string Id{get;set;}="";public string Source{get;set;}="";public string? Project{get;set;} public string? Title{get;set;} public int? Rating{get;set;} public string? ReviewNote{get;set;} public string? ReviewTask{get;set;} public string Status{get;set;}="active";public string? Model{get;set;}public DateTime StartedAt{get;set;}public DateTime? EndedAt{get;set;}public DateTime UpdatedAt{get;set;} }
+class TelemetryDb(DbContextOptions<TelemetryDb> options):DbContext(options) { public DbSet<Session> Sessions=>Set<Session>();public DbSet<TelemetryEvent> Events=>Set<TelemetryEvent>();public DbSet<Span> Spans=>Set<Span>();public DbSet<Budget> Budgets=>Set<Budget>();public DbSet<BenchmarkRunEntity> BenchmarkRuns=>Set<BenchmarkRunEntity>();public DbSet<BenchmarkResultEntity> BenchmarkResults=>Set<BenchmarkResultEntity>(); protected override void OnModelCreating(ModelBuilder b){var utc=new ValueConverter<DateTime,DateTime>(v=>DateTime.SpecifyKind(v,DateTimeKind.Utc),v=>DateTime.SpecifyKind(v,DateTimeKind.Utc));var utcNullable=new ValueConverter<DateTime?,DateTime?>(v=>v.HasValue?DateTime.SpecifyKind(v.Value,DateTimeKind.Utc):null,v=>v.HasValue?DateTime.SpecifyKind(v.Value,DateTimeKind.Utc):null);b.Entity<TelemetryEvent>().HasIndex(x=>new{x.Source,x.EventId});b.Entity<TelemetryEvent>().Property(x=>x.Timestamp).HasConversion(utc);b.Entity<Session>().HasKey(x=>x.Id);b.Entity<Session>().Property(x=>x.StartedAt).HasConversion(utc);b.Entity<Session>().Property(x=>x.EndedAt).HasConversion(utcNullable);b.Entity<Session>().Property(x=>x.TitleAt).HasConversion(utcNullable);b.Entity<Session>().Property(x=>x.ModelAt).HasConversion(utcNullable);b.Entity<Session>().Property(x=>x.UpdatedAt).HasConversion(utc);b.Entity<Span>().HasKey(x=>x.Id);b.Entity<Span>().Property(x=>x.StartedAt).HasConversion(utc);b.Entity<Budget>().HasKey(x=>x.Project);b.Entity<BenchmarkRunEntity>().HasKey(x=>x.Id);b.Entity<BenchmarkResultEntity>().HasKey(x=>x.Id);b.Entity<BenchmarkRunEntity>().Property(x=>x.Status).IsConcurrencyToken();b.Entity<BenchmarkRunEntity>().Property(x=>x.CreatedAt).HasConversion(utc);b.Entity<BenchmarkRunEntity>().Property(x=>x.StartedAt).HasConversion(utcNullable);b.Entity<BenchmarkRunEntity>().Property(x=>x.CompletedAt).HasConversion(utcNullable);b.Entity<BenchmarkResultEntity>().Property(x=>x.StartedAt).HasConversion(utcNullable);b.Entity<BenchmarkResultEntity>().Property(x=>x.CompletedAt).HasConversion(utcNullable);} }
+class Session { public string Id{get;set;}="";public string Source{get;set;}="";public string? Project{get;set;} public string? Title{get;set;} public DateTime? TitleAt{get;set;} public DateTime? ModelAt{get;set;} public int? Rating{get;set;} public string? ReviewNote{get;set;} public string? ReviewTask{get;set;} public string Status{get;set;}="active";public string? Model{get;set;}public DateTime StartedAt{get;set;}public DateTime? EndedAt{get;set;}public DateTime UpdatedAt{get;set;} }
 class Budget { public string Project{get;set;}="";public double MonthlyLimit{get;set;}public string Metric{get;set;}="cost"; }
-class TelemetryEvent { public long Id{get;set;}public string EventId{get;set;}="";public string Source{get;set;}="";public string SessionId{get;set;}="";public DateTime Timestamp{get;set;}public string Type{get;set;}="";public string? Status{get;set;}public long? DurationMs{get;set;}public string? Model{get;set;}public int InputTokens{get;set;}public int OutputTokens{get;set;}public int ReasoningTokens{get;set;}public int CacheReadTokens{get;set;}public int CacheWriteTokens{get;set;}public double? Cost{get;set;}public double? QuotaCostEstimate{get;set;}public string AttributesJson{get;set;}="{}"; }
-class Span { public string Id{get;set;}="";public string SessionId{get;set;}="";public string? ParentId{get;set;}public string Name{get;set;}="";public string Kind{get;set;}="";public string Status{get;set;}="ok";public DateTime StartedAt{get;set;}public long? DurationMs{get;set;}public int InputTokens{get;set;}public int OutputTokens{get;set;}public int ReasoningTokens{get;set;}public int CacheReadTokens{get;set;}public int CacheWriteTokens{get;set;}public double? Cost{get;set;}public double? QuotaCostEstimate{get;set;}public string AttributesJson{get;set;}="{}"; }
+class TelemetryEvent { public long Id{get;set;}public string EventId{get;set;}="";public string Source{get;set;}="";public string SessionId{get;set;}="";public DateTime Timestamp{get;set;}public string Type{get;set;}="";public string? Status{get;set;}public long? DurationMs{get;set;}public string? Model{get;set;}public int? InputTokens{get;set;}public int? OutputTokens{get;set;}public int? ReasoningTokens{get;set;}public int? CacheReadTokens{get;set;}public int? CacheWriteTokens{get;set;}public double? Cost{get;set;}public double? QuotaCostEstimate{get;set;}public string? QuotaCatalogFetchedAt{get;set;}public string? QuotaRateSnapshot{get;set;}public string? QuotaMissingReason{get;set;}public string AttributesJson{get;set;}="{}"; }
+class Span { public string Id{get;set;}="";public string SessionId{get;set;}="";public string? ParentId{get;set;}public string Name{get;set;}="";public string Kind{get;set;}="";public string Status{get;set;}="ok";public DateTime StartedAt{get;set;}public long? DurationMs{get;set;}public int? InputTokens{get;set;}public int? OutputTokens{get;set;}public int? ReasoningTokens{get;set;}public int? CacheReadTokens{get;set;}public int? CacheWriteTokens{get;set;}public double? Cost{get;set;}public double? QuotaCostEstimate{get;set;}public string? QuotaCatalogFetchedAt{get;set;}public string? QuotaRateSnapshot{get;set;}public string? QuotaMissingReason{get;set;}public string AttributesJson{get;set;}="{}"; }
 class TelemetryHub:Hub { }
 public partial class Program { }

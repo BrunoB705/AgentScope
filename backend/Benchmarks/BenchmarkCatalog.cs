@@ -10,6 +10,14 @@ public sealed class BenchmarkCatalog
     private const int DefaultModelTimeoutMs = 300_000;
     private const int DefaultVerifyTimeoutMs = 120_000;
 
+    /// <summary>
+    /// `verify.command` se ejecuta a través de `cmd.exe /c` o `/bin/sh -c`, así que
+    /// cualquier metacaracter permitiría encadenar comandos arbitrarios. Las suites
+    /// son archivos locales, pero la frontera de confianza tiene que estar en el
+    /// código y no sólo en la convención del repo.
+    /// </summary>
+    private static readonly char[] ShellMetacharacters = { '&', '|', ';', '>', '<', '`', '$', '(', ')', '^', '%', '!', '\n', '\r' };
+
     private readonly string _rootPath;
 
     public BenchmarkCatalog(string rootPath) => _rootPath = Path.GetFullPath(rootPath);
@@ -123,6 +131,7 @@ public sealed class BenchmarkCatalog
                 throw new BenchmarkValidationException($"La prueba '{testName}' apunta a un fixture que no existe.");
             if (string.IsNullOrWhiteSpace(test.Verify?.Command))
                 throw new BenchmarkValidationException($"La prueba '{testName}' de tipo code requiere fixture y verify.command.");
+            ValidateVerifyCommand(test.Verify!.Command, testName);
             var verifyTimeout = test.Verify!.TimeoutMs ?? DefaultVerifyTimeoutMs;
             if (verifyTimeout < MinTimeoutMs || verifyTimeout > MaxTimeoutMs)
                 throw new BenchmarkValidationException($"El timeout de verify de '{testName}' debe estar entre 10 segundos y 30 minutos.");
@@ -131,6 +140,14 @@ public sealed class BenchmarkCatalog
         }
 
         return new(id, name, parsed.Description, parsed.DefaultJudge, modelTimeout, result.ToArray());
+    }
+
+    private static void ValidateVerifyCommand(string command, string testName)
+    {
+        var offending = command.FirstOrDefault(character => ShellMetacharacters.Contains(character));
+        if (offending != default)
+            throw new BenchmarkValidationException(
+                $"El comando verify de '{testName}' contiene el carácter de shell '{offending}'; no está permitido porque se ejecuta dentro de un shell.");
     }
 
     private string ResolveInside(string directory, string relative, string testName)

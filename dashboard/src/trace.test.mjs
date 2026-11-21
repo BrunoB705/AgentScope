@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildWaterfall, findSpanForEvent, isErrorStatus, spanIdForEvent } from './trace.ts';
+import { buildWaterfall, describeQuotaProvenance, findSpanForEvent, isErrorStatus, spanIdForEvent } from './trace.ts';
 
 const at = (ms) => new Date(ms).toISOString();
 const span = (id, start, durationMs, extra = {}) => ({
@@ -80,4 +80,29 @@ test('reconoce error y failed como estados de error', () => {
   assert.equal(isErrorStatus('failed'), true);
   assert.equal(isErrorStatus('ok'), false);
   assert.equal(isErrorStatus(undefined), false);
+});
+
+test('describe la procedencia de una cuota estimada con catálogo y tarifas', () => {
+  const text = describeQuotaProvenance({
+    quotaCostEstimate: 0.004325,
+    quotaCatalogFetchedAt: '2026-11-17T10:22:00.000Z',
+    quotaRateSnapshot: '{"input":0.15,"output":0.6,"cacheRead":0.015,"cacheWrite":0.1875,"tier":null}',
+  });
+  assert.match(text, /estimada/);
+  assert.match(text, /catálogo 2026-11-17T10:22:00.000Z/);
+  assert.match(text, /entrada 0\.15/);
+  assert.match(text, /salida 0\.6/);
+  assert.match(text, /caché 0\.015\/0\.1875/);
+});
+
+test('explica por qué falta la cuota en lugar de dejarla vacía', () => {
+  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'no_catalog' }), 'sin catálogo de modelos');
+  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'no_rate' }), 'sin tarifa para el modelo');
+  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'not_applicable' }), 'modelo fuera de opencode-go');
+  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null }), null);
+});
+
+test('un snapshot ilegible no rompe la descripción de la cuota', () => {
+  const text = describeQuotaProvenance({ quotaCostEstimate: 1, quotaCatalogFetchedAt: null, quotaRateSnapshot: 'no-json' });
+  assert.equal(text, 'estimada');
 });

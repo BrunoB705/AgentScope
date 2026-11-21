@@ -108,3 +108,44 @@ export function findSpanForEvent<T extends TraceSpan>(spans: T[], event: TraceEv
 export function isErrorStatus(status?: string | null): boolean {
   return status === 'error' || status === 'failed';
 }
+
+export type QuotaFields = {
+  quotaCostEstimate?: number | null;
+  quotaCatalogFetchedAt?: string | null;
+  quotaRateSnapshot?: string | null;
+  quotaMissingReason?: string | null;
+};
+
+const MISSING_REASON_LABEL: Record<string, string> = {
+  no_catalog: 'sin catálogo de modelos',
+  no_rate: 'sin tarifa para el modelo',
+  incomplete_rate: 'tarifa incompleta',
+  tokens_missing: 'sin tokens reportados',
+  not_applicable: 'modelo fuera de opencode-go',
+};
+
+const formatRates = (raw?: string | null): string | null => {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; tier?: { size?: number } | null };
+    if ([value.input, value.output, value.cacheRead, value.cacheWrite].some((rate) => typeof rate !== 'number')) return null;
+    const tier = typeof value.tier?.size === 'number' ? ` · tramo ${value.tier.size}` : '';
+    return `US$/M entrada ${value.input} · salida ${value.output} · caché ${value.cacheRead}/${value.cacheWrite}${tier}`;
+  } catch {
+    return null;
+  }
+};
+
+// Una estimación sin procedencia no se puede auditar: el dato que la explica tiene
+// que estar a la vista, y la ausencia tiene que decir por qué falta.
+export function describeQuotaProvenance(span: QuotaFields): string | null {
+  if (span.quotaCostEstimate != null) {
+    const parts = ['estimada'];
+    if (span.quotaCatalogFetchedAt) parts.push(`catálogo ${span.quotaCatalogFetchedAt}`);
+    const rates = formatRates(span.quotaRateSnapshot);
+    if (rates) parts.push(rates);
+    return parts.join(' · ');
+  }
+  if (span.quotaMissingReason) return MISSING_REASON_LABEL[span.quotaMissingReason] ?? span.quotaMissingReason;
+  return null;
+}

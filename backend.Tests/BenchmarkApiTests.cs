@@ -15,7 +15,13 @@ public sealed class BenchmarkApiTests : IDisposable
 
     public void Dispose() => _factory.Dispose();
 
-    private HttpClient Client() => _factory.CreateClient();
+    private HttpClient Client() => Authenticated(_factory.CreateClient());
+
+    internal static HttpClient Authenticated(HttpClient client)
+    {
+        client.DefaultRequestHeaders.Add("X-Telemetry-Key", "test-key");
+        return client;
+    }
 
     private static object RunBody(string[]? models = null, string? judge = "provider/model-c") => new
     {

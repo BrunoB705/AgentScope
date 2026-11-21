@@ -42,11 +42,11 @@ public sealed class BenchmarkSessionReader : IBenchmarkSessionReader
                     : (double?)null;
                 return new(
                     session.Id,
-                    spans.Sum(span => span.InputTokens),
-                    spans.Sum(span => span.OutputTokens),
-                    spans.Sum(span => span.ReasoningTokens),
-                    spans.Sum(span => span.CacheReadTokens),
-                    spans.Sum(span => span.CacheWriteTokens),
+                    spans.Sum(span => span.InputTokens) ?? 0,
+                    spans.Sum(span => span.OutputTokens) ?? 0,
+                    spans.Sum(span => span.ReasoningTokens) ?? 0,
+                    spans.Sum(span => span.CacheReadTokens) ?? 0,
+                    spans.Sum(span => span.CacheWriteTokens) ?? 0,
                     cost,
                     quota);
             }

@@ -35,6 +35,66 @@ test('maps completed tool call with correlation and drops its content and metada
   assert.equal(JSON.stringify(mapped).includes('secret command'), false);
 });
 
+test('la cuota Go estimada guarda el snapshot de tarifas y la fecha del catálogo', () => {
+  const [mapped] = mapOpenCodeEvent(
+    { id: 'e6', created: 7000, type: 'session.step.ended', data: { sessionID: 's1', assistantMessageID: 'm1', tokens: { input: 1000, output: 500, cache: { read: 200, write: 100 } } } },
+    'opencode',
+    {
+      model: 'opencode-go/model-x',
+      started: 6000,
+      catalogFetchedAt: '2026-11-17T10:22:00.000Z',
+      modelInfo: { cost: [{ input: 0.15, output: 0.6, cache: { read: 0.015, write: 0.1875 } }] },
+    },
+  );
+  assert.equal(mapped.quotaCostEstimate, (1000 * 0.15 + 500 * 0.6 + 200 * 0.015 + 100 * 0.1875) / 1_000_000);
+  assert.equal(mapped.quotaCatalogFetchedAt, '2026-11-17T10:22:00.000Z');
+  assert.equal(mapped.quotaMissingReason, undefined);
+  const snapshot = JSON.parse(String(mapped.quotaRateSnapshot));
+  assert.deepEqual(snapshot, { input: 0.15, output: 0.6, cacheRead: 0.015, cacheWrite: 0.1875, tier: null });
+});
+
+test('sin tarifa no se inventa una cuota y se registra el motivo', () => {
+  const [mapped] = mapOpenCodeEvent(
+    { id: 'e7', created: 7000, type: 'session.step.ended', data: { sessionID: 's1', assistantMessageID: 'm1', tokens: { input: 10, output: 5, cache: { read: 0, write: 0 } } } },
+    'opencode',
+    { model: 'opencode-go/model-y', started: 6000, catalogFetchedAt: '2026-11-17T10:22:00.000Z', modelInfo: { cost: [] } },
+  );
+  assert.equal(mapped.quotaCostEstimate, undefined);
+  assert.equal(mapped.quotaRateSnapshot, undefined);
+  assert.equal(mapped.quotaMissingReason, 'no_catalog');
+  assert.equal(mapped.quotaCatalogFetchedAt, undefined);
+});
+
+test('un modelo fuera de opencode-go no intenta estimar cuota', () => {
+  const [mapped] = mapOpenCodeEvent(
+    { id: 'e8', created: 7000, type: 'session.step.ended', data: { sessionID: 's1', assistantMessageID: 'm1', tokens: { input: 10, output: 5 } } },
+    'opencode',
+    { model: 'anthropic/claude', started: 6000, modelInfo: { cost: [{ input: 1, output: 1, cache: { read: 1, write: 1 } }] } },
+  );
+  assert.equal(mapped.quotaCostEstimate, undefined);
+  assert.equal(mapped.quotaMissingReason, 'not_applicable');
+});
+
+test('un contador de tokens ausente se omite en vez de viajar como cero', () => {
+  const [mapped] = mapOpenCodeEvent({ id: 'e9', created: 8000, type: 'session.step.ended', data: {
+    sessionID: 's1', assistantMessageID: 'm9', finish: 'stop', tokens: { input: 12 },
+  } });
+  assert.equal(mapped.inputTokens, 12);
+  assert.equal(mapped.outputTokens, undefined);
+  assert.equal(mapped.cacheReadTokens, undefined);
+  assert.equal(JSON.stringify(mapped).includes('"outputTokens"'), false);
+});
+
+test('un contador reportado en cero se conserva como cero', () => {
+  const [mapped] = mapOpenCodeEvent({ id: 'e10', created: 9000, type: 'session.step.ended', data: {
+    sessionID: 's1', assistantMessageID: 'm10', finish: 'stop', tokens: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+  } });
+  assert.equal(mapped.inputTokens, 0);
+  assert.equal(mapped.outputTokens, 0);
+  assert.equal(mapped.cacheReadTokens, 0);
+  assert.equal(mapped.cacheWriteTokens, 0);
+});
+
 test('ignores unrelated event and malformed events without a session id', () => {
   assert.deepEqual(mapOpenCodeEvent({ type: 'session.text.delta', data: { sessionID: 's1', text: 'secret' } }), []);
   assert.deepEqual(mapOpenCodeEvent({ type: 'session.idle', data: {} }), []);

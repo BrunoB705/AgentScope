@@ -9,6 +9,8 @@ services:
     volumes: ["telemetry-data:/data"]
   dashboard:
     build: ./dashboard
+    environment:
+      TELEMETRY_API_KEY: ${TELEMETRY_API_KEY:?Set TELEMETRY_API_KEY before starting Compose}
     ports: ["127.0.0.1:5173:80"]
     depends_on: [api]
 volumes:

@@ -2,13 +2,22 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 
+/// <summary>
+/// Las pruebas de integración del runner levantan un worker real y esperan una
+/// corrida completa contra un `opencode` falso. En paralelo con el resto de las
+/// factorías el margen de 15 s se vuelve inestable, así que la colección corre sola.
+/// </summary>
+[CollectionDefinition("benchmark-runner", DisableParallelization = true)]
+public sealed class BenchmarkRunnerCollectionDefinition { }
+
+[Collection("benchmark-runner")]
 public sealed class BenchmarkRunnerIntegrationTests : IDisposable
 {
     private readonly BenchmarkRunnerApiFactory _factory = new();
 
     public void Dispose() => _factory.Dispose();
 
-    private HttpClient Client() => _factory.CreateClient();
+    private HttpClient Client() => BenchmarkApiTests.Authenticated(_factory.CreateClient());
 
     private static async Task<JsonElement> WaitAsync(
         HttpClient client,
@@ -17,13 +26,15 @@ public sealed class BenchmarkRunnerIntegrationTests : IDisposable
         int timeoutMs = 15000)
     {
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        string last = "sin respuesta";
         while (DateTime.UtcNow < deadline)
         {
             using var document = JsonDocument.Parse(await client.GetStringAsync($"/api/v1/benchmarks/runs/{id}"));
+            last = document.RootElement.ToString();
             if (predicate(document.RootElement)) return document.RootElement.Clone();
             await Task.Delay(100);
         }
-        throw new TimeoutException($"La corrida {id} no llegó al estado esperado.");
+        throw new TimeoutException($"La corrida {id} no llegó al estado esperado. Último estado: {last}");
     }
 
     private static async Task<string> CreateRunAsync(HttpClient client, string[] models)

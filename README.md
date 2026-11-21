@@ -102,7 +102,9 @@ cd dashboard && npm ci && npm test && npm run build
 
 ## API
 
-- `POST /api/v1/telemetry/events` (cabecera `X-Telemetry-Key`)
+Todas las rutas exigen la cabecera `X-Telemetry-Key`, salvo `GET /api/v1/health`. El proxy del dashboard la inyecta desde `TELEMETRY_API_KEY` o desde `telemetry.key`, así que el navegador nunca la recibe.
+
+- `POST /api/v1/telemetry/events`
 - `GET /api/v1/overview?days=1|7|30|90` (sin `days`, consulta todo el historial)
 - `GET /api/v1/sessions?status=&model=&error=&from=&to=&page=&pageSize=`
 - `GET /api/v1/sessions/{id}` y `GET /api/v1/traces/{id}`

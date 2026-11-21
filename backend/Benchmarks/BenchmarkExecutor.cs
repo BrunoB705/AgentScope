@@ -140,7 +140,7 @@ internal sealed class BenchmarkExecutor
         }
         finally
         {
-            Cleanup(runRoot);
+            Cleanup(workRoot, runRoot);
         }
     }
 
@@ -156,7 +156,7 @@ internal sealed class BenchmarkExecutor
             var directory = Path.Combine(runRoot, "baseline");
             try
             {
-                ResetDirectory(directory);
+                ResetDirectory(runRoot, directory);
                 CopyDirectory(test.FixturePath!, directory);
                 var shell = ShellCommand.For(test.VerifyCommand!);
                 ProcessResult verify;
@@ -195,7 +195,7 @@ internal sealed class BenchmarkExecutor
             }
             finally
             {
-                Cleanup(directory);
+                Cleanup(runRoot, directory);
             }
         }
         return JsonSerializer.Serialize(records);
@@ -227,7 +227,7 @@ internal sealed class BenchmarkExecutor
         Directory.CreateDirectory(promptDir);
         try
         {
-            ResetDirectory(workDir);
+            ResetDirectory(runRoot, workDir);
             if (test.Type == "code")
             {
                 CopyDirectory(test.FixturePath!, workDir);
@@ -274,7 +274,7 @@ internal sealed class BenchmarkExecutor
             {
                 await RunGitAsync(workDir, new[] { "add", "-A" }, cancellationToken);
                 var diffResult = await _processRunner.RunAsync(
-                    new ProcessRequest("git", new[] { "diff", "--cached" }, workDir, 30000),
+                    new ProcessRequest("git", new[] { "diff", "--cached", "--no-ext-diff", "--no-binary" }, workDir, 30000),
                     cancellationToken);
                 diff = Truncate(diffResult.StandardOutput, 40000);
 
@@ -295,12 +295,13 @@ internal sealed class BenchmarkExecutor
 
             if (test.Type == "open" || test.Judge)
             {
-                var artifact = test.Type == "code" ? finalText + "\n\nDIFF\n" + diff : finalText;
+                var cappedText = Truncate(finalText, 20000);
+                var artifact = test.Type == "code" ? cappedText + "\n\nDIFF\n" + diff : cappedText;
                 var rubric = test.Rubric.Length > 0 ? test.Rubric : new[] { "Corrección funcional", "Claridad del cambio" };
                 var judgePath = Path.Combine(promptDir, $"{result.Id}-judge.md");
                 await File.WriteAllTextAsync(judgePath, JudgePrompt.Build(test.Prompt, rubric, artifact), cancellationToken);
 
-                ResetDirectory(judgeDir);
+                ResetDirectory(runRoot, judgeDir);
                 var judgeCommand = ShellCommand.OpenCode(
                     _options.Value.OpenCodeCommand,
                     "--standalone", "run", "--model", run.JudgeModel, "--title", $"bench-judge/{run.Id}/{result.Id}",
@@ -366,7 +367,7 @@ internal sealed class BenchmarkExecutor
         }
         finally
         {
-            Cleanup(Path.Combine(runRoot, result.Id));
+            Cleanup(runRoot, Path.Combine(runRoot, result.Id));
         }
     }
 
@@ -381,9 +382,9 @@ internal sealed class BenchmarkExecutor
         var judgeDir = Path.Combine(verdictRoot, "benchmark-judge");
         try
         {
-            ResetDirectory(verdictRoot);
+            ResetDirectory(runRoot, verdictRoot);
             Directory.CreateDirectory(promptDir);
-            ResetDirectory(judgeDir);
+            ResetDirectory(runRoot, judgeDir);
 
             var promptPath = Path.Combine(promptDir, "verdict.md");
             await File.WriteAllTextAsync(promptPath, VerdictPrompt.Build(run, results), cancellationToken);
@@ -420,7 +421,7 @@ internal sealed class BenchmarkExecutor
         }
         finally
         {
-            Cleanup(verdictRoot);
+            Cleanup(runRoot, verdictRoot);
         }
     }
 
@@ -461,17 +462,30 @@ internal sealed class BenchmarkExecutor
         return result.ExitCode == 0;
     }
 
-    private static void ResetDirectory(string path)
+    internal static string EnsureChildPath(string root, string candidate)
     {
-        if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
-        Directory.CreateDirectory(path);
+        var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var fullCandidate = Path.GetFullPath(candidate).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var prefix = fullRoot.Length == 0 ? Path.DirectorySeparatorChar.ToString() : fullRoot + Path.DirectorySeparatorChar;
+        if (fullCandidate.Length <= fullRoot.Length || !fullCandidate.StartsWith(prefix, comparison))
+            throw new InvalidOperationException($"La ruta '{candidate}' queda fuera de la raíz permitida '{root}'.");
+        return fullCandidate;
     }
 
-    private static void Cleanup(string path)
+    internal static void ResetDirectory(string root, string path)
     {
+        var safe = EnsureChildPath(root, path);
+        if (Directory.Exists(safe)) Directory.Delete(safe, recursive: true);
+        Directory.CreateDirectory(safe);
+    }
+
+    internal static void Cleanup(string root, string path)
+    {
+        var safe = EnsureChildPath(root, path);
         try
         {
-            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+            if (Directory.Exists(safe)) Directory.Delete(safe, recursive: true);
         }
         catch (IOException)
         {

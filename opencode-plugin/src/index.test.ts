@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { deliveryResultForStatus, mapOpenCodeEvent, TelemetryQueue } from './index.ts';
 
@@ -185,4 +188,96 @@ test('descarta un rechazo permanente sin bloquear los eventos siguientes', async
   assert.equal(queue.size, 0);
   assert.equal(queue.rejectedCount, 1);
   queue.dispose();
+});
+
+test('resuelve el modelo y su variante directamente desde session.step.ended cuando no hubo step.started', () => {
+  const [mapped] = mapOpenCodeEvent({
+    id: 'e11',
+    created: 9000,
+    type: 'session.step.ended',
+    data: {
+      sessionID: 's1',
+      assistantMessageID: 'm11',
+      model: { providerID: 'opencode-go', id: 'model-z', variant: 'high' },
+      tokens: { input: 100, output: 50, cache: { read: 0, write: 0 } },
+    },
+  });
+  assert.equal(mapped.name, 'opencode-go/model-z#high');
+  assert.equal(mapped.model, 'opencode-go/model-z#high');
+  assert.equal((mapped.attributes as Record<string, string>).model_resolution, 'event');
+});
+
+test('un session.step.ended sin step ni data.model marca model_resolution unknown y no inventa modelo', () => {
+  const [mapped] = mapOpenCodeEvent({
+    id: 'e12',
+    created: 9000,
+    type: 'session.step.ended',
+    data: {
+      sessionID: 's1',
+      assistantMessageID: 'm12',
+      tokens: { input: 10, output: 5 },
+    },
+  });
+  assert.equal(mapped.name, 'model');
+  assert.equal(mapped.model, undefined);
+  assert.equal(mapped.quotaMissingReason, 'model_unknown');
+  assert.equal((mapped.attributes as Record<string, string>).model_resolution, 'unknown');
+});
+
+test('un tool.completed sin assistantMessageID omite parentId en lugar de emitir model: vacío', () => {
+  const [mapped] = mapOpenCodeEvent({
+    id: 'e13',
+    created: 9000,
+    type: 'session.tool.success',
+    data: {
+      sessionID: 's1',
+      id: 'call2',
+      metadata: { tool: 'read' },
+    },
+  });
+  assert.equal(mapped.parentId, undefined);
+  assert.equal(Object.hasOwn(mapped, 'parentId'), false);
+});
+
+test('persiste la cola en disco cuando el colector falla y la restaura al iniciar una nueva cola', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'aop-queue-'));
+  const persistPath = join(dir, 'telemetry-queue.json');
+  try {
+    const failing = new TelemetryQueue(async () => 'retry', { attempts: 1, retryDelayMs: 5000, persistPath });
+    failing.enqueue({ eventId: 'persisted-1' });
+    await new Promise(resolve => setTimeout(resolve, 40));
+    failing.dispose();
+
+    const saved = JSON.parse(await readFile(persistPath, 'utf8')) as Array<{ eventId: string }>;
+    assert.deepEqual(saved.map(item => item.eventId), ['persisted-1']);
+
+    const delivered: unknown[] = [];
+    const recovered = new TelemetryQueue(async event => {
+      delivered.push(event.eventId);
+      return 'ok';
+    }, { attempts: 1, persistPath });
+    await new Promise(resolve => setTimeout(resolve, 40));
+    assert.deepEqual(delivered, ['persisted-1']);
+    assert.equal(recovered.size, 0);
+    recovered.dispose();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('shutdown intenta drenar la cola y persiste los pendientes si vence el timeout', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'aop-shutdown-'));
+  const persistPath = join(dir, 'telemetry-queue.json');
+  try {
+    const slow = new TelemetryQueue(
+      () => new Promise<'ok'>(resolve => setTimeout(() => resolve('ok'), 500)),
+      { attempts: 1, persistPath },
+    );
+    slow.enqueue({ eventId: 'slow-1' });
+    await slow.shutdown(20);
+    const saved = JSON.parse(await readFile(persistPath, 'utf8')) as Array<{ eventId: string }>;
+    assert.deepEqual(saved.map(item => item.eventId), ['slow-1']);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

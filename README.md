@@ -105,14 +105,17 @@ cd dashboard && npm ci && npm test && npm run build
 Todas las rutas exigen la cabecera `X-Telemetry-Key`, salvo `GET /api/v1/health`. El proxy del dashboard la inyecta desde `TELEMETRY_API_KEY` o desde `telemetry.key`, así que el navegador nunca la recibe.
 
 - `POST /api/v1/telemetry/events`
-- `GET /api/v1/overview?days=1|7|30|90` (sin `days`, consulta todo el historial)
-- `GET /api/v1/sessions?status=&model=&error=&from=&to=&page=&pageSize=`
-- `GET /api/v1/sessions/{id}` y `GET /api/v1/traces/{id}`
-- `GET /api/v1/analytics/tools?days=1|7|30|90` (sin `days`, consulta todo el historial)
-- `GET /api/v1/analytics/models?from=&to=&source=&model=&bucket=day|week|month`
+- `GET /api/v1/overview?days=1|7|30|90&scope=all|real|benchmarks` (sin `days`, consulta todo el historial)
+- `GET /api/v1/sessions?status=&model=&error=&from=&to=&page=&pageSize=&scope=all|real|benchmarks`
+- `GET /api/v1/sessions/{id}`, `DELETE /api/v1/sessions/{id}` y `GET /api/v1/traces/{id}`
+- `GET /api/v1/analytics/tools?days=1|7|30|90&scope=all|real|benchmarks` (sin `days`, consulta todo el historial)
+- `GET /api/v1/analytics/models?from=&to=&source=&model=&bucket=day|week|month&scope=all|real|benchmarks`
+- `GET /api/v1/behavior?days=1|7|30|90&scope=all|real|benchmarks`
+- `GET /api/v1/export?from=&to=&scope=all|real|benchmarks` (exporta sesiones, spans y eventos filtrados en JSON Lines)
+- `DELETE /api/v1/data?before=<ISO>&dryRun=true|false` (purga sesiones anteriores a `before`; también configurable al arranque mediante `Telemetry:RetentionDays`)
 - `GET /api/v1/benchmarks/suites` y `GET /api/v1/benchmarks/models`
 - `POST /api/v1/benchmarks/runs`, `GET /api/v1/benchmarks/runs?suite=` y `GET /api/v1/benchmarks/runs/{id}`
-- `POST /api/v1/benchmarks/runs/{id}/cancel`
+- `POST /api/v1/benchmarks/runs/{id}/cancel` y `DELETE /api/v1/benchmarks/runs/{id}`
 - SignalR `/hubs/telemetry`, eventos `telemetry.updated` y `benchmark.updated`
 
-La deduplicación usa `source + eventId`. Las vistas permiten inspeccionar spans de modelo/herramienta y eventos no correlacionados. La política de atributos usa lista de exclusión para claves sensibles.
+La deduplicación usa `source + eventId`. Las vistas permiten inspeccionar spans de modelo/herramienta, filtrar entre trabajo real y pruebas (`scope`) y exportar o eliminar sesiones locales. La política de atributos usa lista de exclusión para claves sensibles.

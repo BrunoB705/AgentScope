@@ -8,17 +8,20 @@ using Microsoft.EntityFrameworkCore;
 /// </summary>
 internal static class SchemaMigrator
 {
-    internal const int LatestVersion = 2;
+    internal const int LatestVersion = 3;
 
     internal static async Task ApplyAsync(TelemetryDb db)
     {
         var fresh = !await TableExistsAsync(db, "Sessions");
         await db.Database.EnsureCreatedAsync();
+        await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
         await db.Database.ExecuteSqlRawAsync(
             "CREATE TABLE IF NOT EXISTS SchemaVersion (Version INTEGER NOT NULL PRIMARY KEY, AppliedAt TEXT NOT NULL)");
 
         if (fresh)
         {
+            await EnsureBenchmarkTablesAsync(db);
+            await EnsureIndexesAsync(db);
             await RecordAsync(db, LatestVersion);
             return;
         }
@@ -27,7 +30,13 @@ internal static class SchemaMigrator
         // las columnas que versiones previas agregaban a mano para que la migración
         // 2 pueda copiar sin suponer nada.
         await EnsureLegacyColumnsAsync(db);
-        if (await CurrentVersionAsync(db) < LatestVersion) await UpgradeToNullableTokensAsync(db);
+        var currentVersion = await CurrentVersionAsync(db);
+        if (currentVersion < 2) await UpgradeToNullableTokensAsync(db);
+        if (currentVersion < 3)
+        {
+            await EnsureBenchmarkTablesAsync(db);
+            await EnsureIndexesAsync(db);
+        }
         await RecordAsync(db, LatestVersion);
     }
 
@@ -137,14 +146,73 @@ internal static class SchemaMigrator
         await AddColumnIfMissingAsync(db, "Sessions", "ReviewTask", "TEXT NULL");
     }
 
-    private static async Task RecordAsync(TelemetryDb db, int version)
+    internal static async Task EnsureBenchmarkTablesAsync(DbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS BenchmarkRuns (
+              Id TEXT NOT NULL PRIMARY KEY,
+              Suite TEXT NOT NULL,
+              JudgeModel TEXT NOT NULL,
+              Status TEXT NOT NULL,
+              Total INTEGER NOT NULL,
+              Completed INTEGER NOT NULL DEFAULT 0,
+              CreatedAt TEXT NOT NULL,
+              StartedAt TEXT NULL,
+              CompletedAt TEXT NULL,
+              BaselineJson TEXT NULL,
+              RequestVerdict INTEGER NOT NULL DEFAULT 1,
+              Verdict TEXT NULL,
+              Error TEXT NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS BenchmarkResults (
+              Id TEXT NOT NULL PRIMARY KEY,
+              RunId TEXT NOT NULL,
+              TestName TEXT NOT NULL,
+              TestType TEXT NOT NULL,
+              Model TEXT NOT NULL,
+              Status TEXT NOT NULL,
+              VerifyPassed INTEGER NULL,
+              VerifyExitCode INTEGER NULL,
+              SessionId TEXT NULL,
+              JudgeSessionId TEXT NULL,
+              DurationMs INTEGER NULL,
+              InputTokens INTEGER NOT NULL DEFAULT 0,
+              OutputTokens INTEGER NOT NULL DEFAULT 0,
+              ReasoningTokens INTEGER NOT NULL DEFAULT 0,
+              CacheReadTokens INTEGER NOT NULL DEFAULT 0,
+              CacheWriteTokens INTEGER NOT NULL DEFAULT 0,
+              Cost REAL NULL,
+              QuotaCostEstimate REAL NULL,
+              JudgeScore INTEGER NULL,
+              JudgeRationale TEXT NULL,
+              MetricsError TEXT NULL,
+              Error TEXT NULL,
+              StartedAt TEXT NULL,
+              CompletedAt TEXT NULL
+            );
+            """);
+        await AddColumnIfMissingAsync(db, "BenchmarkRuns", "RequestVerdict", "INTEGER NOT NULL DEFAULT 1");
+        await AddColumnIfMissingAsync(db, "BenchmarkRuns", "Verdict", "TEXT NULL");
+        await AddColumnIfMissingAsync(db, "BenchmarkResults", "ReasoningTokens", "INTEGER NOT NULL DEFAULT 0");
+    }
+
+    internal static async Task EnsureIndexesAsync(DbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS \"IX_Events_Source_EventId\" ON \"Events\" (\"Source\", \"EventId\")");
+        await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS \"IX_Events_SessionId_Timestamp\" ON \"Events\" (\"SessionId\", \"Timestamp\")");
+        await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS \"IX_Spans_SessionId_StartedAt\" ON \"Spans\" (\"SessionId\", \"StartedAt\")");
+    }
+
+    private static async Task RecordAsync(DbContext db, int version)
     {
         await db.Database.ExecuteSqlRawAsync(
             "INSERT INTO SchemaVersion (Version, AppliedAt) VALUES ({0}, {1}) ON CONFLICT(Version) DO NOTHING",
             version, DateTime.UtcNow.ToString("O"));
     }
 
-    private static async Task<bool> TableExistsAsync(TelemetryDb db, string table)
+    private static async Task<bool> TableExistsAsync(DbContext db, string table)
     {
         await db.Database.OpenConnectionAsync();
         try
@@ -164,16 +232,17 @@ internal static class SchemaMigrator
         }
     }
 
-    private static readonly HashSet<string> KnownTables = new(StringComparer.Ordinal) { "Events", "Spans", "Sessions" };
+    private static readonly HashSet<string> KnownTables = new(StringComparer.Ordinal) { "Events", "Spans", "Sessions", "BenchmarkRuns", "BenchmarkResults" };
     private static readonly HashSet<string> KnownColumns = new(StringComparer.Ordinal)
     {
         "Cost", "ReasoningTokens", "CacheReadTokens", "CacheWriteTokens", "QuotaCostEstimate",
         "QuotaCatalogFetchedAt", "QuotaRateSnapshot", "QuotaMissingReason",
         "Title", "Rating", "ReviewNote", "ReviewTask", "TitleAt", "ModelAt",
+        "RequestVerdict", "Verdict",
     };
 
 #pragma warning disable EF1002 // identificadores validados contra KnownTables/KnownColumns
-    private static async Task AddColumnIfMissingAsync(TelemetryDb db, string table, string column, string definition)
+    private static async Task AddColumnIfMissingAsync(DbContext db, string table, string column, string definition)
     {
         if (!KnownTables.Contains(table)) throw new ArgumentOutOfRangeException(nameof(table));
         if (!KnownColumns.Contains(column)) throw new ArgumentOutOfRangeException(nameof(column));
@@ -184,6 +253,7 @@ internal static class SchemaMigrator
             "REAL NULL" => "REAL NULL",
             "INTEGER NULL" => "INTEGER NULL",
             "INTEGER NOT NULL DEFAULT 0" => "INTEGER NOT NULL DEFAULT 0",
+            "INTEGER NOT NULL DEFAULT 1" => "INTEGER NOT NULL DEFAULT 1",
             _ => throw new ArgumentOutOfRangeException(nameof(definition)),
         };
         await db.Database.ExecuteSqlRawAsync($"ALTER TABLE \"{table}\" ADD COLUMN \"{column}\" {definitionSql}");
@@ -191,7 +261,7 @@ internal static class SchemaMigrator
 
 #pragma warning restore EF1002
 
-    private static async Task<bool> ColumnExistsAsync(TelemetryDb db, string table, string column)
+    private static async Task<bool> ColumnExistsAsync(DbContext db, string table, string column)
     {
         await db.Database.OpenConnectionAsync();
         try

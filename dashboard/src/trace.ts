@@ -122,6 +122,7 @@ const MISSING_REASON_LABEL: Record<string, string> = {
   incomplete_rate: 'tarifa incompleta',
   tokens_missing: 'sin tokens reportados',
   not_applicable: 'modelo fuera de opencode-go',
+  model_unknown: 'modelo del paso no identificado',
 };
 
 const formatRates = (raw?: string | null): string | null => {

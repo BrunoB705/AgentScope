@@ -260,3 +260,8 @@ main{max-width:1880px;padding-left:3.5vw;padding-right:3.5vw}
 .benchmark-verdict-text strong{color:#e1e4ea;font-weight:600}
 .benchmark-verdict-text code{padding:1px 4px;border-radius:4px;background:#0c0f13;color:#a9ddc1;font:11px 'DM Mono',monospace}
 .benchmark-more{width:100%;padding:8px;border:1px dashed #315244;border-radius:6px;background:transparent;color:#a9ddc1;cursor:pointer;font:12px 'DM Sans',sans-serif}
+.scope-select{padding:9px 11px;border:1px solid #29303a;border-radius:6px;background:#0c0f13;color:#dce0e7;font:12px 'DM Sans',sans-serif}
+.section-header-actions>button.secondary-button{border-color:#2a3039;background:#101319;color:#b7bdc8}
+.detail-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.panel-head button.danger-button{border-color:#633333;background:#1a1010;color:#ff8787}
+.panel-head button:disabled,.section-header-actions button:disabled{opacity:.45;cursor:default}

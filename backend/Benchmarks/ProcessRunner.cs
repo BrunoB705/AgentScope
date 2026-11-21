@@ -4,6 +4,15 @@ using System.Text;
 
 public sealed class ProcessRunner : IProcessRunner
 {
+    private static readonly HashSet<string> ScrubbedEnvironmentKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "TELEMETRY_API_KEY",
+        "Telemetry__ApiKey",
+        "ConnectionStrings__Telemetry",
+        "OPENCODE_OBSERVABILITY_KEY",
+        "OPENCODE_OBSERVABILITY_URL",
+    };
+
     public async Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken)
     {
         var startInfo = new ProcessStartInfo
@@ -17,6 +26,8 @@ public sealed class ProcessRunner : IProcessRunner
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        foreach (var existingKey in startInfo.Environment.Keys.Where(ScrubbedEnvironmentKeys.Contains).ToArray())
+            startInfo.Environment.Remove(existingKey);
         foreach (var argument in request.Arguments) startInfo.ArgumentList.Add(argument);
         if (request.Environment is not null)
             foreach (var pair in request.Environment) startInfo.Environment[pair.Key] = pair.Value;

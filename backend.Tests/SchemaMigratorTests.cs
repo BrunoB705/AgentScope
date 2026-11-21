@@ -73,7 +73,7 @@ public sealed class SchemaMigratorTests : IDisposable
         await using var db = Context();
         await SchemaMigrator.ApplyAsync(db);
 
-        Assert.Equal(2, await SchemaMigrator.CurrentVersionAsync(db));
+        Assert.Equal(SchemaMigrator.LatestVersion, await SchemaMigrator.CurrentVersionAsync(db));
         Assert.Equal(0, ColumnNotNull("Events", "InputTokens"));
         Assert.Equal(0, ColumnNotNull("Spans", "OutputTokens"));
 
@@ -111,7 +111,29 @@ public sealed class SchemaMigratorTests : IDisposable
         await using var db = Context();
         await SchemaMigrator.ApplyAsync(db);
         await SchemaMigrator.ApplyAsync(db);
-        Assert.Equal(2, await SchemaMigrator.CurrentVersionAsync(db));
+        Assert.Equal(SchemaMigrator.LatestVersion, await SchemaMigrator.CurrentVersionAsync(db));
         Assert.Equal(1, await db.Spans.AsNoTracking().CountAsync());
+    }
+
+    [Fact]
+    public async Task CreatesBenchmarkTablesAndPerformanceIndexes()
+    {
+        CreateLegacyDatabase();
+        await using var db = Context();
+        await SchemaMigrator.ApplyAsync(db);
+
+        using var connection = new SqliteConnection($"Data Source={_path};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT type, name FROM sqlite_master WHERE type IN ('table','index')";
+        var objects = new HashSet<(string Type, string Name)>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read()) objects.Add((reader.GetString(0), reader.GetString(1)));
+
+        Assert.Contains(("table", "BenchmarkRuns"), objects);
+        Assert.Contains(("table", "BenchmarkResults"), objects);
+        Assert.Contains(("index", "IX_Events_Source_EventId"), objects);
+        Assert.Contains(("index", "IX_Events_SessionId_Timestamp"), objects);
+        Assert.Contains(("index", "IX_Spans_SessionId_StartedAt"), objects);
     }
 }

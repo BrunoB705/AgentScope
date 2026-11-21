@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -606,6 +607,148 @@ public sealed class TelemetryApiTests : IDisposable
         Assert.DoesNotContain(recent, session => session.GetProperty("id").GetString() == "overview-recent-0");
     }
 
+    [Fact]
+    public async Task DeleteSessionRemovesSessionSpansAndEvents()
+    {
+        await Post(Fixture("del-1", "session-delete", "session.created"));
+        await Post(Fixture("del-2", "session-delete", "model.completed") with { Name = "opencode-go/model-a", InputTokens = 10 });
+
+        var missing = await _client.DeleteAsync("/api/v1/sessions/does-not-exist");
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+
+        var deleted = await _client.DeleteAsync("/api/v1/sessions/session-delete");
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+
+        var detail = await _client.GetAsync("/api/v1/sessions/session-delete");
+        Assert.Equal(HttpStatusCode.NotFound, detail.StatusCode);
+
+        var repeated = await _client.DeleteAsync("/api/v1/sessions/session-delete");
+        Assert.Equal(HttpStatusCode.NotFound, repeated.StatusCode);
+    }
+
+    [Fact]
+    public async Task PurgeDataSupportsDryRunAndDeletesOlderSessions()
+    {
+        await Post(Fixture("old-c", "session-old", "session.created"));
+        await Post(Fixture("old-m", "session-old", "model.completed") with { Name = "opencode-go/model-a", InputTokens = 5 });
+        await Post(Fixture("new-c", "session-new", "session.created"));
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TelemetryDb>();
+            await db.Sessions.Where(s => s.Id == "session-old")
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.UpdatedAt, DateTime.UtcNow.AddDays(-10)));
+        }
+
+        var cutoff = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddDays(-5).ToString("O"));
+        var dryResponse = await _client.DeleteAsync($"/api/v1/data?before={cutoff}&dryRun=true");
+        Assert.Equal(HttpStatusCode.OK, dryResponse.StatusCode);
+        using (var dryJson = JsonDocument.Parse(await dryResponse.Content.ReadAsStringAsync()))
+        {
+            Assert.True(dryJson.RootElement.GetProperty("dryRun").GetBoolean());
+            Assert.Equal(1, dryJson.RootElement.GetProperty("sessions").GetInt32());
+            Assert.Equal(1, dryJson.RootElement.GetProperty("spans").GetInt32());
+            Assert.Equal(2, dryJson.RootElement.GetProperty("events").GetInt32());
+        }
+        Assert.Equal(HttpStatusCode.OK, (await _client.GetAsync("/api/v1/sessions/session-old")).StatusCode);
+
+        var purgeResponse = await _client.DeleteAsync($"/api/v1/data?before={cutoff}&dryRun=false");
+        Assert.Equal(HttpStatusCode.OK, purgeResponse.StatusCode);
+        using (var purgeJson = JsonDocument.Parse(await purgeResponse.Content.ReadAsStringAsync()))
+        {
+            Assert.False(purgeJson.RootElement.GetProperty("dryRun").GetBoolean());
+            Assert.Equal(1, purgeJson.RootElement.GetProperty("sessions").GetInt32());
+        }
+        Assert.Equal(HttpStatusCode.NotFound, (await _client.GetAsync("/api/v1/sessions/session-old")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await _client.GetAsync("/api/v1/sessions/session-new")).StatusCode);
+    }
+
+    [Fact]
+    public async Task ExportReturnsJsonLinesWithSafeAttributes()
+    {
+        await Post(Fixture("exp-1", "session-export", "session.created"));
+        await Post(Fixture("exp-2", "session-export", "tool.completed") with
+        {
+            Name = "bash",
+            Attributes = new Dictionary<string, string> { ["trace.id"] = "trace-exp", ["secret"] = "should-not-appear" }
+        });
+
+        var response = await _client.GetAsync("/api/v1/export");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/x-ndjson", response.Content.Headers.ContentType?.MediaType);
+        var body = await response.Content.ReadAsStringAsync();
+        var lines = body.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Single(lines);
+
+        using var lineJson = JsonDocument.Parse(lines[0]);
+        Assert.Equal("session-export", lineJson.RootElement.GetProperty("session").GetProperty("id").GetString());
+        Assert.Equal(1, lineJson.RootElement.GetProperty("spans").GetArrayLength());
+        Assert.Equal(2, lineJson.RootElement.GetProperty("events").GetArrayLength());
+        Assert.Contains("trace-exp", body);
+        Assert.DoesNotContain("should-not-appear", body);
+    }
+
+    [Fact]
+    public async Task ScopeFilterSeparatesRealWorkFromBenchmarks()
+    {
+        await Post(Fixture("real-1", "session-real", "session.created") with { Project = "my-app" });
+        await Post(Fixture("real-m", "session-real", "model.completed") with { Project = "my-app", Name = "opencode-go/m1", InputTokens = 10 });
+        await Post(Fixture("bench-1", "session-bench", "session.created") with { Project = "benchmark" });
+        await Post(Fixture("bench-t", "session-bench", "session.title.updated") with { Project = "benchmark", Title = "bench/run1/res1" });
+        await Post(Fixture("bench-m", "session-bench", "model.completed") with { Project = "benchmark", Name = "opencode-go/m1", InputTokens = 90 });
+
+        using (var allOverview = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/overview")))
+            Assert.Equal(2, allOverview.RootElement.GetProperty("totals").GetProperty("sessions").GetInt32());
+
+        using (var realOverview = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/overview?scope=real")))
+        {
+            Assert.Equal(1, realOverview.RootElement.GetProperty("totals").GetProperty("sessions").GetInt32());
+            Assert.Equal(10, realOverview.RootElement.GetProperty("totals").GetProperty("inputTokens").GetInt64());
+        }
+
+        using (var benchOverview = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/overview?scope=benchmarks")))
+        {
+            Assert.Equal(1, benchOverview.RootElement.GetProperty("totals").GetProperty("sessions").GetInt32());
+            Assert.Equal(90, benchOverview.RootElement.GetProperty("totals").GetProperty("inputTokens").GetInt64());
+        }
+
+        using (var realSessions = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions?scope=real")))
+        {
+            var items = realSessions.RootElement.GetProperty("items");
+            Assert.Equal(1, items.GetArrayLength());
+            Assert.Equal("session-real", items[0].GetProperty("id").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task RetentionPurgesExpiredSessionsOnStartup()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"retention-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using (var seed = new TelemetryDb(new DbContextOptionsBuilder<TelemetryDb>().UseSqlite($"Data Source={dbPath};Pooling=False").Options))
+            {
+                await SchemaMigrator.ApplyAsync(seed);
+                seed.Sessions.AddRange(
+                    new Session { Id = "expired", Source = "opencode", Status = "completed", StartedAt = DateTime.UtcNow.AddDays(-40), UpdatedAt = DateTime.UtcNow.AddDays(-40) },
+                    new Session { Id = "current", Source = "opencode", Status = "completed", StartedAt = DateTime.UtcNow.AddDays(-2), UpdatedAt = DateTime.UtcNow.AddDays(-2) });
+                await seed.SaveChangesAsync();
+            }
+
+            using var factory = new ApiFactory(dbPath, retentionDays: 30);
+            using var client = factory.CreateClient();
+            client.DefaultRequestHeaders.Add("X-Telemetry-Key", TestCredentials.ApiKey);
+
+            using var listing = JsonDocument.Parse(await client.GetStringAsync("/api/v1/sessions"));
+            var ids = listing.RootElement.GetProperty("items").EnumerateArray().Select(item => item.GetProperty("id").GetString()).ToArray();
+            Assert.Equal(new[] { "current" }, ids);
+        }
+        finally
+        {
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+        }
+    }
+
     private async Task<HttpResponseMessage> Post(TestTelemetryEventDto dto)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/telemetry/events") { Content = JsonContent.Create(dto) };
@@ -618,21 +761,39 @@ public sealed class TelemetryApiTests : IDisposable
 
 public sealed class ApiFactory : WebApplicationFactory<Program>
 {
-    private readonly string _database = Path.Combine(Path.GetTempPath(), $"agent-observability-{Guid.NewGuid():N}.db");
+    private readonly string _database;
+    private readonly int? _retentionDays;
+    private readonly bool _ownsDatabase;
+
+    public ApiFactory()
+    {
+        _database = Path.Combine(Path.GetTempPath(), $"agent-observability-{Guid.NewGuid():N}.db");
+        _ownsDatabase = true;
+    }
+
+    public ApiFactory(string database, int? retentionDays = null)
+    {
+        _database = database;
+        _retentionDays = retentionDays;
+        _ownsDatabase = false;
+    }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        builder.ConfigureAppConfiguration(config => config.AddInMemoryCollection(new Dictionary<string, string?>
+        var settings = new Dictionary<string, string?>
         {
             ["ConnectionStrings:Telemetry"] = $"Data Source={_database};Pooling=False",
             ["Telemetry:ApiKey"] = TestCredentials.ApiKey,
             ["ASPNETCORE_ENVIRONMENT"] = "Development"
-        }));
+        };
+        if (_retentionDays.HasValue) settings["Telemetry:RetentionDays"] = _retentionDays.Value.ToString();
+        builder.ConfigureAppConfiguration(config => config.AddInMemoryCollection(settings));
         builder.ConfigureLogging(logging => logging.ClearProviders());
     }
     protected override void Dispose(bool disposing)
     {
         base.Dispose(disposing);
-        if (disposing && File.Exists(_database)) File.Delete(_database);
+        if (disposing && _ownsDatabase && File.Exists(_database)) File.Delete(_database);
     }
 }
 

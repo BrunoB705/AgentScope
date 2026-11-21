@@ -99,6 +99,7 @@ test('explica por qué falta la cuota en lugar de dejarla vacía', () => {
   assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'no_catalog' }), 'sin catálogo de modelos');
   assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'no_rate' }), 'sin tarifa para el modelo');
   assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'not_applicable' }), 'modelo fuera de opencode-go');
+  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'model_unknown' }), 'modelo del paso no identificado');
   assert.equal(describeQuotaProvenance({ quotaCostEstimate: null }), null);
 });
 

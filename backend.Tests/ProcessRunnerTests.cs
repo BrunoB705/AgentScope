@@ -92,4 +92,49 @@ public sealed class ProcessRunnerTests
         else
             Assert.Contains("a&calc", arguments);
     }
+
+    [Fact]
+    public async Task RunAsync_ScrubsHostTelemetryKeysAndAppliesExplicitEnvironment()
+    {
+        var previousHost = Environment.GetEnvironmentVariable("TELEMETRY_API_KEY");
+        var previousConfig = Environment.GetEnvironmentVariable("Telemetry__ApiKey");
+        try
+        {
+            Environment.SetEnvironmentVariable("TELEMETRY_API_KEY", "secret-host-key");
+            Environment.SetEnvironmentVariable("Telemetry__ApiKey", "secret-host-key-2");
+
+            const string script = "console.log(JSON.stringify({host:process.env.TELEMETRY_API_KEY??null,host2:process.env.Telemetry__ApiKey??null,obs:process.env.OPENCODE_OBSERVABILITY_KEY??null}))";
+            var plain = await _runner.RunAsync(
+                new ProcessRequest("node", new[] { "-e", script }, Path.GetTempPath(), 15000),
+                CancellationToken.None);
+            Assert.Equal(0, plain.ExitCode);
+            using (var json = System.Text.Json.JsonDocument.Parse(plain.StandardOutput))
+            {
+                Assert.Equal(System.Text.Json.JsonValueKind.Null, json.RootElement.GetProperty("host").ValueKind);
+                Assert.Equal(System.Text.Json.JsonValueKind.Null, json.RootElement.GetProperty("host2").ValueKind);
+                Assert.Equal(System.Text.Json.JsonValueKind.Null, json.RootElement.GetProperty("obs").ValueKind);
+            }
+
+            var scoped = await _runner.RunAsync(
+                new ProcessRequest(
+                    "node",
+                    new[] { "-e", script },
+                    Path.GetTempPath(),
+                    15000,
+                    new Dictionary<string, string> { ["OPENCODE_OBSERVABILITY_KEY"] = "scoped-key" }),
+                CancellationToken.None);
+            Assert.Equal(0, scoped.ExitCode);
+            using (var json = System.Text.Json.JsonDocument.Parse(scoped.StandardOutput))
+            {
+                Assert.Equal(System.Text.Json.JsonValueKind.Null, json.RootElement.GetProperty("host").ValueKind);
+                Assert.Equal(System.Text.Json.JsonValueKind.Null, json.RootElement.GetProperty("host2").ValueKind);
+                Assert.Equal("scoped-key", json.RootElement.GetProperty("obs").GetString());
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TELEMETRY_API_KEY", previousHost);
+            Environment.SetEnvironmentVariable("Telemetry__ApiKey", previousConfig);
+        }
+    }
 }

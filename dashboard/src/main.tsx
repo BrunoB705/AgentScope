@@ -23,7 +23,8 @@ type ModelAnalytics = { bucket: 'day' | 'week' | 'month'; availableSources: stri
 type BehaviorSignal = { kind: string; severity: 'alert' | 'warning'; title: string; explanation: string; evidence: Record<string, unknown> };
 type BehaviorSession = { id: string; title?: string; project?: string; model?: string; status: string; startedAt: string; updatedAt: string; signals: BehaviorSignal[] };
 type BehaviorReport = { windowDays?: number | null; totals: { sessions: number; flaggedSessions: number; signals: number }; sessions: BehaviorSession[] };
-type OverviewTotals = { sessions: number; active: number; completed: number; error: number; interrupted: number; finished: number; successRate: number | null; errorRate: number | null; averageDurationMs: number | null; inputTokens: number; outputTokens: number; reasoningTokens: number; cacheReadTokens: number; cacheWriteTokens: number; totalTokens: number | null; reportedCost: number | null; quotaEstimate: number | null };
+type OverviewTotals = { sessions: number; active: number; completed: number; error: number; interrupted: number; finished: number; successRate: number | null; errorRate: number | null; averageDurationMs: number | null; inputTokens: number | null; outputTokens: number | null; reasoningTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null; totalTokens: number | null; reportedCost: number | null; quotaEstimate: number | null };
+type ScopeFilter = 'all' | 'real' | 'benchmarks';
 type OverviewTool = { name: string; calls: number; errors: number; errorRate: number; sessions: number };
 type OverviewModel = { name: string; calls: number; totalTokens: number | null; reportedCost: number | null; quotaEstimate: number | null; errors: number };
 type OverviewSession = { id: string; title?: string; project?: string; model?: string; status: string; startedAt: string; updatedAt: string };
@@ -47,12 +48,17 @@ function SectionHeader({ icon, eyebrow, title, description, actions }: { icon: S
   return <div className="model-analytics-header section-header"><div className="analytics-title"><span className="analytics-icon"><svg viewBox="0 0 24 24" aria-hidden="true">{icon === 'overview' ? <><path d="M3 11 12 3l9 8"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></> : icon === 'monitoring' ? <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10M15 10v10"/></> : icon === 'tools' ? <path d="M13 2 4 14h7l-1 8 10-12h-7l1-8Z"/> : icon === 'models' ? <><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/><path d="M2 19h21"/></> : icon === 'behavior' ? <path d="M3 12h4l2-7 4 14 2-7h6"/> : <><path d="M4 7h15l-3-3M20 17H5l3 3"/><path d="m16 4 3 3-3 3M8 14l-3 3 3 3"/></>}</svg></span><div><span className="eyebrow">{eyebrow}</span><h2>{title}</h2><p>{description}</p></div></div>{actions && <div className="section-header-actions">{actions}</div>}</div>;
 }
 
+function ScopeSelect({ scope, setScope }: { scope: ScopeFilter; setScope: (value: ScopeFilter) => void }) {
+  return <select className="scope-select" aria-label="Alcance de sesiones" value={scope} onChange={event => setScope(event.target.value as ScopeFilter)}><option value="all">Todo el tráfico</option><option value="real">Trabajo real</option><option value="benchmarks">Solo pruebas</option></select>;
+}
+
 function ModelAnalyticsPage(props: {
   data: ModelAnalytics | null; error: string; bucket: 'day' | 'week' | 'month'; setBucket: (value: 'day' | 'week' | 'month') => void;
   from: string; to: string; setFrom: (value: string) => void; setTo: (value: string) => void;
-  source: string; setSource: (value: string) => void; model: string; setModel: (value: string) => void; onRefresh: () => void;
+  source: string; setSource: (value: string) => void; model: string; setModel: (value: string) => void;
+  scope: ScopeFilter; setScope: (value: ScopeFilter) => void; onRefresh: () => void;
 }) {
-  const { data, error, bucket, setBucket, from, to, setFrom, setTo, source, setSource, model, setModel, onRefresh } = props;
+  const { data, error, bucket, setBucket, from, to, setFrom, setTo, source, setSource, model, setModel, scope, setScope, onRefresh } = props;
   const max = Math.max(1, ...(data?.trend.map(point => point.totalTokens ?? 0) ?? []));
   const points = (select: (point: ModelAnalytics['trend'][number]) => number | null) => (data?.trend ?? []).map((point, index) => {
     const x = 42 + index * (716 / Math.max(1, (data?.trend.length ?? 1) - 1));
@@ -69,7 +75,7 @@ function ModelAnalyticsPage(props: {
   const toggle = (current: string, next: string, set: (value: string) => void) => set(current === next ? '' : next);
   return <section className="model-analytics-page">
     <SectionHeader icon="models" eyebrow="ANALÍTICA" title="Modelos y contexto" description="Análisis de tokens, consumo y eficiencia de caché." actions={<button className="rates-label" title="Se muestran costos devueltos por OpenCode y estimaciones de cuota cuando están disponibles">$ Costos observados</button>} />
-    <div className="model-filter-bar"><div className="bucket-control"><span>AGRUPAR</span>{(['day', 'week', 'month'] as const).map(value => <button key={value} className={bucket === value ? 'active' : ''} onClick={() => setBucket(value)}>{value === 'day' ? 'Día' : value === 'week' ? 'Semana' : 'Mes'}</button>)}</div><label className="date-control">Desde<input type="date" value={from} onChange={event => setFrom(event.target.value)} /></label><label className="date-control">Hasta<input type="date" value={to} onChange={event => setTo(event.target.value)} /></label><button className="refresh-analytics" onClick={onRefresh}>Actualizar</button></div>
+    <div className="model-filter-bar"><div className="bucket-control"><span>AGRUPAR</span>{(['day', 'week', 'month'] as const).map(value => <button key={value} className={bucket === value ? 'active' : ''} onClick={() => setBucket(value)}>{value === 'day' ? 'Día' : value === 'week' ? 'Semana' : 'Mes'}</button>)}</div><label className="date-control">Desde<input type="date" value={from} onChange={event => setFrom(event.target.value)} /></label><label className="date-control">Hasta<input type="date" value={to} onChange={event => setTo(event.target.value)} /></label><ScopeSelect scope={scope} setScope={setScope} /><button className="refresh-analytics" onClick={onRefresh}>Actualizar</button></div>
     {data && <><div className="chip-filter-row"><span>ORÍGENES</span><button className={!source ? 'selected' : ''} onClick={() => setSource('')}>Todos</button>{data.availableSources.map((item, index) => <button className={source === item ? 'selected' : ''} key={item} onClick={() => toggle(source, item, setSource)}>{item}<i style={{ background: agentColors[index % agentColors.length] }} /></button>)}</div><div className="chip-filter-row models-filter"><span>MODELOS</span><button className={!model ? 'selected' : ''} onClick={() => setModel('')}>Todos</button>{data.availableModels.map(item => <button className={model === item ? 'selected' : ''} key={item} title={item} onClick={() => toggle(model, item, setModel)}>{item}</button>)}</div></>}
     {error && <div className="api-error">{error}</div>}
     {!data ? <div className="empty comparison-empty">Cargando analítica de modelos…</div> : <>
@@ -85,11 +91,12 @@ function ModelAnalyticsPage(props: {
 
 function BehaviorPage(props: {
   data: BehaviorReport | null; error: string; period: string; setPeriod: (value: string) => void;
+  scope: ScopeFilter; setScope: (value: ScopeFilter) => void;
   onRefresh: () => void; onOpenSession: (id: string) => void;
 }) {
-  const { data, error, period, setPeriod, onRefresh, onOpenSession } = props;
+  const { data, error, period, setPeriod, scope, setScope, onRefresh, onOpenSession } = props;
   return <section className="comparison-page behavior-page">
-    <SectionHeader icon="behavior" eyebrow="DIAGNÓSTICO" title="Comportamiento" description="Sesiones que merecen una mirada." actions={<div className="analytics-actions"><select aria-label="Período de análisis" value={period} onChange={event => setPeriod(event.target.value)}><option value="1">Último día</option><option value="7">Últimos 7 días</option><option value="30">Últimos 30 días</option><option value="90">Últimos 90 días</option><option value="all">Todo el historial</option></select><button onClick={onRefresh}>Actualizar</button></div>} />
+    <SectionHeader icon="behavior" eyebrow="DIAGNÓSTICO" title="Comportamiento" description="Sesiones que merecen una mirada." actions={<div className="analytics-actions"><ScopeSelect scope={scope} setScope={setScope} /><select aria-label="Período de análisis" value={period} onChange={event => setPeriod(event.target.value)}><option value="1">Último día</option><option value="7">Últimos 7 días</option><option value="30">Últimos 30 días</option><option value="90">Últimos 90 días</option><option value="all">Todo el historial</option></select><button onClick={onRefresh}>Actualizar</button></div>} />
     {error && <div className="api-error">{error}</div>}
     {!data ? <div className="empty comparison-empty">Cargando comportamiento…</div> : <>
       <div className="analytics-summary"><article><span>Sesiones analizadas</span><b>{data.totals.sessions.toLocaleString()}</b></article><article><span>Sesiones marcadas</span><b>{data.totals.flaggedSessions.toLocaleString()}</b></article><article><span>Señales</span><b>{data.totals.signals.toLocaleString()}</b></article></div>
@@ -100,12 +107,13 @@ function BehaviorPage(props: {
 
 function OverviewPage(props: {
   data: OverviewReport | null; error: string; period: string; setPeriod: (value: string) => void;
+  scope: ScopeFilter; setScope: (value: ScopeFilter) => void;
   onRefresh: () => void; onOpenSession: (id: string) => void;
 }) {
-  const { data, error, period, setPeriod, onRefresh, onOpenSession } = props;
+  const { data, error, period, setPeriod, scope, setScope, onRefresh, onOpenSession } = props;
   const percent = (value?: number | null) => value == null ? 'Sin dato' : `${(value * 100).toFixed(1)}%`;
   return <section className="comparison-page overview-page">
-    <SectionHeader icon="overview" eyebrow="MONITOREO" title="Inicio" description="Estado general de la actividad" actions={<div className="analytics-actions"><select aria-label="Período del resumen" value={period} onChange={event => setPeriod(event.target.value)}><option value="1">Último día</option><option value="7">Últimos 7 días</option><option value="30">Últimos 30 días</option><option value="90">Últimos 90 días</option><option value="all">Todo el historial</option></select><button onClick={onRefresh}>Actualizar</button></div>} />
+    <SectionHeader icon="overview" eyebrow="MONITOREO" title="Inicio" description="Estado general de la actividad" actions={<div className="analytics-actions"><ScopeSelect scope={scope} setScope={setScope} /><select aria-label="Período del resumen" value={period} onChange={event => setPeriod(event.target.value)}><option value="1">Último día</option><option value="7">Últimos 7 días</option><option value="30">Últimos 30 días</option><option value="90">Últimos 90 días</option><option value="all">Todo el historial</option></select><button onClick={onRefresh}>Actualizar</button></div>} />
     {error && <div className="api-error">{error}</div>}
     {!data ? <div className="empty comparison-empty">Cargando resumen…</div> : <>
       <div className="overview-kpis"><article><span>Sesiones</span><b>{data.totals.sessions.toLocaleString()}</b></article><article><span>Activas</span><b>{data.totals.active.toLocaleString()}</b></article><article><span>Completadas</span><b>{data.totals.completed.toLocaleString()}</b></article><article><span>Con error</span><b>{data.totals.error.toLocaleString()}</b></article><article><span>Interrumpidas</span><b>{data.totals.interrupted.toLocaleString()}</b></article></div>
@@ -259,6 +267,9 @@ function App() {
   const [overview, setOverview] = React.useState<OverviewReport | null>(null);
   const [overviewPeriod, setOverviewPeriod] = React.useState('30');
   const [overviewError, setOverviewError] = React.useState('');
+  const [scope, setScope] = React.useState<ScopeFilter>('all');
+  const [exporting, setExporting] = React.useState(false);
+  const [deletingSession, setDeletingSession] = React.useState(false);
   const loadRef = React.useRef<() => Promise<void>>(async () => undefined);
   const selectedRef = React.useRef<string | null>(selected);
   const detailLoadRef = React.useRef<() => Promise<void>>(async () => undefined);
@@ -281,12 +292,13 @@ function App() {
     if (errorsOnly) params.set('error', 'true');
     if (from) params.set('from', new Date(`${from}T00:00:00`).toISOString());
     if (to) params.set('to', new Date(`${to}T23:59:59`).toISOString());
+    if (scope !== 'all') params.set('scope', scope);
     try {
       const response = await fetch(`/api/v1/sessions?${params}`);
       if (!response.ok) throw new Error(`API respondió ${response.status}`);
       setListing(await response.json()); setApiError('');
     } catch { setApiError('No se pudo conectar con la API. Inicia la plataforma con start.ps1.'); }
-  }, [status, model, from, to, errorsOnly, page]);
+  }, [status, model, from, to, errorsOnly, page, scope]);
   loadRef.current = load;
   selectedRef.current = selected;
   const loadDetail = React.useCallback(async (sessionId: string) => {
@@ -331,11 +343,12 @@ function App() {
     try {
       const params = new URLSearchParams();
       if (toolWindow !== 'all') params.set('days', toolWindow);
+      if (scope !== 'all') params.set('scope', scope);
       const response = await fetch(`/api/v1/analytics/tools?${params}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       setToolAnalytics(await response.json()); setToolError('');
     } catch { setToolError('No se pudo cargar la analítica de herramientas. Comprueba que la API esté actualizada.'); }
-  }, [toolWindow]);
+  }, [toolWindow, scope]);
   const loadModelAnalytics = React.useCallback(async () => {
     try {
       const params = new URLSearchParams({ bucket: modelBucket });
@@ -343,27 +356,33 @@ function App() {
       if (modelTo) params.set('to', new Date(`${modelTo}T23:59:59.999`).toISOString());
       if (modelSource) params.set('source', modelSource);
       if (modelName) params.set('model', modelName);
+      if (scope !== 'all') params.set('scope', scope);
       const response = await fetch(`/api/v1/analytics/models?${params}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       setModelAnalytics(await response.json()); setModelError('');
     } catch { setModelError('No se pudo cargar la analítica de modelos. Comprueba que la API esté actualizada.'); }
-  }, [modelBucket, modelFrom, modelTo, modelSource, modelName]);
+  }, [modelBucket, modelFrom, modelTo, modelSource, modelName, scope]);
   const loadBehavior = React.useCallback(async () => {
     try {
       const params = new URLSearchParams();
       if (behaviorPeriod !== 'all') params.set('days', behaviorPeriod);
+      if (scope !== 'all') params.set('scope', scope);
       const response = await fetch(`/api/v1/behavior?${params}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       setBehavior(await response.json()); setBehaviorError('');
     } catch { setBehaviorError('No se pudo cargar el comportamiento. Comprueba que la API esté actualizada.'); }
-  }, [behaviorPeriod]);
+  }, [behaviorPeriod, scope]);
   const loadOverview = React.useCallback(async () => {
     try {
-      const response = await fetch('/api/v1/overview' + (overviewPeriod === 'all' ? '' : '?days=' + overviewPeriod));
+      const params = new URLSearchParams();
+      if (overviewPeriod !== 'all') params.set('days', overviewPeriod);
+      if (scope !== 'all') params.set('scope', scope);
+      const qs = params.toString();
+      const response = await fetch(`/api/v1/overview${qs ? `?${qs}` : ''}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       setOverview(await response.json()); setOverviewError('');
     } catch { setOverviewError('No se pudo cargar el resumen. Comprueba que la API esté actualizada.'); }
-  }, [overviewPeriod]);
+  }, [overviewPeriod, scope]);
   toolLoadRef.current = loadToolAnalytics;
   modelLoadRef.current = loadModelAnalytics;
   behaviorLoadRef.current = loadBehavior;
@@ -425,7 +444,7 @@ function App() {
     const timeout = window.setTimeout(() => setHighlightedSpanId(null), 1400);
     return () => window.clearTimeout(timeout);
   }, [reveal]);
-  React.useEffect(() => { setPage(1); }, [status, model, from, to, errorsOnly]);
+  React.useEffect(() => { setPage(1); }, [status, model, from, to, errorsOnly, scope]);
 
   const sessions = listing.items;
   const spans: Span[] = detail?.spans ?? [];
@@ -476,11 +495,50 @@ function App() {
       if (response.ok || response.status === 204) await loadBudgets();
     } catch { setBudgetMessage('No se pudo eliminar el presupuesto.'); }
   };
+  const exportSessions = async () => {
+    setExporting(true);
+    try {
+      const params = new URLSearchParams();
+      if (from) params.set('from', new Date(`${from}T00:00:00`).toISOString());
+      if (to) params.set('to', new Date(`${to}T23:59:59.999`).toISOString());
+      if (scope !== 'all') params.set('scope', scope);
+      const response = await fetch(`/api/v1/export?${params}`);
+      if (!response.ok) throw new Error(`API respondió ${response.status}`);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'agentscope-export.jsonl';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setApiError('No se pudo exportar el historial. Comprueba que la API esté activa.');
+    } finally {
+      setExporting(false);
+    }
+  };
+  const deleteSession = async (sessionId: string) => {
+    if (!window.confirm('¿Eliminar esta sesión, sus spans y sus eventos locales?')) return;
+    setDeletingSession(true);
+    try {
+      const response = await fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+      if (!response.ok && response.status !== 204) throw new Error(`API respondió ${response.status}`);
+      setSelected(null);
+      setDetail(null);
+      await Promise.all([load(), loadBudgets()]);
+    } catch {
+      setApiError('No se pudo eliminar la sesión.');
+    } finally {
+      setDeletingSession(false);
+    }
+  };
 
   return <main>
     <header><div><span className="eyebrow">LOCAL AGENT TELEMETRY</span><h1>AgentScope</h1><p>Sesiones y actividad de OpenCode en tiempo real</p></div><div className="header-actions"><button className="install-button" disabled={installed} onClick={() => void installApplication()}>{installed ? 'Aplicación instalada' : 'Instalar aplicación'}</button><span className={`live ${online ? 'connected' : ''}`}><i />{online ? 'En vivo' : 'Reconectando'}</span>{installHelp && <small className="install-help">{installHelp}</small>}</div></header>
     <nav className="main-nav" aria-label="Secciones de AgentScope"><button className={view === 'overview' ? 'active' : ''} onClick={() => setView('overview')}>Inicio</button><button className={view === 'sessions' ? 'active' : ''} onClick={() => setView('sessions')}>Observabilidad</button><button className={view === 'tools' ? 'active' : ''} onClick={() => setView('tools')}>Herramientas</button><button className={view === 'behavior' ? 'active' : ''} onClick={() => setView('behavior')}>Comportamiento</button><button className={view === 'models' ? 'active' : ''} onClick={() => setView('models')}>Modelos</button><button className={view === 'compare' ? 'active' : ''} onClick={() => setView('compare')}>Comparar</button><button className={view === 'benchmarks' ? 'active' : ''} onClick={() => setView('benchmarks')}>Pruebas</button></nav>
-    {view === 'overview' ? <OverviewPage data={overview} error={overviewError} period={overviewPeriod} setPeriod={setOverviewPeriod} onRefresh={() => void loadOverview()} onOpenSession={id => openSession(id)} /> : view === 'behavior' ? <BehaviorPage data={behavior} error={behaviorError} period={behaviorPeriod} setPeriod={setBehaviorPeriod} onRefresh={() => void loadBehavior()} onOpenSession={id => openSession(id)} /> : view === 'models' ? <ModelAnalyticsPage data={modelAnalytics} error={modelError} bucket={modelBucket} setBucket={setModelBucket} from={modelFrom} to={modelTo} setFrom={setModelFrom} setTo={setModelTo} source={modelSource} setSource={setModelSource} model={modelName} setModel={setModelName} onRefresh={() => void loadModelAnalytics()} /> : view === 'tools' ? <section className="comparison-page"><SectionHeader icon="tools" eyebrow="ANALÍTICA DE EJECUCIÓN" title="Analítica de herramientas" description="Uso, duración y fallos de las herramientas observadas en tus sesiones." actions={<div className="analytics-actions"><select aria-label="Período de análisis" value={toolWindow} onChange={event => setToolWindow(event.target.value)}><option value="1">Último día</option><option value="7">Últimos 7 días</option><option value="30">Últimos 30 días</option><option value="90">Últimos 90 días</option><option value="all">Todo el historial</option></select><button onClick={() => void loadToolAnalytics()}>Actualizar</button></div>} />{toolError && <div className="api-error">{toolError}</div>}{toolAnalytics && <><div className="analytics-summary"><article><span>Llamadas a herramientas</span><b>{toolAnalytics.totalCalls.toLocaleString()}</b></article><article><span>Herramientas distintas</span><b>{toolAnalytics.tools.length.toLocaleString()}</b></article><article><span>Llamadas fallidas</span><b>{toolAnalytics.errorCount.toLocaleString()}</b></article></div>{toolAnalytics.tools.length === 0 ? <div className="empty comparison-empty"><div className="empty-icon">⌁</div><b>No hay herramientas en este período</b><p>Cuando OpenCode registre llamadas a herramientas, aparecerán aquí.</p></div> : <div className="tool-analytics-list">{toolAnalytics.tools.map(tool => <article className="tool-analytics-card" key={tool.name}><div className="tool-analytics-heading"><div><h3>{tool.name}</h3><p>{tool.sessionCount} sesiones · {tool.callCount} llamadas</p></div><span className={tool.errorCount ? 'tool-error-rate has-errors' : 'tool-error-rate'}>{tool.errorCount} fallos · {(tool.errorRate * 100).toFixed(1)}%</span></div><div className="tool-analytics-stats"><div><span>Duración promedio</span><b>{tool.averageDurationMs == null ? 'Sin dato' : duration(tool.averageDurationMs)}</b></div><div><span>Tasa de éxito</span><b>{((1 - tool.errorRate) * 100).toFixed(1)}%</b></div></div>{tool.latestSessions.length > 0 && <div className="tool-session-links"><span>Sesiones recientes</span>{tool.latestSessions.map(session => <button key={session.sessionId} onClick={() => openSession(session.sessionId)}><b>{session.title || 'Sesión sin título'}</b><small>{[session.project, session.model].filter(Boolean).join(' · ') || 'Abrir sesión'}</small></button>)}</div>}</article>)}</div>}</>}</section> : view === 'compare' ? <section className="comparison-page"><SectionHeader icon="compare" eyebrow="ANÁLISIS DE RESULTADOS" title="Comparar sesiones" description="Agrupa ejecuciones de la misma tarea para revisar calidad, costo y velocidad por separado." actions={<button onClick={() => void loadComparisons()}>Actualizar</button>} />{comparisonError && <div className="api-error">{comparisonError}</div>}{comparisonGroups.length === 0 ? <div className="empty comparison-empty"><div className="empty-icon">⇄</div><b>Todavía no hay tareas para comparar</b><p>Abre una sesión, asigna una misma etiqueta de tarea a cada ejecución y guarda la evaluación.</p><button onClick={() => setView('sessions')}>Ir a sesiones</button></div> : <><label className="comparison-picker">Tarea<select value={comparisonTask && comparisonGroups.some(group => group.taskLabel === comparisonTask) ? comparisonTask : comparisonGroups[0].taskLabel} onChange={event => setComparisonTask(event.target.value)}>{comparisonGroups.map(group => <option value={group.taskLabel} key={group.taskLabel}>{group.taskLabel} · {group.sessions.length} sesiones</option>)}</select></label>{comparisonGroups.filter(group => group.taskLabel === (comparisonTask && comparisonGroups.some(item => item.taskLabel === comparisonTask) ? comparisonTask : comparisonGroups[0].taskLabel)).map(group => <article className="comparison-group" key={group.taskLabel}><div className="comparison-group-head"><div><h3>{group.taskLabel}</h3><p>{group.sessions.length} ejecuciones con esta etiqueta</p></div></div><div className="table-wrap"><table className="comparison-table"><thead><tr><th>SESIÓN / MODELO</th><th>CALIDAD</th><th>COSTO</th><th>CUOTA GO</th><th>DURACIÓN</th><th>TOKENS</th><th>TOOLS</th></tr></thead><tbody>{group.sessions.map(run => <tr key={run.id}><td><b>{run.title || 'Sesión sin título'}</b><small>{run.model || 'Modelo desconocido'} · {time(run.updatedAt)} · {run.status}</small>{run.note && <small className="comparison-note">{run.note}</small>}</td><td>{run.rating == null ? 'Sin puntuar' : <span className="comparison-rating">{'★'.repeat(run.rating)}<small>{run.rating}/5</small></span>}</td><td>{money(run.cost)}</td><td>{money(run.quotaCostEstimate, 'Sin dato')}</td><td>{duration(run.durationMs)}</td><td>{tokenText(tokenSum(run.inputTokens, run.outputTokens))}<small>{tokenText(run.inputTokens)} entrada · {tokenText(run.outputTokens)} salida</small></td><td>{run.tools.length ? run.tools.join(', ') : '—'}</td></tr>)}</tbody></table></div></article>)}</>}</section> : view === 'benchmarks' ? <BenchmarksPage version={benchmarkVersion} onOpenSession={id => openSession(id)} /> : <><SectionHeader icon="monitoring" eyebrow="MONITOREO" title="Observabilidad" description="Sesiones, modelos y actividad de OpenCode en tiempo real." />
+    {view === 'overview' ? <OverviewPage data={overview} error={overviewError} period={overviewPeriod} setPeriod={setOverviewPeriod} scope={scope} setScope={setScope} onRefresh={() => void loadOverview()} onOpenSession={id => openSession(id)} /> : view === 'behavior' ? <BehaviorPage data={behavior} error={behaviorError} period={behaviorPeriod} setPeriod={setBehaviorPeriod} scope={scope} setScope={setScope} onRefresh={() => void loadBehavior()} onOpenSession={id => openSession(id)} /> : view === 'models' ? <ModelAnalyticsPage data={modelAnalytics} error={modelError} bucket={modelBucket} setBucket={setModelBucket} from={modelFrom} to={modelTo} setFrom={setModelFrom} setTo={setModelTo} source={modelSource} setSource={setModelSource} model={modelName} setModel={setModelName} scope={scope} setScope={setScope} onRefresh={() => void loadModelAnalytics()} /> : view === 'tools' ? <section className="comparison-page"><SectionHeader icon="tools" eyebrow="ANALÍTICA DE EJECUCIÓN" title="Analítica de herramientas" description="Uso, duración y fallos de las herramientas observadas en tus sesiones." actions={<div className="analytics-actions"><ScopeSelect scope={scope} setScope={setScope} /><select aria-label="Período de análisis" value={toolWindow} onChange={event => setToolWindow(event.target.value)}><option value="1">Último día</option><option value="7">Últimos 7 días</option><option value="30">Últimos 30 días</option><option value="90">Últimos 90 días</option><option value="all">Todo el historial</option></select><button onClick={() => void loadToolAnalytics()}>Actualizar</button></div>} />{toolError && <div className="api-error">{toolError}</div>}{toolAnalytics && <><div className="analytics-summary"><article><span>Llamadas a herramientas</span><b>{toolAnalytics.totalCalls.toLocaleString()}</b></article><article><span>Herramientas distintas</span><b>{toolAnalytics.tools.length.toLocaleString()}</b></article><article><span>Llamadas fallidas</span><b>{toolAnalytics.errorCount.toLocaleString()}</b></article></div>{toolAnalytics.tools.length === 0 ? <div className="empty comparison-empty"><div className="empty-icon">⌁</div><b>No hay herramientas en este período</b><p>Cuando OpenCode registre llamadas a herramientas, aparecerán aquí.</p></div> : <div className="tool-analytics-list">{toolAnalytics.tools.map(tool => <article className="tool-analytics-card" key={tool.name}><div className="tool-analytics-heading"><div><h3>{tool.name}</h3><p>{tool.sessionCount} sesiones · {tool.callCount} llamadas</p></div><span className={tool.errorCount ? 'tool-error-rate has-errors' : 'tool-error-rate'}>{tool.errorCount} fallos · {(tool.errorRate * 100).toFixed(1)}%</span></div><div className="tool-analytics-stats"><div><span>Duración promedio</span><b>{tool.averageDurationMs == null ? 'Sin dato' : duration(tool.averageDurationMs)}</b></div><div><span>Tasa de éxito</span><b>{((1 - tool.errorRate) * 100).toFixed(1)}%</b></div></div>{tool.latestSessions.length > 0 && <div className="tool-session-links"><span>Sesiones recientes</span>{tool.latestSessions.map(session => <button key={session.sessionId} onClick={() => openSession(session.sessionId)}><b>{session.title || 'Sesión sin título'}</b><small>{[session.project, session.model].filter(Boolean).join(' · ') || 'Abrir sesión'}</small></button>)}</div>}</article>)}</div>}</>}</section> : view === 'compare' ? <section className="comparison-page"><SectionHeader icon="compare" eyebrow="ANÁLISIS DE RESULTADOS" title="Comparar sesiones" description="Agrupa ejecuciones de la misma tarea para revisar calidad, costo y velocidad por separado." actions={<button onClick={() => void loadComparisons()}>Actualizar</button>} />{comparisonError && <div className="api-error">{comparisonError}</div>}{comparisonGroups.length === 0 ? <div className="empty comparison-empty"><div className="empty-icon">⇄</div><b>Todavía no hay tareas para comparar</b><p>Abre una sesión, asigna una misma etiqueta de tarea a cada ejecución y guarda la evaluación.</p><button onClick={() => setView('sessions')}>Ir a sesiones</button></div> : <><label className="comparison-picker">Tarea<select value={comparisonTask && comparisonGroups.some(group => group.taskLabel === comparisonTask) ? comparisonTask : comparisonGroups[0].taskLabel} onChange={event => setComparisonTask(event.target.value)}>{comparisonGroups.map(group => <option value={group.taskLabel} key={group.taskLabel}>{group.taskLabel} · {group.sessions.length} sesiones</option>)}</select></label>{comparisonGroups.filter(group => group.taskLabel === (comparisonTask && comparisonGroups.some(item => item.taskLabel === comparisonTask) ? comparisonTask : comparisonGroups[0].taskLabel)).map(group => <article className="comparison-group" key={group.taskLabel}><div className="comparison-group-head"><div><h3>{group.taskLabel}</h3><p>{group.sessions.length} ejecuciones con esta etiqueta</p></div></div><div className="table-wrap"><table className="comparison-table"><thead><tr><th>SESIÓN / MODELO</th><th>CALIDAD</th><th>COSTO</th><th>CUOTA GO</th><th>DURACIÓN</th><th>TOKENS</th><th>TOOLS</th></tr></thead><tbody>{group.sessions.map(run => <tr key={run.id}><td><b>{run.title || 'Sesión sin título'}</b><small>{run.model || 'Modelo desconocido'} · {time(run.updatedAt)} · {run.status}</small>{run.note && <small className="comparison-note">{run.note}</small>}</td><td>{run.rating == null ? 'Sin puntuar' : <span className="comparison-rating">{'★'.repeat(run.rating)}<small>{run.rating}/5</small></span>}</td><td>{money(run.cost)}</td><td>{money(run.quotaCostEstimate, 'Sin dato')}</td><td>{duration(run.durationMs)}</td><td>{tokenText(tokenSum(run.inputTokens, run.outputTokens))}<small>{tokenText(run.inputTokens)} entrada · {tokenText(run.outputTokens)} salida</small></td><td>{run.tools.length ? run.tools.join(', ') : '—'}</td></tr>)}</tbody></table></div></article>)}</>}</section> : view === 'benchmarks' ? <BenchmarksPage version={benchmarkVersion} onOpenSession={id => openSession(id)} /> : <><SectionHeader icon="monitoring" eyebrow="MONITOREO" title="Observabilidad" description="Sesiones, modelos y actividad de OpenCode en tiempo real." actions={<div className="section-header-actions"><ScopeSelect scope={scope} setScope={setScope} /><button type="button" className="secondary-button" disabled={exporting} onClick={() => void exportSessions()}>{exporting ? 'Exportando…' : 'Exportar JSONL'}</button></div>} />
     {apiError && <div className="api-error" role="status">{apiError}</div>}
     <section className="stats"><article><span>Sesiones encontradas</span><b>{listing.total.toLocaleString()}</b></article><article><span>Errores en esta página</span><b>{sessions.reduce((a, s) => a + s.errorCount, 0)}</b></article><article><span>Duración acumulada</span><b>{duration(durationTotal)}</b></article><article><span>Spans en esta página</span><b>{sessions.reduce((a, s) => a + s.spanCount, 0)}</b></article><article><span>Tokens reportados</span><b>{tokenText(tokenTotal)}</b></article></section>
     <details className="budgets-panel"><summary>Presupuestos locales <span>{budgets.length ? `${budgets.length} configurado${budgets.length === 1 ? '' : 's'}` : 'Configura límites mensuales por proyecto'}</span></summary><div className="budgets-content"><form className="budget-form" onSubmit={saveBudget}><label>Proyecto<input list="known-projects" value={budgetProject} onChange={e => setBudgetProject(e.target.value)} placeholder="Nombre del proyecto" required maxLength={120}/><datalist id="known-projects">{[...new Set(sessions.map(s => s.project).filter(Boolean))].map(project => <option key={project} value={project}/>)}</datalist></label><label>Límite mensual (US$)<input type="number" min="0.01" max="1000000" step="0.01" value={budgetLimit} onChange={e => setBudgetLimit(e.target.value)} placeholder="25.00" required/></label><label>Medición<select value={budgetMetric} onChange={e => setBudgetMetric(e.target.value as 'cost' | 'quota')}><option value="cost">Costo reportado</option><option value="quota">Cuota Go estimada</option></select></label><button disabled={budgetSaving}>{budgetSaving ? 'Guardando…' : 'Guardar límite'}</button></form>{budgetMessage && <p className="form-message" role="status">{budgetMessage}</p>}{budgets.length > 0 && <div className="budget-list">{budgets.map(budget => <article className={`budget-item ${(budget.percentage ?? 0) >= 100 ? 'over-budget' : (budget.percentage ?? 0) >= 80 ? 'near-budget' : ''}`} key={budget.project}><div className="budget-heading"><div><b>{budget.project}</b><small>{budget.metric === 'quota' ? 'Cuota Go estimada' : 'Costo reportado'} · mes actual</small></div><button className="text-button" onClick={() => void deleteBudget(budget.project)}>Eliminar</button></div><div className="budget-amount">{budget.spent == null ? 'Sin datos de costo para este mes' : `${money(budget.spent)} de ${money(budget.monthlyLimit)}`}</div><div className="budget-track"><i style={{ width: `${Math.min(100, budget.percentage ?? 0)}%` }}/></div><small>{budget.percentage == null ? 'El uso aparecerá cuando haya costos disponibles.' : `${budget.percentage.toFixed(0)}% del límite${budget.percentage >= 100 ? ' · límite superado' : budget.percentage >= 80 ? ' · cerca del límite' : ''}`}</small></article>)}</div>}<p className="budget-footnote">Los límites son avisos locales por mes calendario; no detienen OpenCode ni representan cargos confirmados.</p></div></details>
@@ -497,7 +555,7 @@ function App() {
     {s.errorCount} {s.errorCount === 1 ? 'error' : 'errores'}
   </button>
 )}</td><td>{s.model || '—'}</td><td>{s.spanCount}</td><td>{time(s.startedAt)}</td></tr>)}</tbody></table></div><div className="pagination"><span>Página {listing.page} de {Math.max(1, Math.ceil(listing.total / listing.pageSize))}</span><div><button disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>Anterior</button><button disabled={page * listing.pageSize >= listing.total} onClick={() => setPage(p => p + 1)}>Siguiente</button></div></div></>}
-    </div><div className="panel detail"><div className="panel-head"><div><h2>{detail?.session?.title || (detail ? 'Sesión sin título' : 'Trace de sesión')}</h2><small>{detail ? 'Trace de sesión' : 'Selecciona una sesión para ver su trace'}</small></div><button onClick={() => { void load(); if (selected) void loadDetail(selected); }}>Actualizar</button></div>{detail ? <>
+    </div><div className="panel detail"><div className="panel-head"><div><h2>{detail?.session?.title || (detail ? 'Sesión sin título' : 'Trace de sesión')}</h2><small>{detail ? 'Trace de sesión' : 'Selecciona una sesión para ver su trace'}</small></div><div className="detail-actions"><button onClick={() => { void load(); if (selected) void loadDetail(selected); }}>Actualizar</button>{detail && <button type="button" className="danger-button" disabled={deletingSession} onClick={() => void deleteSession(detail.session.id)}>{deletingSession ? 'Eliminando…' : 'Eliminar'}</button>}</div></div>{detail ? <>
       <div className="session-meta"><span className={`badge ${detail.session.status}`}>{detail.session.status}</span><span>{detail.session.source}</span><span>{detail.session.model || 'Modelo desconocido'}</span></div>
       <section className="review-box"><div><h3>Evaluación de la sesión</h3><p>Califica el resultado. Usa la misma tarea en las sesiones que quieras comparar.</p></div><div className="rating-input" role="group" aria-label="Puntuación de 1 a 5">{[1, 2, 3, 4, 5].map(value => <button type="button" key={value} aria-label={`${value} de 5`} aria-pressed={reviewRating === value} className={reviewRating != null && value <= reviewRating ? 'rated' : ''} onClick={() => setReviewRating(value)}>★</button>)}<button type="button" className="clear-rating" onClick={() => setReviewRating(null)}>Quitar</button></div><label className="review-note-label">Etiqueta de tarea<input maxLength={120} value={taskLabel} onChange={e => setTaskLabel(e.target.value)} placeholder="Ej.: resumir contrato"/></label><label className="review-note-label">Nota<textarea maxLength={2000} rows={3} value={reviewNote} onChange={e => setReviewNote(e.target.value)} placeholder="¿Qué salió bien o qué mejorarías?"/></label><div className="review-actions"><small>{reviewMessage || 'La evaluación se guarda solo en esta instalación.'}</small><button onClick={() => void saveReview()} disabled={reviewSaving}>{reviewSaving ? 'Guardando…' : 'Guardar evaluación'}</button></div></section>
       <div className="metrics"><div><span>Duración</span><b>{detail.metrics.durationMs == null ? 'En curso' : `${(detail.metrics.durationMs / 1000).toFixed(1)} s`}</b></div><div><span>Entrada</span><b>{tokenText(detail.metrics.inputTokens)}</b></div><div><span>Salida</span><b>{tokenText(detail.metrics.outputTokens)}</b></div><div><span>Razonamiento incluido</span><b>{tokenText(detail.metrics.reasoningTokens)}</b></div><div><span>Caché leída</span><b>{tokenText(detail.metrics.cacheReadTokens)}</b></div><div><span>Caché escrita</span><b>{tokenText(detail.metrics.cacheWriteTokens)}</b></div><div><span>Costo reportado</span><b>{money(detail.metrics.cost)}</b></div><div><span>Cuota Go estimada</span><b>{money(detail.metrics.quotaCostEstimate, 'Tarifa no disponible')}</b></div></div>

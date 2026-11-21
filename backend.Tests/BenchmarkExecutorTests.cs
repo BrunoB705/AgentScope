@@ -375,6 +375,22 @@ public sealed class BenchmarkExecutorTests : IDisposable
         Assert.All(directories, directory => Assert.Equal("benchmark", Path.GetFileName(directory)));
     }
 
+    [Fact]
+    public void Cleanup_And_ResetDirectory_RejectPathsOutsideRoot()
+    {
+        var root = Path.Combine(_root, "sandbox");
+        var sibling = Path.Combine(_root, "keep");
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(sibling);
+        var marker = Path.Combine(sibling, "important.txt");
+        File.WriteAllText(marker, "keep");
+
+        Assert.Throws<InvalidOperationException>(() => BenchmarkExecutor.Cleanup(root, root));
+        Assert.Throws<InvalidOperationException>(() => BenchmarkExecutor.Cleanup(root, Path.Combine(root, "..", "keep")));
+        Assert.Throws<InvalidOperationException>(() => BenchmarkExecutor.ResetDirectory(root, Path.GetTempPath()));
+        Assert.True(File.Exists(marker));
+    }
+
     private sealed record Harness(
         BenchmarkExecutor Executor,
         TelemetryDb Db,

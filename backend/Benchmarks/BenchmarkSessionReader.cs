@@ -29,11 +29,31 @@ public sealed class BenchmarkSessionReader : IBenchmarkSessionReader
         {
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<TelemetryDb>();
-            var session = await db.Sessions.AsNoTracking().FirstOrDefaultAsync(item => item.Title == title, cancellationToken);
+            var session = await db.Sessions.AsNoTracking()
+                .Where(item => item.Title == title)
+                .OrderByDescending(item => item.Project == "benchmark")
+                .FirstOrDefaultAsync(cancellationToken);
             if (session is not null)
             {
-                await Task.Delay(500, cancellationToken);
-                var spans = await db.Spans.AsNoTracking().Where(span => span.SessionId == session.Id).ToListAsync(cancellationToken);
+                var spans = await db.Spans.AsNoTracking()
+                    .Where(span => span.SessionId == session.Id)
+                    .ToListAsync(cancellationToken);
+                var hasInference = spans.Any(span => span.Kind == "inference");
+                var remaining = deadline - DateTime.UtcNow;
+                if (!hasInference && remaining > TimeSpan.FromMilliseconds(250))
+                {
+                    await Task.Delay(250, cancellationToken);
+                    continue;
+                }
+
+                if (remaining > TimeSpan.FromMilliseconds(150))
+                {
+                    await Task.Delay(150, cancellationToken);
+                    spans = await db.Spans.AsNoTracking()
+                        .Where(span => span.SessionId == session.Id)
+                        .ToListAsync(cancellationToken);
+                }
+
                 var cost = spans.Any(span => span.Cost.HasValue)
                     ? spans.Where(span => span.Cost.HasValue).Sum(span => span.Cost!.Value)
                     : (double?)null;

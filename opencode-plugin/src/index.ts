@@ -1,11 +1,11 @@
 import { Plugin } from '@opencode/plugin';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 
 type Event = { id?: string; created?: number; type: string; data?: Record<string, unknown>; location?: { directory?: string } };
 export type Telemetry = Record<string, unknown>;
 export type DeliveryResult = 'ok' | 'retry' | 'permanent';
-export type TelemetryQueueOptions = { max?: number; attempts?: number; attemptDelayMs?: number; retryDelayMs?: number; signal?: AbortSignal; onDrop?: (dropped: number) => void; onPermanent?: (event: Telemetry) => void; onRetry?: (failures: number) => void };
+export type TelemetryQueueOptions = { max?: number; attempts?: number; attemptDelayMs?: number; retryDelayMs?: number; persistPath?: string; signal?: AbortSignal; onDrop?: (dropped: number) => void; onPermanent?: (event: Telemetry) => void; onRetry?: (failures: number) => void };
 type ModelCost = { tier?: { type?: string; size?: number }; input?: number; output?: number; cache?: { read?: number; write?: number } };
 const get = (value: unknown, key: string): unknown => value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
 const str = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined;
@@ -17,11 +17,15 @@ const basename = (path?: string) => path?.replace(/[\\/]+$/, '').split(/[\\/]/).
 const session = (event: Event) => str(event.data?.sessionID);
 const modelLabel = (data: Record<string, unknown>) => {
   const model = get(data, 'model');
-  const id = str(get(model, 'id'));
-  if (!id) return undefined;
-  const provider = str(get(model, 'providerID'));
-  return provider ? `${provider}/${id}` : id;
+  const direct = typeof model === 'string' && model.trim() ? model.trim() : undefined;
+  const id = direct ? undefined : (str(get(model, 'id')) ?? str(get(model, 'modelID')) ?? str(get(data, 'modelID')));
+  const provider = str(get(model, 'providerID')) ?? str(get(data, 'providerID'));
+  const base = direct ?? (id ? (provider && !id.includes('/') ? `${provider}/${id}` : id) : undefined);
+  if (!base) return undefined;
+  const variant = str(get(model, 'variant')) ?? str(get(data, 'variant'));
+  return variant && !base.includes('#') ? `${base}#${variant}` : base;
 };
+const baseModelId = (model?: string) => model?.split('#')[0];
 export type QuotaEstimate = { value?: number; missingReason?: string; snapshot?: string };
 
 /**
@@ -34,7 +38,8 @@ export function estimateGoAllowance(
   tokens: unknown,
   modelInfo?: Record<string, unknown>,
 ): QuotaEstimate {
-  if (!model?.startsWith('opencode-go/')) return { missingReason: 'not_applicable' };
+  if (!model) return { missingReason: 'model_unknown' };
+  if (!model.startsWith('opencode-go/')) return { missingReason: 'not_applicable' };
   const costTiers = get(modelInfo, 'cost');
   if (!Array.isArray(costTiers) || costTiers.length === 0) return { missingReason: 'no_catalog' };
   const input = finite(get(tokens, 'input'));
@@ -96,11 +101,19 @@ export class TelemetryQueue {
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private inFlight: Telemetry | undefined;
   private disposed = false;
+  private restoring: Promise<void> | undefined;
+  private persistChain: Promise<void> = Promise.resolve();
 
   constructor(send: (event: Telemetry) => Promise<DeliveryResult>, options: TelemetryQueueOptions = {}) {
     this.send = send;
     this.options = options;
     options.signal?.addEventListener('abort', () => this.dispose());
+    if (options.persistPath) {
+      this.restoring = this.restoreFromDisk().then(() => {
+        this.restoring = undefined;
+        if (!this.disposed && this.pending.length > 0) void this.flush();
+      });
+    }
   }
 
   peek(): Telemetry | undefined {
@@ -136,6 +149,18 @@ export class TelemetryQueue {
   dispose(): void {
     this.disposed = true;
     this.clearRetry();
+    if (this.pending.length > 0) void this.persistToDisk();
+  }
+
+  async shutdown(timeoutMs = 500): Promise<void> {
+    if (!this.disposed && (this.pending.length > 0 || this.running || this.restoring)) {
+      await Promise.race([
+        this.flush(),
+        new Promise<void>(resolve => setTimeout(resolve, timeoutMs)),
+      ]);
+    }
+    this.dispose();
+    await this.persistToDisk();
   }
 
   /** The in-flight event is already being delivered, so dropping it would report a loss that did not happen. */
@@ -148,9 +173,53 @@ export class TelemetryQueue {
     }
     this.dropped++;
     this.options.onDrop?.(this.dropped);
+    void this.persistToDisk();
+  }
+
+  private async restoreFromDisk(): Promise<void> {
+    const path = this.options.persistPath;
+    if (!path || this.disposed) return;
+    try {
+      const raw = await readFile(path, 'utf8');
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed) || parsed.length === 0) return;
+      const limit = this.options.max ?? 100;
+      const restored = parsed.filter((item): item is Telemetry => Boolean(item) && typeof item === 'object');
+      if (restored.length === 0) return;
+      const combined = [...restored, ...this.pending];
+      if (combined.length > limit) {
+        const overflow = combined.length - limit;
+        combined.splice(0, overflow);
+        this.dropped += overflow;
+        this.options.onDrop?.(this.dropped);
+      }
+      this.pending.splice(0, this.pending.length, ...combined);
+    } catch {
+      /* Sin archivo previo o ilegible: la cola arranca vacía sin bloquear OpenCode. */
+    }
+  }
+
+  private persistToDisk(): Promise<void> {
+    const path = this.options.persistPath;
+    if (!path) return Promise.resolve();
+    const snapshot = this.pending.map(item => ({ ...item }));
+    this.persistChain = this.persistChain.then(async () => {
+      try {
+        if (snapshot.length === 0) {
+          await unlink(path).catch(() => undefined);
+          return;
+        }
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(path, JSON.stringify(snapshot), 'utf8');
+      } catch {
+        /* Persistencia best-effort: nunca bloquear OpenCode por errores de disco. */
+      }
+    });
+    return this.persistChain;
   }
 
   private async drain(): Promise<void> {
+    if (this.restoring) await this.restoring;
     while (this.pending.length > 0 && !this.disposed) {
       const event = this.pending[0];
       this.inFlight = event;
@@ -164,6 +233,7 @@ export class TelemetryQueue {
         if (this.disposed) return;
         this.failures++;
         if (this.failures === 1) this.options.onRetry?.(this.failures);
+        void this.persistToDisk();
         this.scheduleRetry();
         return;
       }
@@ -174,6 +244,7 @@ export class TelemetryQueue {
         this.options.onPermanent?.(event);
       }
     }
+    if (!this.disposed && this.pending.length === 0) void this.persistToDisk();
   }
 
   private async sendWithAttempts(event: Telemetry): Promise<DeliveryResult> {
@@ -249,10 +320,13 @@ export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', ste
     case 'session.step.ended': {
       const tokens = get(data, 'tokens');
       const finish = str(get(data, 'finish'));
-      const quota = estimateGoAllowance(step?.model, tokens, step?.modelInfo);
+      const directModel = modelLabel(data);
+      const resolvedModel = directModel ?? step?.model;
+      const resolution = directModel ? 'event' : step?.model ? 'step' : 'unknown';
+      const quota = estimateGoAllowance(resolvedModel, tokens, step?.modelInfo);
       return [payload('model.completed', {
         eventId: `model:${str(get(data, 'assistantMessageID')) ?? event.id ?? sid}`,
-        name: step?.model ?? 'model', model: step?.model,
+        name: resolvedModel ?? 'model', model: resolvedModel,
         status: finish === 'error' ? 'error' : 'ok',
         timestamp: date(step?.started ?? event.created),
         durationMs: typeof step?.started === 'number' && typeof event.created === 'number' ? Math.max(0, event.created - step.started) : undefined,
@@ -265,7 +339,11 @@ export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', ste
         quotaMissingReason: quota.missingReason,
         quotaRateSnapshot: quota.snapshot,
         quotaCatalogFetchedAt: quota.value === undefined ? undefined : step?.catalogFetchedAt,
-        attributes: { opencode_event: event.type, ...(finish === 'error' ? { error_code: 'model_error' } : {}) },
+        attributes: {
+          opencode_event: event.type,
+          model_resolution: resolution,
+          ...(finish === 'error' ? { error_code: 'model_error' } : {}),
+        },
       })];
     }
     case 'session.tool.called':
@@ -275,9 +353,10 @@ export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', ste
       const metadata = get(data, 'metadata');
       const native = get(data, 'native');
       const name = str(get(metadata, 'tool')) ?? str(get(metadata, 'name')) ?? str(get(native, 'name')) ?? str(get(data, 'name')) ?? step?.toolName ?? 'tool';
+      const assistantMessageId = str(get(data, 'assistantMessageID'));
       return [payload('tool.completed', {
         eventId: `tool:${str(get(data, 'id')) ?? event.id ?? sid}`,
-        parentId: `model:${str(get(data, 'assistantMessageID')) ?? ''}`,
+        ...(assistantMessageId ? { parentId: `model:${assistantMessageId}` } : {}),
         name, status: event.type.endsWith('.failed') ? 'error' : 'ok',
         timestamp: date(step?.started ?? event.created),
         durationMs: typeof step?.started === 'number' && typeof event.created === 'number' ? Math.max(0, event.created - step.started) : undefined,
@@ -327,6 +406,7 @@ export default Plugin.define({
       }
     }, {
       signal: controller.signal,
+      persistPath: process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'AgentObservabilityPlatform', 'telemetry-queue.json') : undefined,
       onDrop: total => console.warn(`Agent Observability: cola llena; se descartaron ${total} eventos en total.`),
       onPermanent: event => console.warn(`Agent Observability: el colector rechazó el evento ${String(event.eventId)}; se descartó sin reintentar.`),
       onRetry: () => console.warn('Agent Observability: no se pudo entregar telemetría; se reintentará con los eventos en cola.'),
@@ -407,20 +487,37 @@ export default Plugin.define({
             toolStartedAtById.delete(`${sid}:${toolId}`);
           }
           const step = current.type === 'session.step.ended' ? (messageId ? stepByMessage.get(messageId) : undefined) : undefined;
-          const model = step?.model ?? (sid ? modelBySession.get(sid) : undefined);
-          for (const mapped of mapOpenCodeEvent(current, fallbackProject, { model, started: step?.started ?? toolStartedAt, modelInfo: step?.modelInfo ?? (model ? modelInfoById.get(model) : undefined), toolName, catalogFetchedAt: step?.catalogFetchedAt ?? catalogFetchedAt })) queue.enqueue(mapped);
+          const directModel = current.type === 'session.step.ended' ? modelLabel(current.data ?? {}) : undefined;
+          const stepModel = directModel ?? step?.model;
+          const stepModelInfo = step?.modelInfo ?? (stepModel ? modelInfoById.get(baseModelId(stepModel)!) : undefined);
+          for (const mapped of mapOpenCodeEvent(current, fallbackProject, {
+            model: stepModel,
+            started: step?.started ?? toolStartedAt,
+            modelInfo: stepModelInfo,
+            toolName,
+            catalogFetchedAt: step?.catalogFetchedAt ?? catalogFetchedAt,
+          })) queue.enqueue(mapped);
+          if (sid && directModel) modelBySession.set(sid, directModel);
           if (sid && (current.type === 'session.model.selected' || current.type === 'session.step.started')) {
             const model = modelLabel(current.data ?? {});
             if (model) modelBySession.set(sid, model);
-            if (current.type === 'session.step.started' && messageId && model) {
-              const started = finite(get(current.data, 'started'));
-              stepByMessage.set(messageId, { model, started: started ?? current.created ?? Date.now(), modelInfo: modelInfoById.get(model), catalogFetchedAt });
+            if (current.type === 'session.step.started' && messageId) {
+              const startedModel = model ?? modelBySession.get(sid);
+              if (startedModel) {
+                const started = finite(get(current.data, 'started'));
+                stepByMessage.set(messageId, {
+                  model: startedModel,
+                  started: started ?? current.created ?? Date.now(),
+                  modelInfo: modelInfoById.get(baseModelId(startedModel)!),
+                  catalogFetchedAt,
+                });
+              }
             }
           }
           if (current.type === 'session.step.ended' && messageId) stepByMessage.delete(messageId);
         }
       } catch { /* Abort during plugin shutdown or a transient event stream failure. */ }
     })();
-    return () => { queue.dispose(); controller.abort(); };
+    return () => { void queue.shutdown().finally(() => controller.abort()); };
   },
 });

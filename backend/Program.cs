@@ -7,7 +7,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
-if (string.IsNullOrWhiteSpace(builder.Configuration["Telemetry:ApiKey"])) throw new InvalidOperationException("Telemetry:ApiKey must be set through environment configuration.");
+// La presencia de Telemetry:ApiKey se valida tras builder.Build() para respetar fuentes de configuración en tests.
 builder.Services.AddDbContext<TelemetryDb>(o => o.UseSqlite(builder.Configuration.GetConnectionString("Telemetry") ?? "Data Source=telemetry.db"));
 builder.Services.AddSignalR();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.WithOrigins("http://localhost:5173", "http://127.0.0.1:5173").AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
@@ -33,16 +33,21 @@ builder.Services.AddSingleton<IBenchmarkNotifier, SignalRBenchmarkNotifier>();
 if (builder.Configuration.GetValue("Benchmarks:WorkerEnabled", true))
     builder.Services.AddHostedService<BenchmarkWorker>();
 var app = builder.Build();
+var surfaceKey = app.Configuration["Telemetry:ApiKey"];
+if (string.IsNullOrWhiteSpace(surfaceKey)) throw new InvalidOperationException("Telemetry:ApiKey must be set through environment configuration.");
 using (var scope = app.Services.CreateScope()) {
     var db = scope.ServiceProvider.GetRequiredService<TelemetryDb>();
     await SchemaMigrator.ApplyAsync(db);
     await BenchmarkStorage.EnsureAsync(db);
     await BenchmarkStorage.MarkStaleAsync(db);
+    var retentionDays = app.Configuration.GetValue<int?>("Telemetry:RetentionDays");
+    if (retentionDays is > 0)
+        await PurgeSessionsBeforeAsync(db, DateTime.UtcNow.AddDays(-retentionDays.Value), dryRun: false);
 }
 app.UseCors();
 // Toda la superficie de lectura exige la misma clave que la ingesta; sólo el health
 // check queda público porque start.ps1 lo usa para saber si la API ya está lista.
-var surfaceKey = app.Configuration["Telemetry:ApiKey"]!;
+// surfaceKey validado arriba al construir la app.
 app.Use(async (context, next) =>
 {
     var path = context.Request.Path;
@@ -122,11 +127,11 @@ app.MapDelete("/api/v1/budgets", async (string project, TelemetryDb db) => {
     await db.SaveChangesAsync();
     return Results.NoContent();
 });
-app.MapGet("/api/v1/analytics/tools", async (TelemetryDb db, int? days) => {
+app.MapGet("/api/v1/analytics/tools", async (TelemetryDb db, int? days, string? scope) => {
     var windowDays = days is 1 or 7 or 30 or 90 ? days : null;
     var cutoff = windowDays.HasValue ? DateTime.UtcNow.AddDays(-windowDays.Value) : (DateTime?)null;
     var query = from span in db.Spans.AsNoTracking()
-                join session in db.Sessions.AsNoTracking() on span.SessionId equals session.Id
+                join session in ApplyScope(db.Sessions.AsNoTracking(), scope) on span.SessionId equals session.Id
                 where span.Kind == "execute_tool" && (!cutoff.HasValue || span.StartedAt >= cutoff.Value)
                 select new { span.Name, span.Status, span.DurationMs, span.StartedAt, SessionId = session.Id, session.Title, session.Project, session.Model };
     var rows = await query.ToListAsync();
@@ -144,12 +149,12 @@ app.MapGet("/api/v1/analytics/tools", async (TelemetryDb db, int? days) => {
         }).ToArray();
     return Results.Ok(new { windowDays, totalCalls = rows.Count, errorCount = rows.Count(row => row.Status == "error" || row.Status == "failed"), tools });
 });
-app.MapGet("/api/v1/analytics/models", async (TelemetryDb db, DateTimeOffset? from, DateTimeOffset? to, string? source, string? model, string? bucket) => {
+app.MapGet("/api/v1/analytics/models", async (TelemetryDb db, DateTimeOffset? from, DateTimeOffset? to, string? source, string? model, string? bucket, string? scope) => {
     var bucketType = bucket is "week" or "month" ? bucket : "day";
     var start = from?.UtcDateTime;
     var end = to?.UtcDateTime;
     var query = from span in db.Spans.AsNoTracking()
-                join session in db.Sessions.AsNoTracking() on span.SessionId equals session.Id
+                join session in ApplyScope(db.Sessions.AsNoTracking(), scope) on span.SessionId equals session.Id
                 where span.Kind == "inference"
                 select new { Model = span.Name, Source = session.Source, span.Status, span.StartedAt, span.InputTokens, span.OutputTokens, span.ReasoningTokens, span.CacheReadTokens, span.CacheWriteTokens, span.Cost, span.QuotaCostEstimate };
     if (start.HasValue) query = query.Where(row => row.StartedAt >= start.Value);
@@ -198,10 +203,10 @@ app.MapGet("/api/v1/analytics/models", async (TelemetryDb db, DateTimeOffset? fr
         trend, agents, models,
     });
 });
-app.MapGet("/api/v1/behavior", async (TelemetryDb db, int? days) => {
+app.MapGet("/api/v1/behavior", async (TelemetryDb db, int? days, string? scope) => {
     var windowDays = days is 1 or 7 or 30 or 90 ? days : null;
     var cutoff = windowDays.HasValue ? DateTime.UtcNow.AddDays(-windowDays.Value) : (DateTime?)null;
-    var sessionsQuery = db.Sessions.AsNoTracking();
+    var sessionsQuery = ApplyScope(db.Sessions.AsNoTracking(), scope);
     if (cutoff.HasValue) sessionsQuery = sessionsQuery.Where(s => s.StartedAt >= cutoff.Value);
     var sessions = await sessionsQuery.ToListAsync();
     var ids = sessions.Select(s => s.Id).ToList();
@@ -242,10 +247,10 @@ app.MapGet("/api/v1/behavior", async (TelemetryDb db, int? days) => {
     var ordered = rows.OrderByDescending(r => r.Signals.Length).ThenByDescending(r => r.UpdatedAt).ToArray();
     return Results.Ok(new { windowDays, totals = new { sessions = sessions.Count, flaggedSessions = ordered.Length, signals = ordered.Sum(r => r.Signals.Length) }, sessions = ordered });
 });
-app.MapGet("/api/v1/overview", async (TelemetryDb db, int? days) => {
+app.MapGet("/api/v1/overview", async (TelemetryDb db, int? days, string? scope) => {
     var windowDays = days is 1 or 7 or 30 or 90 ? days : null;
     var cutoff = windowDays.HasValue ? DateTime.UtcNow.AddDays(-windowDays.Value) : (DateTime?)null;
-    var sessionsQuery = db.Sessions.AsNoTracking();
+    var sessionsQuery = ApplyScope(db.Sessions.AsNoTracking(), scope);
     if (cutoff.HasValue) sessionsQuery = sessionsQuery.Where(s => s.StartedAt >= cutoff.Value);
     var sessions = await sessionsQuery.ToListAsync();
     var ids = sessions.Select(s => s.Id).ToList();
@@ -371,8 +376,8 @@ app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEve
     await hub.Clients.All.SendAsync("telemetry.updated", new { sessionId = dto.SessionId, eventId = dto.EventId, type = dto.Type });
     return Results.Ok(new { accepted = true, duplicate = false });
 });
-app.MapGet("/api/v1/sessions", async (TelemetryDb db, string? status, string? model, bool? error, DateTimeOffset? from, DateTimeOffset? to, int? page, int? pageSize) => {
-    var q = db.Sessions.AsNoTracking().AsQueryable();
+app.MapGet("/api/v1/sessions", async (TelemetryDb db, string? status, string? model, bool? error, DateTimeOffset? from, DateTimeOffset? to, int? page, int? pageSize, string? scope) => {
+    var q = ApplyScope(db.Sessions.AsNoTracking(), scope);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(s => s.Status == status);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(s => s.Model != null && s.Model.Contains(model));
     if (error == true) q = q.Where(s => s.Status == "error");
@@ -388,10 +393,138 @@ app.MapGet("/api/v1/sessions/{id}", async (string id, TelemetryDb db) => {
     return Results.Ok(new { session=s, spans, events, metrics=new { spanCount=spans.Count,errorCount=events.Count(x=>x.Status=="error"),inputTokens=SumOrNull(spans, x => x.InputTokens),outputTokens=SumOrNull(spans, x => x.OutputTokens),reasoningTokens=SumOrNull(spans, x => x.ReasoningTokens),cacheReadTokens=SumOrNull(spans, x => x.CacheReadTokens),cacheWriteTokens=SumOrNull(spans, x => x.CacheWriteTokens),cost=spans.Where(x=>x.Cost.HasValue).Sum(x=>x.Cost),quotaCostEstimate=spans.Where(x=>x.QuotaCostEstimate.HasValue).Sum(x=>x.QuotaCostEstimate),durationMs=s.EndedAt.HasValue?(long?)(s.EndedAt.Value-s.StartedAt).TotalMilliseconds:null } });
 });
 app.MapGet("/api/v1/traces/{id}", async (string id, TelemetryDb db) => { var s=await db.Sessions.AsNoTracking().FirstOrDefaultAsync(x=>x.Id==id); if(s is null)return Results.NotFound(); var spans=await db.Spans.AsNoTracking().Where(x=>x.SessionId==id).OrderBy(x=>x.StartedAt).ToListAsync(); var events=await db.Events.AsNoTracking().Where(x=>x.SessionId==id && !x.Type.StartsWith("tool.") && !x.Type.StartsWith("model.")).OrderBy(x=>x.Timestamp).ToListAsync(); return Results.Ok(new { traceId=s.Id,session=s,spans,unrelatedEvents=events }); });
+app.MapDelete("/api/v1/sessions/{id}", async (string id, TelemetryDb db, IHubContext<TelemetryHub> hub) => {
+    await ingestLock.WaitAsync();
+    try {
+        if (!await db.Sessions.AsNoTracking().AnyAsync(s => s.Id == id))
+            return Results.NotFound(new { error = "La sesión no existe." });
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        await db.Events.Where(e => e.SessionId == id).ExecuteDeleteAsync();
+        await db.Spans.Where(s => s.SessionId == id).ExecuteDeleteAsync();
+        await db.BenchmarkResults.Where(r => r.SessionId == id).ExecuteUpdateAsync(s => s.SetProperty(r => r.SessionId, (string?)null));
+        await db.BenchmarkResults.Where(r => r.JudgeSessionId == id).ExecuteUpdateAsync(s => s.SetProperty(r => r.JudgeSessionId, (string?)null));
+        await db.Sessions.Where(s => s.Id == id).ExecuteDeleteAsync();
+        await transaction.CommitAsync();
+    }
+    finally { ingestLock.Release(); }
+    await hub.Clients.All.SendAsync("telemetry.updated", new { sessionId = id, type = "session.deleted" });
+    return Results.NoContent();
+});
+app.MapDelete("/api/v1/data", async (DateTimeOffset? before, bool? dryRun, TelemetryDb db, IHubContext<TelemetryHub> hub) => {
+    if (!before.HasValue) return Results.BadRequest(new { error = "Indica el parámetro 'before' con una fecha ISO válida." });
+    PurgeResult result;
+    await ingestLock.WaitAsync();
+    try {
+        result = await PurgeSessionsBeforeAsync(db, before.Value.UtcDateTime, dryRun ?? false);
+    }
+    finally { ingestLock.Release(); }
+    if (!result.DryRun && result.Sessions > 0)
+        await hub.Clients.All.SendAsync("telemetry.updated", new { type = "data.purged", sessions = result.Sessions });
+    return Results.Ok(result);
+});
+var exportJsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+app.MapGet("/api/v1/export", async (TelemetryDb db, DateTimeOffset? from, DateTimeOffset? to, string? scope) => {
+    var query = ApplyScope(db.Sessions.AsNoTracking(), scope);
+    var fromUtc = from?.UtcDateTime;
+    var toUtc = to?.UtcDateTime;
+    if (fromUtc.HasValue) query = query.Where(s => s.StartedAt >= fromUtc.Value);
+    if (toUtc.HasValue) query = query.Where(s => s.StartedAt <= toUtc.Value);
+    var sessions = await query.OrderBy(s => s.StartedAt).ToListAsync();
+    var ids = sessions.Select(s => s.Id).ToList();
+    var spans = new List<Span>();
+    var events = new List<TelemetryEvent>();
+    foreach (var chunk in ids.Chunk(500))
+    {
+        spans.AddRange(await db.Spans.AsNoTracking().Where(s => chunk.Contains(s.SessionId)).OrderBy(s => s.StartedAt).ToListAsync());
+        events.AddRange(await db.Events.AsNoTracking().Where(e => chunk.Contains(e.SessionId)).OrderBy(e => e.Timestamp).ToListAsync());
+    }
+    var spansBySession = spans.GroupBy(s => s.SessionId).ToDictionary(g => g.Key, g => g.Select(SanitizeSpanForExport).ToArray());
+    var eventsBySession = events.GroupBy(e => e.SessionId).ToDictionary(g => g.Key, g => g.Select(SanitizeEventForExport).ToArray());
+    var lines = sessions.Select(session => JsonSerializer.Serialize(new
+    {
+        session,
+        spans = spansBySession.GetValueOrDefault(session.Id) ?? Array.Empty<Span>(),
+        events = eventsBySession.GetValueOrDefault(session.Id) ?? Array.Empty<TelemetryEvent>(),
+    }, exportJsonOptions)).ToArray();
+    var ndjson = lines.Length == 0 ? "" : string.Join('\n', lines) + '\n';
+    return Results.Text(ndjson, "application/x-ndjson");
+});
 BenchmarkEndpoints.Map(app);
 app.Run();
 
 static bool CryptographicEquals(string a,string b) { var x=System.Text.Encoding.UTF8.GetBytes(a);var y=System.Text.Encoding.UTF8.GetBytes(b);return x.Length==y.Length && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(x,y); }
+static IQueryable<Session> ApplyScope(IQueryable<Session> query, string? scope) => scope switch
+{
+    "real" => query.Where(s =>
+        (s.Project == null || (s.Project != "benchmark" && s.Project != "benchmark-judge")) &&
+        (s.Title == null || (!s.Title.StartsWith("bench/") && !s.Title.StartsWith("bench-judge/") && !s.Title.StartsWith("bench-verdict/")))),
+    "benchmarks" => query.Where(s =>
+        s.Project == "benchmark" || s.Project == "benchmark-judge" ||
+        (s.Title != null && (s.Title.StartsWith("bench/") || s.Title.StartsWith("bench-judge/") || s.Title.StartsWith("bench-verdict/")))),
+    _ => query,
+};
+static async Task<PurgeResult> PurgeSessionsBeforeAsync(TelemetryDb db, DateTime cutoffUtc, bool dryRun)
+{
+    var sessionIds = await db.Sessions.AsNoTracking()
+        .Where(s => s.UpdatedAt < cutoffUtc)
+        .Select(s => s.Id)
+        .ToListAsync();
+    if (sessionIds.Count == 0)
+        return new(dryRun, cutoffUtc, 0, 0, 0);
+    var spanCount = 0;
+    var eventCount = 0;
+    foreach (var chunk in sessionIds.Chunk(500))
+    {
+        spanCount += await db.Spans.AsNoTracking().CountAsync(s => chunk.Contains(s.SessionId));
+        eventCount += await db.Events.AsNoTracking().CountAsync(e => chunk.Contains(e.SessionId));
+    }
+    if (!dryRun)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        foreach (var chunk in sessionIds.Chunk(500))
+        {
+            await db.Events.Where(e => chunk.Contains(e.SessionId)).ExecuteDeleteAsync();
+            await db.Spans.Where(s => chunk.Contains(s.SessionId)).ExecuteDeleteAsync();
+            await db.BenchmarkResults.Where(r => r.SessionId != null && chunk.Contains(r.SessionId)).ExecuteUpdateAsync(s => s.SetProperty(r => r.SessionId, (string?)null));
+            await db.BenchmarkResults.Where(r => r.JudgeSessionId != null && chunk.Contains(r.JudgeSessionId)).ExecuteUpdateAsync(s => s.SetProperty(r => r.JudgeSessionId, (string?)null));
+            await db.Sessions.Where(s => chunk.Contains(s.Id)).ExecuteDeleteAsync();
+        }
+        await transaction.CommitAsync();
+    }
+    return new(dryRun, cutoffUtc, sessionIds.Count, spanCount, eventCount);
+}
+static string SanitizeAttributesJson(string raw)
+{
+    if (string.IsNullOrWhiteSpace(raw)) return "{}";
+    try
+    {
+        var parsed = JsonSerializer.Deserialize<Dictionary<string, string>>(raw);
+        return JsonSerializer.Serialize(SafeAttributes(parsed));
+    }
+    catch
+    {
+        return "{}";
+    }
+}
+static Span SanitizeSpanForExport(Span s) => new()
+{
+    Id = s.Id, SessionId = s.SessionId, ParentId = s.ParentId, Name = s.Name, Kind = s.Kind, Status = s.Status,
+    StartedAt = s.StartedAt, DurationMs = s.DurationMs, InputTokens = s.InputTokens, OutputTokens = s.OutputTokens,
+    ReasoningTokens = s.ReasoningTokens, CacheReadTokens = s.CacheReadTokens, CacheWriteTokens = s.CacheWriteTokens,
+    Cost = s.Cost, QuotaCostEstimate = s.QuotaCostEstimate, QuotaCatalogFetchedAt = s.QuotaCatalogFetchedAt,
+    QuotaRateSnapshot = s.QuotaRateSnapshot, QuotaMissingReason = s.QuotaMissingReason,
+    AttributesJson = SanitizeAttributesJson(s.AttributesJson),
+};
+static TelemetryEvent SanitizeEventForExport(TelemetryEvent e) => new()
+{
+    Id = e.Id, EventId = e.EventId, Source = e.Source, SessionId = e.SessionId, Timestamp = e.Timestamp,
+    Type = e.Type, Status = e.Status, DurationMs = e.DurationMs, Model = e.Model,
+    InputTokens = e.InputTokens, OutputTokens = e.OutputTokens, ReasoningTokens = e.ReasoningTokens,
+    CacheReadTokens = e.CacheReadTokens, CacheWriteTokens = e.CacheWriteTokens,
+    Cost = e.Cost, QuotaCostEstimate = e.QuotaCostEstimate, QuotaCatalogFetchedAt = e.QuotaCatalogFetchedAt,
+    QuotaRateSnapshot = e.QuotaRateSnapshot, QuotaMissingReason = e.QuotaMissingReason,
+    AttributesJson = SanitizeAttributesJson(e.AttributesJson),
+};
 static long? SumOrNull<T>(IEnumerable<T> rows, Func<T, int?> selector) =>
     rows.Any(row => selector(row).HasValue)
         ? rows.Sum(row => (long?)selector(row))
@@ -408,6 +541,7 @@ record TelemetryEventDto(string EventId,string Source,string SessionId,DateTimeO
 record SessionReviewDto(int? Rating, string? Note, string? TaskLabel);
 record ComparisonRunDto(string Id, string? Title, string? Project, string? Model, string Status, int? Rating, string? Note, string TaskLabel, DateTime UpdatedAt, long DurationMs, long? InputTokens, long? OutputTokens, double? Cost, double? QuotaCostEstimate, string[] Tools);
 record BudgetDto(string? Project, double MonthlyLimit, string Metric);
+record PurgeResult(bool DryRun, DateTime Before, int Sessions, int Spans, int Events);
 record OverviewTotalsDto(int Sessions, int Active, int Completed, int Error, int Interrupted, int Finished, double? SuccessRate, double? ErrorRate, double? AverageDurationMs, long? InputTokens, long? OutputTokens, long? ReasoningTokens, long? CacheReadTokens, long? CacheWriteTokens, long? TotalTokens, double? ReportedCost, double? QuotaEstimate);
 record OverviewToolDto(string Name, int Calls, int Errors, double ErrorRate, int Sessions);
 record OverviewModelDto(string Name, int Calls, long? TotalTokens, double? ReportedCost, double? QuotaEstimate, int Errors);

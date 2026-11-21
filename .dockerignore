@@ -1,0 +1,12 @@
+**/bin/
+**/obj/
+**/node_modules/
+**/dist/
+.git/
+*.db
+*.db-*
+*.sqlite*
+*.log
+docs/
+agent-context/
+.superpowers/

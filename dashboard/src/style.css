@@ -265,3 +265,11 @@ main{max-width:1880px;padding-left:3.5vw;padding-right:3.5vw}
 .detail-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .panel-head button.danger-button{border-color:#633333;background:#1a1010;color:#ff8787}
 .panel-head button:disabled,.section-header-actions button:disabled{opacity:.45;cursor:default}
+.session-meta{flex-wrap:wrap}
+.task-label-row{display:flex;align-items:center;gap:8px;margin-top:7px}
+.task-label-row input{margin-top:0;flex:1 1 auto;min-width:0}
+.task-title-btn{flex:none;border:1px solid #2a3039;border-radius:6px;background:#101319;color:#b7bdc8;padding:9px 11px;cursor:pointer;font:12px 'DM Sans',sans-serif}
+.unrelated-events{margin:16px 24px 0;border:1px solid #222731;border-radius:8px;background:#0e1116}
+.unrelated-events summary{cursor:pointer;padding:12px 14px;font:12px 'DM Mono',monospace;color:#aeb4bf}
+.unrelated-events .timeline{padding:0 14px 10px;max-height:240px}
+@media(max-width:540px){.unrelated-events{margin:14px 16px 0}}

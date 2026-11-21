@@ -81,10 +81,12 @@ async function resolveApiKey(): Promise<string | undefined> {
   }
 }
 
-/** Only per-event rejections are permanent; credential and transient failures affect every queued event, so they must stay queued. */
+export const TELEMETRY_PROTOCOL_VERSION = 1;
+
+/** Only per-event rejections are permanent; credential, protocol mismatch, and transient failures affect every queued event, so they must stay queued. */
 export function deliveryResultForStatus(status: number): DeliveryResult {
   if (status >= 200 && status < 300) return 'ok';
-  const affectsAllEvents = status === 401 || status === 403 || status === 408 || status === 429;
+  const affectsAllEvents = status === 401 || status === 403 || status === 408 || status === 426 || status === 429;
   if (status >= 400 && status < 500 && !affectsAllEvents) return 'permanent';
   return 'retry';
 }
@@ -288,7 +290,7 @@ export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', ste
   if (!sid) return [];
   const data = event.data ?? {};
   const project = basename(event.location?.directory) ?? fallbackProject;
-  const common = { source: 'opencode', sessionId: sid, timestamp: date(event.created), project };
+  const common = { source: 'opencode', sessionId: sid, timestamp: date(event.created), project, protocolVersion: TELEMETRY_PROTOCOL_VERSION };
   const payload = (type: string, extras: Record<string, unknown> = {}): Telemetry => ({
     eventId: `${type}:${event.id ?? `${sid}:${event.created ?? Date.now()}`}`,
     ...common, type, status: 'ok', attributes: { opencode_event: event.type }, ...extras,
@@ -389,15 +391,20 @@ export default Plugin.define({
     } catch { /* Model pricing is optional; keep collecting usage when unavailable. */ }
     const controller = new AbortController();
     let credentialsWarned = false;
+    let protocolWarned = false;
     const queue = new TelemetryQueue(async (body): Promise<DeliveryResult> => {
       try {
         const response = await fetch(`${endpoint.replace(/\/$/, '')}/api/v1/telemetry/events`, {
-          method: 'POST', headers: { 'content-type': 'application/json', 'x-telemetry-key': apiKey },
+          method: 'POST', headers: { 'content-type': 'application/json', 'x-telemetry-key': apiKey, 'x-telemetry-protocol': String(TELEMETRY_PROTOCOL_VERSION) },
           body: JSON.stringify(body), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(1800)]),
         });
         if ((response.status === 401 || response.status === 403) && !credentialsWarned) {
           credentialsWarned = true;
           console.warn('Agent Observability: la clave de telemetría fue rechazada; los eventos quedan en cola hasta corregirla.');
+        }
+        if (response.status === 426 && !protocolWarned) {
+          protocolWarned = true;
+          console.warn('Agent Observability: versión de protocolo incompatible entre el plugin y la API; actualiza el plugin o el colector.');
         }
         return deliveryResultForStatus(response.status);
       } catch {
@@ -445,7 +452,7 @@ export default Plugin.define({
               const title = str(get(get(sessionInfo, 'data'), 'title')) ?? str(get(sessionInfo, 'title'));
               if (!title) continue;
               titleBySession.set(sessionId, title);
-              queue.enqueue({ eventId: `session-title:${sessionId}`, source: 'opencode', sessionId, timestamp: date(), type: 'session.title.updated', title, project: fallbackProject });
+              queue.enqueue({ eventId: `session-title:${sessionId}`, source: 'opencode', sessionId, timestamp: date(), type: 'session.title.updated', title, project: fallbackProject, protocolVersion: TELEMETRY_PROTOCOL_VERSION });
             } catch { /* A missing or inaccessible session should not interrupt title recovery. */ }
           }
         });
@@ -468,7 +475,7 @@ export default Plugin.define({
               const title = str(get(get(sessionInfo, 'data'), 'title')) ?? str(get(sessionInfo, 'title'));
               if (title) {
                 titleBySession.set(sid, title);
-                queue.enqueue({ eventId: `session-title:${sid}`, source: 'opencode', sessionId: sid, timestamp: date(), type: 'session.title.updated', title, project: basename(current.location?.directory) ?? fallbackProject });
+                queue.enqueue({ eventId: `session-title:${sid}`, source: 'opencode', sessionId: sid, timestamp: date(), type: 'session.title.updated', title, project: basename(current.location?.directory) ?? fallbackProject, protocolVersion: TELEMETRY_PROTOCOL_VERSION });
               }
             } catch { /* Session metadata lookup is optional; live events continue. */ }
           }

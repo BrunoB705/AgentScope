@@ -749,6 +749,139 @@ public sealed class TelemetryApiTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task HealthReportsDatabaseAndSchemaStatus()
+    {
+        var response = await _factory.CreateClient().GetAsync("/api/v1/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("ok", json.RootElement.GetProperty("status").GetString());
+        Assert.Equal("ok", json.RootElement.GetProperty("database").GetString());
+        Assert.Equal("current", json.RootElement.GetProperty("migrations").GetString());
+        Assert.Equal(SchemaMigrator.LatestVersion, json.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(1, json.RootElement.GetProperty("protocolVersion").GetInt32());
+    }
+
+    [Fact]
+    public async Task VersionEndpointReportsProtocolAndSchemaVersion()
+    {
+        using var anonymous = _factory.CreateClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/v1/version")).StatusCode);
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/version"));
+        Assert.Equal(1, json.RootElement.GetProperty("protocolVersion").GetInt32());
+        Assert.Equal(SchemaMigrator.LatestVersion, json.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(SchemaMigrator.LatestVersion, json.RootElement.GetProperty("latestSchemaVersion").GetInt32());
+    }
+
+    [Fact]
+    public async Task IngestionRejectsUnsupportedProtocolVersionWith426()
+    {
+        using var byHeader = new HttpRequestMessage(HttpMethod.Post, "/api/v1/telemetry/events")
+        {
+            Content = JsonContent.Create(Fixture("proto-hdr", "session-proto", "session.created"))
+        };
+        byHeader.Headers.Add("X-Telemetry-Protocol", "99");
+        var headerResponse = await _client.SendAsync(byHeader);
+        Assert.Equal(HttpStatusCode.UpgradeRequired, headerResponse.StatusCode);
+        Assert.Equal("1", headerResponse.Headers.GetValues("X-Telemetry-Protocol").Single());
+
+        var payloadResponse = await Post(Fixture("proto-dto", "session-proto", "session.created") with { ProtocolVersion = 99 });
+        Assert.Equal(HttpStatusCode.UpgradeRequired, payloadResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task SessionListFiltersByProjectToolAndSpanError()
+    {
+        await Post(Fixture("s1-c", "sess-filter-1", "session.created") with { Project = "alpha-app" });
+        await Post(Fixture("s1-t", "sess-filter-1", "tool.completed") with { Project = "alpha-app", Name = "bash", Status = "error" });
+        await Post(Fixture("s1-i", "sess-filter-1", "session.idle") with { Project = "alpha-app", Status = "completed" });
+
+        await Post(Fixture("s2-c", "sess-filter-2", "session.created") with { Project = "beta-app" });
+        await Post(Fixture("s2-t", "sess-filter-2", "tool.completed") with { Project = "beta-app", Name = "read", Status = "ok" });
+        await Post(Fixture("s2-i", "sess-filter-2", "session.idle") with { Project = "beta-app", Status = "completed" });
+
+        using (var byProject = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions?project=beta")))
+        {
+            var items = byProject.RootElement.GetProperty("items");
+            Assert.Equal(1, items.GetArrayLength());
+            Assert.Equal("sess-filter-2", items[0].GetProperty("id").GetString());
+        }
+
+        using (var byToolAndError = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions?tool=bash&error=true")))
+        {
+            var items = byToolAndError.RootElement.GetProperty("items");
+            Assert.Equal(1, items.GetArrayLength());
+            Assert.Equal("sess-filter-1", items[0].GetProperty("id").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task ComparisonsNormalizeWhitespaceAndCaseInTaskLabel()
+    {
+        await Post(Fixture("c1", "comp-1", "session.created"));
+        await Post(Fixture("c2", "comp-2", "session.created"));
+
+        var r1 = await _client.PutAsJsonAsync("/api/v1/sessions/comp-1/review", new { rating = 5, note = "ok", taskLabel = "  Revisar   Contrato  " });
+        var r2 = await _client.PutAsJsonAsync("/api/v1/sessions/comp-2/review", new { rating = 4, note = "bien", taskLabel = "revisar contrato" });
+        Assert.Equal(HttpStatusCode.OK, r1.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, r2.StatusCode);
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/comparisons"));
+        var group = Assert.Single(json.RootElement.EnumerateArray());
+        Assert.Equal(2, group.GetProperty("sessions").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task BudgetsReportPartialSpanCoverage()
+    {
+        var putBudget = await _client.PutAsJsonAsync("/api/v1/budgets", new { project = "partial-proj", monthlyLimit = 10, metric = "cost" });
+        Assert.Equal(HttpStatusCode.OK, putBudget.StatusCode);
+
+        await Post(Fixture("b1-c", "sess-budget-partial", "session.created") with { Project = "partial-proj" });
+        await Post(Fixture("b1-m1", "sess-budget-partial", "model.completed") with { Project = "partial-proj", Name = "m", Cost = 0.25 });
+        await Post(Fixture("b1-m2", "sess-budget-partial", "model.completed") with { Project = "partial-proj", Name = "m", Cost = null });
+        await Post(Fixture("b1-t1", "sess-budget-partial", "tool.completed") with { Project = "partial-proj", Name = "read" });
+
+        using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/budgets"));
+        var entry = json.RootElement.EnumerateArray().Single(item => item.GetProperty("project").GetString() == "partial-proj");
+        Assert.Equal(2, entry.GetProperty("totalSpans").GetInt32());
+        Assert.Equal(1, entry.GetProperty("measuredSpans").GetInt32());
+        Assert.True(entry.GetProperty("isPartial").GetBoolean());
+        Assert.Equal(0.25, entry.GetProperty("spent").GetDouble(), 6);
+    }
+
+    [Fact]
+    public async Task SessionDetailIncludesTraceQualityAndUnrelatedEvents()
+    {
+        await Post(Fixture("q1-c", "sess-complete", "session.created"));
+        await Post(Fixture("q1-m", "sess-complete", "model.completed") with { Name = "opencode-go/m1", DurationMs = 100, InputTokens = 10, OutputTokens = 5 });
+        await Post(Fixture("q1-t", "sess-complete", "tool.completed") with { Name = "read", ParentId = "q1-m", DurationMs = 20 });
+
+        using (var complete = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/sess-complete")))
+        {
+            var quality = complete.RootElement.GetProperty("quality");
+            Assert.Equal("complete", quality.GetProperty("status").GetString());
+            Assert.True(quality.GetProperty("hasSessionCreated").GetBoolean());
+            Assert.Equal(0, quality.GetProperty("orphanToolSpans").GetInt32());
+            Assert.Equal(1, complete.RootElement.GetProperty("unrelatedEvents").GetArrayLength());
+        }
+
+        await Post(Fixture("q2-m", "sess-partial", "model.completed") with { Name = "model" });
+        await Post(Fixture("q2-t", "sess-partial", "tool.completed") with { Name = "bash" });
+
+        using (var partial = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/sess-partial")))
+        {
+            var quality = partial.RootElement.GetProperty("quality");
+            Assert.Equal("partial", quality.GetProperty("status").GetString());
+            Assert.False(quality.GetProperty("hasSessionCreated").GetBoolean());
+            Assert.Equal(1, quality.GetProperty("orphanToolSpans").GetInt32());
+            Assert.Equal(2, quality.GetProperty("missingDurationSpans").GetInt32());
+            Assert.Equal(1, quality.GetProperty("missingTokenSpans").GetInt32());
+            Assert.Equal(1, quality.GetProperty("unknownModelSpans").GetInt32());
+        }
+    }
+
     private async Task<HttpResponseMessage> Post(TestTelemetryEventDto dto)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/telemetry/events") { Content = JsonContent.Create(dto) };
@@ -804,7 +937,7 @@ public sealed record TestTelemetryEventDto(
     Dictionary<string, string>? Attributes = null, double? Cost = null, int? ReasoningTokens = null,
     int? CacheReadTokens = null, int? CacheWriteTokens = null, double? QuotaCostEstimate = null,
     string? QuotaCatalogFetchedAt = null, string? QuotaRateSnapshot = null, string? QuotaMissingReason = null,
-    string? Title = null);
+    string? Title = null, int? ProtocolVersion = null);
 
 internal static class TestCredentials
 {

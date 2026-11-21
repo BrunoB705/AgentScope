@@ -5,8 +5,9 @@ services:
       ASPNETCORE_URLS: http://+:5080
       ConnectionStrings__Telemetry: Data Source=/data/telemetry.db
       Telemetry__ApiKey: ${TELEMETRY_API_KEY:?Set TELEMETRY_API_KEY before starting Compose}
+      Benchmarks__WorkerEnabled: "false"
     ports: ["127.0.0.1:5080:5080"]
-    volumes: ["telemetry-data:/data"]
+    volumes: ["telemetry-data:/data", "./benchmarks:/app/benchmarks:ro"]
   dashboard:
     build: ./dashboard
     environment:

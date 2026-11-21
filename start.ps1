@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [switch]$NoBrowser
 )
@@ -26,6 +26,14 @@ if (Test-Path $keyFile) {
 }
 $env:TELEMETRY_API_KEY = $ApiKey
 $env:OPENCODE_OBSERVABILITY_KEY = $ApiKey
+
+$repoPlugin = Join-Path $repo 'opencode-plugin/src/index.ts'
+$globalPlugin = Join-Path $env:USERPROFILE '.config\opencode\plugins\agent-observability.ts'
+if ((Test-Path $repoPlugin) -and (Test-Path $globalPlugin)) {
+    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $repoPlugin).Hash -ne (Get-FileHash -Algorithm SHA256 -LiteralPath $globalPlugin).Hash) {
+        Write-Warning "El plugin global ($globalPlugin) difiere de opencode-plugin/src/index.ts. Copialo para mantener ambos sincronizados."
+    }
+}
 
 function Test-Endpoint([string]$Url) {
     try { return (Invoke-WebRequest -Uri $Url -TimeoutSec 2 -UseBasicParsing).StatusCode -eq 200 }

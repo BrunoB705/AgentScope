@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { deliveryResultForStatus, mapOpenCodeEvent, TelemetryQueue } from './index.ts';
+import { deliveryResultForStatus, mapOpenCodeEvent, TELEMETRY_PROTOCOL_VERSION, TelemetryQueue } from './index.ts';
 
 test('maps v2 session events and derives project name from its working directory', () => {
   const [mapped] = mapOpenCodeEvent({ id: 'e1', created: 2000, type: 'session.created', location: { directory: 'C:\\work\\my-app' }, data: { sessionID: 's1', title: 'private title' } });
@@ -121,8 +121,15 @@ test('clasifica la respuesta del colector sin descartar errores de credenciales'
   assert.equal(deliveryResultForStatus(401), 'retry');
   assert.equal(deliveryResultForStatus(403), 'retry');
   assert.equal(deliveryResultForStatus(408), 'retry');
+  assert.equal(deliveryResultForStatus(426), 'retry');
   assert.equal(deliveryResultForStatus(429), 'retry');
   assert.equal(deliveryResultForStatus(500), 'retry');
+});
+
+test('incluye la versión de protocolo actual en los eventos mapeados', () => {
+  const [mapped] = mapOpenCodeEvent({ id: 'e-proto', created: 2000, type: 'session.created', data: { sessionID: 's1' } });
+  assert.equal(mapped.protocolVersion, TELEMETRY_PROTOCOL_VERSION);
+  assert.equal(TELEMETRY_PROTOCOL_VERSION, 1);
 });
 
 test('conserva el evento pendiente cuando el envío falla', async () => {

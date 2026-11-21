@@ -203,6 +203,9 @@ internal static class SchemaMigrator
         await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS \"IX_Events_Source_EventId\" ON \"Events\" (\"Source\", \"EventId\")");
         await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS \"IX_Events_SessionId_Timestamp\" ON \"Events\" (\"SessionId\", \"Timestamp\")");
         await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS \"IX_Spans_SessionId_StartedAt\" ON \"Spans\" (\"SessionId\", \"StartedAt\")");
+        await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS \"IX_Spans_Kind_StartedAt\" ON \"Spans\" (\"Kind\", \"StartedAt\")");
+        await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS \"IX_Sessions_StartedAt\" ON \"Sessions\" (\"StartedAt\")");
+        await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS \"IX_Sessions_UpdatedAt\" ON \"Sessions\" (\"UpdatedAt\")");
     }
 
     private static async Task RecordAsync(DbContext db, int version)

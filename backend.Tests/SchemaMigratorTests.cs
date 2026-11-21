@@ -135,5 +135,8 @@ public sealed class SchemaMigratorTests : IDisposable
         Assert.Contains(("index", "IX_Events_Source_EventId"), objects);
         Assert.Contains(("index", "IX_Events_SessionId_Timestamp"), objects);
         Assert.Contains(("index", "IX_Spans_SessionId_StartedAt"), objects);
+        Assert.Contains(("index", "IX_Spans_Kind_StartedAt"), objects);
+        Assert.Contains(("index", "IX_Sessions_StartedAt"), objects);
+        Assert.Contains(("index", "IX_Sessions_UpdatedAt"), objects);
     }
 }

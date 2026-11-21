@@ -63,7 +63,7 @@ La pestaña **Pruebas** ejecuta una suite definida en `benchmarks/` contra los m
 
 El juez se elige por separado y no puede ser uno de los modelos evaluados. Corre a ciegas, con `--archived`, y devuelve una nota de 1 a 5 con una justificación breve. Las respuestas de los modelos no se guardan: sólo métricas, pass/fail, nota y justificación.
 
-Las corridas usan la telemetría existente para tokens y costo, y quedan como sesiones normales con proyecto `benchmark` o `benchmark-judge`. El costo de las pruebas se cuenta como uso real. La contención es best-effort: el proceso corre con tu usuario y `--auto`, sin sandbox, así que no ejecutes pruebas que no confíes. Docker no incluye `opencode`, así que la pestaña no está disponible en ese despliegue.
+Las corridas usan la telemetría existente para tokens y costo, y quedan como sesiones normales con proyecto `benchmark` o `benchmark-judge`. El costo de las pruebas se cuenta como uso real y puede separarse con el selector de alcance (`Todo el tráfico`, `Trabajo real`, `Solo pruebas`). La contención es best-effort: el proceso corre con tu usuario y `--auto`, sin sandbox, aunque limpia las claves del host del entorno de los subprocesos y valida rutas temporales. Docker desactiva el worker de benchmarks (`Benchmarks__WorkerEnabled=false`) y monta `./benchmarks` en solo lectura.
 
 En la pestaña podés filtrar modelos por nombre y elegir una variante (`low`, `high`, `max`, `thinking` o escribir otra). La tabla usa la cuota Go estimada de cada resultado. El historial se carga de a 20 corridas con “Cargar más”. Si activás la recomendación final, un juicio extra —una llamada más al mismo juez— sugiere qué modelo conviene para la suite. Una corrida terminada se puede eliminar junto con sus sesiones; deja de contar como uso real.
 
@@ -104,9 +104,10 @@ cd dashboard && npm ci && npm test && npm run build
 
 Todas las rutas exigen la cabecera `X-Telemetry-Key`, salvo `GET /api/v1/health`. El proxy del dashboard la inyecta desde `TELEMETRY_API_KEY` o desde `telemetry.key`, así que el navegador nunca la recibe.
 
-- `POST /api/v1/telemetry/events`
+- `GET /api/v1/health` (público: verifica conectividad con SQLite, versión de esquema y estado del worker) y `GET /api/v1/version` (autenticado: versión de API, protocolo y esquema)
+- `POST /api/v1/telemetry/events` (valida `X-Telemetry-Protocol` / `protocolVersion` y responde `426` ante desfase)
 - `GET /api/v1/overview?days=1|7|30|90&scope=all|real|benchmarks` (sin `days`, consulta todo el historial)
-- `GET /api/v1/sessions?status=&model=&error=&from=&to=&page=&pageSize=&scope=all|real|benchmarks`
+- `GET /api/v1/sessions?status=&model=&project=&tool=&search=&error=&from=&to=&page=&pageSize=&scope=all|real|benchmarks`
 - `GET /api/v1/sessions/{id}`, `DELETE /api/v1/sessions/{id}` y `GET /api/v1/traces/{id}`
 - `GET /api/v1/analytics/tools?days=1|7|30|90&scope=all|real|benchmarks` (sin `days`, consulta todo el historial)
 - `GET /api/v1/analytics/models?from=&to=&source=&model=&bucket=day|week|month&scope=all|real|benchmarks`

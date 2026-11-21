@@ -373,7 +373,7 @@ app.MapGet("/api/v1/overview", async (TelemetryDb db, int? days, string? scope) 
         .ToArray();
     return Results.Ok(new { windowDays, totals, topTools, topModels, recentSessions });
 });
-app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEventDto dto, TelemetryDb db, IConfiguration config, IHubContext<TelemetryHub> hub) => {
+app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEventDto dto, TelemetryDb db, IConfiguration config, IHubContext<TelemetryHub> hub, ILoggerFactory loggerFactory) => {
     var key = config["Telemetry:ApiKey"]!;
     if (!CryptographicEquals(request.Headers["X-Telemetry-Key"].ToString(), key)) return Results.Unauthorized();
     request.HttpContext.Response.Headers["X-Telemetry-Protocol"] = TelemetryProtocolVersion.ToString();
@@ -387,6 +387,9 @@ app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEve
         if (existing) return Results.Ok(new { accepted = true, duplicate = true });
         var session = await db.Sessions.FindAsync(dto.SessionId);
         if (session is null) { session = new Session { Id = dto.SessionId, Source = dto.Source, Project = Safe(dto.Project, 120), StartedAt = dto.Timestamp.UtcDateTime }; db.Sessions.Add(session); }
+        else if (!string.Equals(session.Source, dto.Source, StringComparison.Ordinal))
+            // La sesión conserva el origen del primer evento; el evento guarda el suyo y el conflicto queda en el log y en quality.sourceConflictEvents.
+            loggerFactory.CreateLogger("Telemetry").LogWarning("La sesión {SessionId} recibió un evento de origen {EventSource}, distinto del origen registrado {SessionSource}.", dto.SessionId, dto.Source, session.Source);
         session.UpdatedAt = DateTime.UtcNow;
         if (dto.Timestamp.UtcDateTime < session.StartedAt) session.StartedAt = dto.Timestamp.UtcDateTime;
         var eventTime = dto.Timestamp.UtcDateTime;
@@ -463,8 +466,9 @@ app.MapGet("/api/v1/sessions/{id}", async (string id, TelemetryDb db) => {
     var missingTokenSpans = spans.Count(x => x.Kind == "inference" && !x.InputTokens.HasValue && !x.OutputTokens.HasValue);
     var unknownModelSpans = spans.Count(x => x.Kind == "inference" && x.Name == "model");
     var hasSessionCreated = events.Any(x => x.Type == "session.created");
-    var isComplete = hasSessionCreated && orphanToolSpans == 0 && missingDurationSpans == 0 && missingTokenSpans == 0 && unknownModelSpans == 0;
-    return Results.Ok(new { session=s, spans, events, unrelatedEvents, quality=new { status=isComplete?"complete":"partial", hasSessionCreated, orphanToolSpans, missingDurationSpans, missingTokenSpans, unknownModelSpans, unrelatedEventCount=unrelatedEvents.Length }, metrics=new { spanCount=spans.Count,errorCount=events.Count(x=>x.Status=="error"),inputTokens=SumOrNull(spans, x => x.InputTokens),outputTokens=SumOrNull(spans, x => x.OutputTokens),reasoningTokens=SumOrNull(spans, x => x.ReasoningTokens),cacheReadTokens=SumOrNull(spans, x => x.CacheReadTokens),cacheWriteTokens=SumOrNull(spans, x => x.CacheWriteTokens),cost=spans.Where(x=>x.Cost.HasValue).Sum(x=>x.Cost),quotaCostEstimate=spans.Where(x=>x.QuotaCostEstimate.HasValue).Sum(x=>x.QuotaCostEstimate),durationMs=s.EndedAt.HasValue?(long?)(s.EndedAt.Value-s.StartedAt).TotalMilliseconds:null } });
+    var sourceConflictEvents = events.Count(x => !string.Equals(x.Source, s.Source, StringComparison.Ordinal));
+    var isComplete = hasSessionCreated && orphanToolSpans == 0 && missingDurationSpans == 0 && missingTokenSpans == 0 && unknownModelSpans == 0 && sourceConflictEvents == 0;
+    return Results.Ok(new { session=s, spans, events, unrelatedEvents, quality=new { status=isComplete?"complete":"partial", hasSessionCreated, orphanToolSpans, missingDurationSpans, missingTokenSpans, unknownModelSpans, unrelatedEventCount=unrelatedEvents.Length, sourceConflictEvents }, metrics=new { spanCount=spans.Count,errorCount=events.Count(x=>x.Status=="error"),inputTokens=SumOrNull(spans, x => x.InputTokens),outputTokens=SumOrNull(spans, x => x.OutputTokens),reasoningTokens=SumOrNull(spans, x => x.ReasoningTokens),cacheReadTokens=SumOrNull(spans, x => x.CacheReadTokens),cacheWriteTokens=SumOrNull(spans, x => x.CacheWriteTokens),cost=spans.Where(x=>x.Cost.HasValue).Sum(x=>x.Cost),quotaCostEstimate=spans.Where(x=>x.QuotaCostEstimate.HasValue).Sum(x=>x.QuotaCostEstimate),durationMs=s.EndedAt.HasValue?(long?)(s.EndedAt.Value-s.StartedAt).TotalMilliseconds:null } });
 });
 app.MapGet("/api/v1/traces/{id}", async (string id, TelemetryDb db) => { var s=await db.Sessions.AsNoTracking().FirstOrDefaultAsync(x=>x.Id==id); if(s is null)return Results.NotFound(); var spans=await db.Spans.AsNoTracking().Where(x=>x.SessionId==id).OrderBy(x=>x.StartedAt).ToListAsync(); var events=await db.Events.AsNoTracking().Where(x=>x.SessionId==id && !x.Type.StartsWith("tool.") && !x.Type.StartsWith("model.")).OrderBy(x=>x.Timestamp).ToListAsync(); return Results.Ok(new { traceId=s.Id,session=s,spans,unrelatedEvents=events }); });
 app.MapDelete("/api/v1/sessions/{id}", async (string id, TelemetryDb db, IHubContext<TelemetryHub> hub) => {
@@ -616,7 +620,7 @@ static string? NormalizeTaskLabel(string? s)
     var collapsed = string.Join(' ', s.Trim().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
     return Safe(collapsed, 120);
 }
-static Dictionary<string,string> SafeAttributes(Dictionary<string,string>? input) { var result=new Dictionary<string,string>(); if(input is null)return result; var blocked=new[]{"prompt","response","content","output","arguments","args","command","file","path","body","secret","token","api_key","key"}; foreach(var kv in input.Take(32)) { var k=kv.Key.ToLowerInvariant(); if(blocked.Any(k.Contains)) continue; result[Safe(kv.Key,100)!]=Safe(kv.Value,500)??""; } return result; }
+static Dictionary<string,string> SafeAttributes(Dictionary<string,string>? input) => AttributePolicy.Sanitize(input);
 record TelemetryEventDto(string EventId,string Source,string SessionId,DateTimeOffset Timestamp,string Type,string? Project=null,string? Status=null,long? DurationMs=null,string? Model=null,int? InputTokens=null,int? OutputTokens=null,string? ParentId=null,string? Name=null,Dictionary<string,string>? Attributes=null,double? Cost=null,int? ReasoningTokens=null,int? CacheReadTokens=null,int? CacheWriteTokens=null,double? QuotaCostEstimate=null,string? Title=null,string? QuotaCatalogFetchedAt=null,string? QuotaRateSnapshot=null,string? QuotaMissingReason=null,int? ProtocolVersion=null);
 record BehaviorSpanRow(string SessionId, string Name, string Kind, string Status, DateTime StartedAt);
 record OverviewSpanRow(string SessionId, string Name, string Kind, string Status, int? InputTokens, int? OutputTokens, int? ReasoningTokens, int? CacheReadTokens, int? CacheWriteTokens, double? Cost, double? QuotaCostEstimate);

@@ -11,6 +11,17 @@ $data = Join-Path $runtime 'telemetry.db'
 $keyFile = Join-Path $runtime 'telemetry.key'
 New-Item -ItemType Directory -Force -Path $logs | Out-Null
 
+# Restringe la clave local a la cuenta actual: sin herencia y con un único permiso explícito.
+function Protect-KeyFile([string]$Path) {
+    try {
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $output = & icacls $Path /inheritance:r /grant:r "*${sid}:(F)" 2>&1
+        if ($LASTEXITCODE -ne 0) { Write-Warning "No se pudieron restringir los permisos de ${Path}: $output" }
+    } catch {
+        Write-Warning "No se pudieron restringir los permisos de ${Path}: $($_.Exception.Message)"
+    }
+}
+
 if (Test-Path $keyFile) {
     $ApiKey = (Get-Content -LiteralPath $keyFile -Raw).Trim()
 } else {
@@ -24,6 +35,7 @@ if (Test-Path $keyFile) {
     }
     [System.IO.File]::WriteAllText($keyFile, $ApiKey)
 }
+Protect-KeyFile -Path $keyFile
 $env:TELEMETRY_API_KEY = $ApiKey
 $env:OPENCODE_OBSERVABILITY_KEY = $ApiKey
 

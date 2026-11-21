@@ -882,6 +882,36 @@ public sealed class TelemetryApiTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task IngestionFlagsTruncatedAttributesAndKeepsSafeSubstringKeys()
+    {
+        var attributes = Enumerable.Range(0, 40).ToDictionary(i => $"attr_{i:D2}", i => i.ToString());
+        attributes["compassion"] = "kept";
+        attributes["filePath"] = "C:/private/file.txt";
+        await Post(Fixture("attr-trunc", "sess-attr-trunc", "session.created") with { Attributes = attributes });
+
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/sess-attr-trunc"));
+        using var stored = JsonDocument.Parse(detail.RootElement.GetProperty("events")[0].GetProperty("attributesJson").GetString()!);
+        var root = stored.RootElement;
+        Assert.Equal("true", root.GetProperty("attributes_truncated").GetString());
+        Assert.Equal("9", root.GetProperty("attributes_dropped").GetString());
+        Assert.False(root.TryGetProperty("filePath", out _));
+        Assert.DoesNotContain("private", root.GetRawText());
+    }
+
+    [Fact]
+    public async Task SessionKeepsFirstSourceAndReportsSourceConflicts()
+    {
+        await Post(Fixture("src-1", "sess-source", "session.created"));
+        await Post(Fixture("src-2", "sess-source", "model.completed") with { Source = "other-agent", Name = "opencode-go/m1", DurationMs = 10, InputTokens = 1, OutputTokens = 1 });
+
+        using var detail = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/sess-source"));
+        Assert.Equal("opencode", detail.RootElement.GetProperty("session").GetProperty("source").GetString());
+        var quality = detail.RootElement.GetProperty("quality");
+        Assert.Equal(1, quality.GetProperty("sourceConflictEvents").GetInt32());
+        Assert.Equal("partial", quality.GetProperty("status").GetString());
+    }
+
     private async Task<HttpResponseMessage> Post(TestTelemetryEventDto dto)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/telemetry/events") { Content = JsonContent.Create(dto) };

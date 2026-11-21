@@ -6,7 +6,7 @@ Plataforma para observar sesiones de OpenCode. API ASP.NET Core + SQLite + Signa
 
 Requiere .NET 10, Node 22+ y PowerShell 7 para desarrollo. Para contenedores, instala Docker Compose.
 
-En Windows, inicia ambos servicios y abre el dashboard. El script genera una clave aleatoria una sola vez y la guarda fuera del repositorio, en `%LOCALAPPDATA%\AgentObservabilityPlatform\telemetry.key`.
+En Windows, inicia ambos servicios y abre el dashboard. El script genera una clave aleatoria una sola vez y la guarda fuera del repositorio, en `%LOCALAPPDATA%\AgentObservabilityPlatform\telemetry.key`. En cada arranque restringe los permisos de ese archivo con `icacls` a la cuenta actual (sin herencia); si no puede, muestra una advertencia.
 
 ```powershell
 .\start.ps1
@@ -49,6 +49,8 @@ El adaptador usa la API de plugins v2 de OpenCode. El puente de proyecto está e
 El plugin usa `OPENCODE_OBSERVABILITY_KEY` si está definida; si no, lee la clave local desde `%LOCALAPPDATA%\AgentObservabilityPlatform\telemetry.key`. Así puede capturar sesiones aunque OpenCode se haya iniciado desde otra terminal. Los eventos anteriores a la carga del plugin no se reconstruyen; una sesión ya abierta debe generar actividad nueva para aparecer.
 
 El plugin registra sesiones, el proveedor y modelo informados por OpenCode al iniciar cada paso, y las herramientas completadas o fallidas. Correlaciona herramientas con el paso del modelo y sólo transmite metadatos seleccionados: nombres, estados, códigos de error y tokens. No serializa prompts, respuestas ni contenido/argumentos de herramientas.
+
+El título de la sesión llega por el evento `session.renamed`. Como respaldo, si una sesión todavía no tiene título, el plugin lo consulta a OpenCode hasta cuatro veces con espera creciente (inmediato, 30 s, 2 min y 10 min) y deja de consultar en cuanto lo conoce.
 
 El detalle distingue el costo reportado por OpenCode de la cuota Go estimada. La cuota se calcula por paso con el desglose de entrada, salida y caché y las tarifas del catálogo de modelos que OpenCode sirve localmente; si falta una tarifa, no se inventa una estimación. Es una atribución de consumo, no un cargo real ni el importe de la suscripción.
 
@@ -119,4 +121,8 @@ Todas las rutas exigen la cabecera `X-Telemetry-Key`, salvo `GET /api/v1/health`
 - `POST /api/v1/benchmarks/runs/{id}/cancel` y `DELETE /api/v1/benchmarks/runs/{id}`
 - SignalR `/hubs/telemetry`, eventos `telemetry.updated` y `benchmark.updated`
 
-La deduplicación usa `source + eventId`. Las vistas permiten inspeccionar spans de modelo/herramienta, filtrar entre trabajo real y pruebas (`scope`) y exportar o eliminar sesiones locales. La política de atributos usa lista de exclusión para claves sensibles.
+La deduplicación usa `source + eventId`. Las vistas permiten inspeccionar spans de modelo/herramienta, filtrar entre trabajo real y pruebas (`scope`) y exportar o eliminar sesiones locales.
+
+La política de atributos libres (`backend/AttributePolicy.cs`) separa cada clave en tokens (puntuación, camelCase y cambios letra/dígito) y la descarta si algún token coincide exactamente con un término sensible (`prompt`, `response`, `content`, `output`, `args`, `command`, `file`, `filename`, `path`, `body`, `secret`, `token`, `key`, `apikey`, `password`, `authorization`, `cookie`, entre otros). Así se bloquean `filePath` o `api_key`, pero no `profile` ni `compassion`. Se guardan como máximo 32 claves; si se recorta, el evento conserva `attributes_truncated: "true"` y `attributes_dropped` con la cantidad descartada.
+
+Una sesión conserva el `source` de su primer evento. Si llega un evento de otro origen con el mismo `sessionId`, se guarda con su propio origen, se registra una advertencia en el log y el detalle informa `quality.sourceConflictEvents` (la traza pasa a parcial).

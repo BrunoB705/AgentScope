@@ -284,6 +284,35 @@ export class TelemetryQueue {
   }
 }
 
+/**
+ * Decide cuándo consultar el título de una sesión como respaldo. La fuente primaria es el evento
+ * `session.renamed`; el sondeo sólo se intenta un número acotado de veces con espera creciente.
+ */
+export class TitleLookupPolicy {
+  private readonly known = new Set<string>();
+  private readonly attempts = new Map<string, { count: number; last: number }>();
+  private readonly delaysMs: readonly number[];
+  constructor(delaysMs: readonly number[] = [0, 30_000, 120_000, 600_000]) { this.delaysMs = delaysMs; }
+
+  markKnown(sessionId: string): void {
+    this.known.add(sessionId);
+    this.attempts.delete(sessionId);
+  }
+
+  isKnown(sessionId: string): boolean { return this.known.has(sessionId); }
+
+  /** Devuelve true y registra el intento si corresponde consultar ahora. */
+  tryAcquire(sessionId: string, now = Date.now()): boolean {
+    if (this.known.has(sessionId)) return false;
+    const state = this.attempts.get(sessionId);
+    const count = state?.count ?? 0;
+    if (count >= this.delaysMs.length) return false;
+    if (state && now - state.last < this.delaysMs[count]) return false;
+    this.attempts.set(sessionId, { count: count + 1, last: now });
+    return true;
+  }
+}
+
 /** Maps only scalar metadata from OpenCode v2 events; message, tool input/output are never copied. */
 export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', step?: { model?: string; started?: number; modelInfo?: Record<string, unknown>; toolName?: string; catalogFetchedAt?: string }): Telemetry[] {
   const sid = session(event);
@@ -379,7 +408,7 @@ export default Plugin.define({
     const stepByMessage = new Map<string, { model: string; started: number; modelInfo?: Record<string, unknown>; catalogFetchedAt?: string }>();
     const modelBySession = new Map<string, string>();
     const modelInfoById = new Map<string, Record<string, unknown>>();
-    const titleLookupAt = new Map<string, number>();
+    const titleLookup = new TitleLookupPolicy();
     const titleBySession = new Map<string, string>();
     const toolNameById = new Map<string, string>();
     const toolStartedAtById = new Map<string, number>();
@@ -435,7 +464,7 @@ export default Plugin.define({
           for (const item of items) {
             const sessionId = str(item.id);
             if (!sessionId) continue;
-            if (str(item.title)) titleBySession.set(sessionId, str(item.title)!);
+            if (str(item.title)) { titleBySession.set(sessionId, str(item.title)!); titleLookup.markKnown(sessionId); }
             else sessionIds.add(sessionId);
           }
           if (!items.length || items.length < 100) break;
@@ -452,6 +481,7 @@ export default Plugin.define({
               const title = str(get(get(sessionInfo, 'data'), 'title')) ?? str(get(sessionInfo, 'title'));
               if (!title) continue;
               titleBySession.set(sessionId, title);
+              titleLookup.markKnown(sessionId);
               queue.enqueue({ eventId: `session-title:${sessionId}`, source: 'opencode', sessionId, timestamp: date(), type: 'session.title.updated', title, project: fallbackProject, protocolVersion: TELEMETRY_PROTOCOL_VERSION });
             } catch { /* A missing or inaccessible session should not interrupt title recovery. */ }
           }
@@ -466,15 +496,15 @@ export default Plugin.define({
           const sid = session(current);
           const messageId = str(get(current.data, 'assistantMessageID'));
           const renamedTitle = current.type === 'session.renamed' ? str(get(current.data, 'title')) : undefined;
-          if (sid && renamedTitle) titleBySession.set(sid, renamedTitle);
-          if (sid && !titleBySession.has(sid) && Date.now() - (titleLookupAt.get(sid) ?? 0) >= 30_000) {
-            titleLookupAt.set(sid, Date.now());
+          if (sid && renamedTitle) { titleBySession.set(sid, renamedTitle); titleLookup.markKnown(sid); }
+          if (sid && !titleBySession.has(sid) && titleLookup.tryAcquire(sid)) {
             try {
               const sessionInfo = await (ctx.session as unknown as { get: (input: { sessionID: string }) => Promise<unknown> }).get({ sessionID: sid });
               // OpenCode's v2 session endpoint wraps its payload in `data`.
               const title = str(get(get(sessionInfo, 'data'), 'title')) ?? str(get(sessionInfo, 'title'));
               if (title) {
                 titleBySession.set(sid, title);
+                titleLookup.markKnown(sid);
                 queue.enqueue({ eventId: `session-title:${sid}`, source: 'opencode', sessionId: sid, timestamp: date(), type: 'session.title.updated', title, project: basename(current.location?.directory) ?? fallbackProject, protocolVersion: TELEMETRY_PROTOCOL_VERSION });
               }
             } catch { /* Session metadata lookup is optional; live events continue. */ }

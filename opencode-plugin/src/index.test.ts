@@ -3,7 +3,27 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { deliveryResultForStatus, mapOpenCodeEvent, TELEMETRY_PROTOCOL_VERSION, TelemetryQueue } from './index.ts';
+import { deliveryResultForStatus, mapOpenCodeEvent, TELEMETRY_PROTOCOL_VERSION, TelemetryQueue, TitleLookupPolicy } from './index.ts';
+
+test('el sondeo de título es un respaldo acotado con espera creciente', () => {
+  const policy = new TitleLookupPolicy([0, 30_000, 120_000]);
+  assert.equal(policy.tryAcquire('s1', 0), true);
+  assert.equal(policy.tryAcquire('s1', 10_000), false);
+  assert.equal(policy.tryAcquire('s1', 30_000), true);
+  assert.equal(policy.tryAcquire('s1', 100_000), false);
+  assert.equal(policy.tryAcquire('s1', 150_000), true);
+  assert.equal(policy.tryAcquire('s1', 10_000_000), false, 'agotados los intentos no se vuelve a consultar');
+});
+
+test('session.renamed marca el título como conocido y detiene el sondeo', () => {
+  const policy = new TitleLookupPolicy();
+  policy.markKnown('s2');
+  assert.equal(policy.isKnown('s2'), true);
+  assert.equal(policy.tryAcquire('s2', 0), false);
+  const [mapped] = mapOpenCodeEvent({ id: 'e1', type: 'session.renamed', created: 1, data: { sessionID: 's2', title: 'Nuevo título' } } as never);
+  assert.equal(mapped.type, 'session.title.updated');
+  assert.equal(mapped.title, 'Nuevo título');
+});
 
 test('maps v2 session events and derives project name from its working directory', () => {
   const [mapped] = mapOpenCodeEvent({ id: 'e1', created: 2000, type: 'session.created', location: { directory: 'C:\\work\\my-app' }, data: { sessionID: 's1', title: 'private title' } });

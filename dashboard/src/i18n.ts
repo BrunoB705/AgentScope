@@ -109,9 +109,16 @@ export function translate(language: Language, key: TranslationKey, params?: Reco
   return interpolate(text, params);
 }
 
+/** Placeholders que espera una plantilla; con plurales se revisan las dos formas. */
+function templateParams(template: string): string[] {
+  return [...template.matchAll(/\{(\w+)\}/g)].map((match) => match[1]);
+}
+
 /**
  * Traduce un `code` de la API; si el cliente no lo conoce, conserva el texto en inglés.
- * Los `params` que mandó la API se interpolan en la plantilla del código conocido.
+ * Los `params` que mandó la API se interpolan en la plantilla del código conocido. Si
+ * falta alguno de los que la plantilla necesita, se devuelve el `fallback` en lugar de
+ * dejar un hueco: la prosa de la API ya trae el valor.
  */
 export function translateError(
   t: Translate,
@@ -121,7 +128,12 @@ export function translateError(
 ): string {
   if (!code) return fallback;
   const key = (apiErrorText as Record<string, TranslationKey | undefined>)[code];
-  return key === undefined ? fallback : t(key, params);
+  if (key === undefined) return fallback;
+  const template = (es as Record<string, string>)[key];
+  if (template !== undefined && templateParams(template).some((name) => params?.[name] === undefined)) {
+    return fallback;
+  }
+  return t(key, params);
 }
 
 /**

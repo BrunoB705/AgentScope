@@ -62,6 +62,17 @@ test('un código conocido interpola los parámetros que mandó la API', () => {
   );
 });
 
+test('un código conocido sin los parámetros que necesita cae al texto de la API', () => {
+  assert.equal(
+    translateError(translate.bind(null, 'es'), 'suite_not_found', 'The suite "demo" does not exist.'),
+    'The suite "demo" does not exist.',
+  );
+  assert.equal(
+    translateError(translate.bind(null, 'en'), 'baseline_verify_timeout', 'The baseline verify of "x" timed out.', {}),
+    'The baseline verify of "x" timed out.',
+  );
+});
+
 test('una clave inexistente devuelve la clave y nunca undefined', () => {
   // @ts-expect-error clave inexistente a propósito
   assert.equal(translate('en', 'signals.unknown.title'), 'signals.unknown.title');

@@ -23,7 +23,7 @@ import {
   type TranslationKey,
 } from './i18n';
 
-type CatalogError = { id: string; error: string; code: string };
+type CatalogError = { id: string; error: string; code: string; params?: Record<string, string> | null };
 type SuiteResponse = { suites: BenchmarkSuite[]; errors: CatalogError[] };
 type ModelsResponse = { models: string[]; error?: string | null; code?: string | null };
 type RunPage = { items: BenchmarkRun[]; total: number; page: number; pageSize: number };
@@ -264,7 +264,7 @@ export function BenchmarksPage({ version, onOpenSession }: {
 
     <p className="benchmark-warning">{t('benchmarks.warning', { flag: '--auto' })}</p>
     {catalogErrors.map((item) => <p className="benchmark-warning" key={item.id}>
-      {t('benchmarks.catalogError', { suite: item.id, error: translateError(t, item.code, item.error, { suite: item.id }) })}
+      {t('benchmarks.catalogError', { suite: item.id, error: translateError(t, item.code, item.error, item.params ?? undefined) })}
     </p>)}
     {error && <div className="api-error" role="status">{errorText(t, error)}</div>}
 
@@ -402,16 +402,21 @@ export function BenchmarksPage({ version, onOpenSession }: {
 
           <div className="benchmark-history">
             <h4>{t('benchmarks.history')}</h4>
-            {runs.length === 0 ? <p className="benchmark-empty">{t('benchmarks.history.empty')}</p> : runs.map((run) => <button key={run.id} className={run.id === viewRun.id ? 'selected' : ''} onClick={() => setViewRunId(run.id)}>
-              <b>{run.suite}</b>
-              <small>{t('benchmarks.history.item', {
+            {runs.length === 0 ? <p className="benchmark-empty">{t('benchmarks.history.empty')}</p> : runs.map((run) => {
+              const runLanguage = languageLabel(t, run.language);
+              const meta = {
                 date: formatDate(language, run.createdAt),
                 completed: formatNumber(language, run.completed),
                 total: formatNumber(language, run.total),
                 status: statusLabel(t, run.status),
-                language: languageLabel(t, run.language),
-              })}</small>
-            </button>)}
+              };
+              return <button key={run.id} className={run.id === viewRun.id ? 'selected' : ''} onClick={() => setViewRunId(run.id)}>
+                <b>{run.suite}</b>
+                <small>{runLanguage
+                  ? t('benchmarks.history.item', { ...meta, language: runLanguage })
+                  : t('benchmarks.history.itemNoLanguage', meta)}</small>
+              </button>;
+            })}
             {runs.length < runTotal && <button className="benchmark-more" onClick={() => void loadMore()}>{t('benchmarks.loadMore')}</button>}
           </div>
         </>}

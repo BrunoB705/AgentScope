@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { translate } from './i18n.ts';
 import { buildScatterPlot, computeModelHighlights, filterModelsByMinCalls, layoutScatterLabels } from './model-efficiency.ts';
+
+const es = translate.bind(null, 'es');
+const en = translate.bind(null, 'en');
 
 const sampleModels = [
   {
@@ -50,11 +54,12 @@ const sampleModels = [
 ];
 
 test('computeModelHighlights exige al menos dos modelos comparables por dimensión', () => {
-  assert.deepEqual(computeModelHighlights([sampleModels[0]]), []);
+  assert.deepEqual(computeModelHighlights([sampleModels[0]], es), []);
+  assert.deepEqual(computeModelHighlights(sampleModels, es).length, 6);
 });
 
 test('computeModelHighlights elige ganadores objetivos en cada métrica disponible', () => {
-  const highlights = Object.fromEntries(computeModelHighlights(sampleModels).map(item => [item.id, item]));
+  const highlights = Object.fromEntries(computeModelHighlights(sampleModels, es).map(item => [item.id, item]));
   assert.equal(highlights.fastest.model, 'opencode-go/rapido');
   assert.equal(highlights.throughput.model, 'opencode-go/rapido');
   assert.equal(highlights.cache.model, 'opencode-go/preciso');
@@ -62,6 +67,21 @@ test('computeModelHighlights elige ganadores objetivos en cada métrica disponib
   assert.equal(highlights.cheapestQuota1M.model, 'opencode-go/rapido');
   assert.equal(highlights.benchmarkPass.model, 'opencode-go/preciso');
   assert.equal(highlights.cheapestCost, undefined, 'no destaca costo reportado cuando todos son cero');
+});
+
+test('los destacados se rotulan en el idioma pedido', () => {
+  const esHighlights = Object.fromEntries(computeModelHighlights(sampleModels, es).map(item => [item.id, item]));
+  assert.equal(esHighlights.fastest.label, 'Más rápido (latencia)');
+  assert.equal(esHighlights.fastest.metricText, '1.20 s / paso');
+  assert.equal(esHighlights.fastest.sampleNote, 'Comparado entre 2 modelos con dato');
+  assert.equal(esHighlights.cache.metricText, '60.0%');
+
+  const enHighlights = Object.fromEntries(computeModelHighlights(sampleModels, en).map(item => [item.id, item]));
+  assert.equal(enHighlights.fastest.label, 'Fastest (latency)');
+  assert.equal(enHighlights.fastest.metricText, '1.20 s / step');
+  assert.equal(enHighlights.fastest.sampleNote, 'Compared across 2 models with data');
+  assert.equal(enHighlights.throughput.label, 'Highest output speed');
+  assert.equal(enHighlights.cache.label, 'Best cache savings');
 });
 
 test('buildScatterPlot soporta cuota/1M, tokens/llamada, latencia y nota del juez sin dividir por cero', () => {

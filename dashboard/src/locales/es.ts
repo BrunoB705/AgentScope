@@ -7,6 +7,44 @@ export const es = {
   'header.refresh': 'Actualizar',
   'header.language': 'Idioma',
 
+  // Presupuestos, procedencia de la cuota y destacados de eficiencia. Las claves
+  // compuestas usan placeholders: nunca se concatenan palabras sueltas.
+  'budgets.metric.cost': 'Costo reportado',
+  'budgets.metric.quota': 'Cuota Go estimada',
+  'budgets.panel.empty': 'Configura límites mensuales por proyecto',
+  'budgets.panel.configured': '{count} configurado|{count} configurados',
+  'budgets.panel.summary': '{configured} · {metrics}',
+  'budgets.panel.metricSeparator': ' y ',
+  'budgets.amount.reported': '{metric}: {spent} de {limit}',
+  'budgets.amount.estimated': '{metric}: ≈ {spent} de {limit}',
+  'budgets.amount.missingCost': 'Sin costo reportado este mes',
+  'budgets.amount.missingQuota': 'Sin cuota Go estimada este mes',
+
+  'trace.quota.estimated': 'estimada',
+  'trace.quota.catalog': 'catálogo {at}',
+  'trace.quota.rates': 'US$/M entrada {input} · salida {output} · caché {cacheRead}/{cacheWrite}',
+  'trace.quota.tier': 'tramo {size}',
+  'trace.quota.missing.no_catalog': 'sin catálogo de modelos',
+  'trace.quota.missing.no_rate': 'sin tarifa para el modelo',
+  'trace.quota.missing.incomplete_rate': 'tarifa incompleta',
+  'trace.quota.missing.tokens_missing': 'sin tokens reportados',
+  'trace.quota.missing.not_applicable': 'modelo fuera de opencode-go',
+  'trace.quota.missing.model_unknown': 'modelo del paso no identificado',
+
+  'models.highlight.fastest': 'Más rápido (latencia)',
+  'models.highlight.throughput': 'Mayor velocidad de salida',
+  'models.highlight.cache': 'Mejor ahorro de caché',
+  'models.highlight.cheapestQuota': 'Menor cuota Go / llamada',
+  'models.highlight.cheapestQuota1M': 'Menor cuota Go / 1M tok',
+  'models.highlight.cheapestCost': 'Menor costo / llamada',
+  'models.highlight.benchmarkPass': 'Mayor aprobación en Pruebas',
+  'models.highlight.metric.perStep': '{value} s / paso',
+  'models.highlight.metric.throughput': '{value} tok/s',
+  'models.highlight.metric.percent': '{value}%',
+  'models.highlight.metric.approxUsd': '≈ US$ {value}',
+  'models.highlight.metric.usd': 'US$ {value}',
+  'models.highlight.sampleNote': 'Comparado entre {count} modelo con dato|Comparado entre {count} modelos con dato',
+
   // Errores de la API. La API responde en inglés y manda un `code` estable; el
   // dashboard traduce por código y deja el texto de la API como respaldo.
   'errors.telemetry_key_missing': 'Falta el encabezado X-Telemetry-Key o no coincide.',

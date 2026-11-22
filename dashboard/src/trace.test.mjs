@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { formatDate, translate } from './i18n.ts';
 import { buildWaterfall, describeQuotaProvenance, findSpanForEvent, isErrorStatus, spanIdForEvent } from './trace.ts';
+
+const es = translate.bind(null, 'es');
+const en = translate.bind(null, 'en');
 
 const at = (ms) => new Date(ms).toISOString();
 const span = (id, start, durationMs, extra = {}) => ({
@@ -83,27 +87,42 @@ test('reconoce error y failed como estados de error', () => {
 });
 
 test('describe la procedencia de una cuota estimada con catálogo y tarifas', () => {
+  const fetchedAt = '2026-11-17T10:22:00.000Z';
   const text = describeQuotaProvenance({
     quotaCostEstimate: 0.004325,
-    quotaCatalogFetchedAt: '2026-11-17T10:22:00.000Z',
+    quotaCatalogFetchedAt: fetchedAt,
     quotaRateSnapshot: '{"input":0.15,"output":0.6,"cacheRead":0.015,"cacheWrite":0.1875,"tier":null}',
-  });
-  assert.match(text, /estimada/);
-  assert.match(text, /catálogo 2026-11-17T10:22:00.000Z/);
-  assert.match(text, /entrada 0\.15/);
-  assert.match(text, /salida 0\.6/);
-  assert.match(text, /caché 0\.015\/0\.1875/);
+  }, es, 'es');
+  assert.equal(text, `estimada · catálogo ${formatDate('es', fetchedAt)} · US$/M entrada 0.15 · salida 0.6 · caché 0.015/0.1875`);
+});
+
+test('la procedencia de la cuota se traduce y respeta el idioma pedido', () => {
+  const fetchedAt = '2026-11-17T10:22:00.000Z';
+  const text = describeQuotaProvenance({
+    quotaCostEstimate: 0.004325,
+    quotaCatalogFetchedAt: fetchedAt,
+    quotaRateSnapshot: '{"input":0.15,"output":0.6,"cacheRead":0.015,"cacheWrite":0.1875,"tier":{"size":200000}}',
+  }, en, 'en');
+  assert.equal(text, `estimated · catalog ${formatDate('en', fetchedAt)} · US$/M input 0.15 · output 0.6 · cache 0.015/0.1875 · tier 200000`);
 });
 
 test('explica por qué falta la cuota en lugar de dejarla vacía', () => {
-  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'no_catalog' }), 'sin catálogo de modelos');
-  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'no_rate' }), 'sin tarifa para el modelo');
-  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'not_applicable' }), 'modelo fuera de opencode-go');
-  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'model_unknown' }), 'modelo del paso no identificado');
-  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null }), null);
+  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'no_catalog' }, es, 'es'), 'sin catálogo de modelos');
+  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'no_rate' }, es, 'es'), 'sin tarifa para el modelo');
+  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'incomplete_rate' }, es, 'es'), 'tarifa incompleta');
+  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'tokens_missing' }, es, 'es'), 'sin tokens reportados');
+  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'not_applicable' }, es, 'es'), 'modelo fuera de opencode-go');
+  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'model_unknown' }, es, 'es'), 'modelo del paso no identificado');
+  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null }, es, 'es'), null);
+});
+
+test('el motivo de la cuota faltante se traduce y un motivo desconocido queda crudo', () => {
+  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'no_catalog' }, en, 'en'), 'no model catalog');
+  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'model_unknown' }, en, 'en'), 'unidentified step model');
+  assert.equal(describeQuotaProvenance({ quotaCostEstimate: null, quotaMissingReason: 'future_reason' }, en, 'en'), 'future_reason');
 });
 
 test('un snapshot ilegible no rompe la descripción de la cuota', () => {
-  const text = describeQuotaProvenance({ quotaCostEstimate: 1, quotaCatalogFetchedAt: null, quotaRateSnapshot: 'no-json' });
+  const text = describeQuotaProvenance({ quotaCostEstimate: 1, quotaCatalogFetchedAt: null, quotaRateSnapshot: 'no-json' }, es, 'es');
   assert.equal(text, 'estimada');
 });

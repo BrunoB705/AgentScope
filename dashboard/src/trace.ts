@@ -1,3 +1,5 @@
+import { formatDate, type Language, type Translate, type TranslationKey } from './i18n.ts';
+
 export type TraceSpan = {
   id: string;
   parentId?: string | null;
@@ -116,37 +118,43 @@ export type QuotaFields = {
   quotaMissingReason?: string | null;
 };
 
-const MISSING_REASON_LABEL: Record<string, string> = {
-  no_catalog: 'sin catálogo de modelos',
-  no_rate: 'sin tarifa para el modelo',
-  incomplete_rate: 'tarifa incompleta',
-  tokens_missing: 'sin tokens reportados',
-  not_applicable: 'modelo fuera de opencode-go',
-  model_unknown: 'modelo del paso no identificado',
+const MISSING_REASON_KEY: Partial<Record<string, TranslationKey>> = {
+  no_catalog: 'trace.quota.missing.no_catalog',
+  no_rate: 'trace.quota.missing.no_rate',
+  incomplete_rate: 'trace.quota.missing.incomplete_rate',
+  tokens_missing: 'trace.quota.missing.tokens_missing',
+  not_applicable: 'trace.quota.missing.not_applicable',
+  model_unknown: 'trace.quota.missing.model_unknown',
 };
 
-const formatRates = (raw?: string | null): string | null => {
-  if (!raw) return null;
+// La tarifa se muestra con los números crudos que reportó el catálogo: son tasas de
+// auditoría, no montos, y no se reformatean ni se redondean.
+const rateParts = (raw: string | null | undefined, t: Translate): string[] => {
+  if (!raw) return [];
   try {
     const value = JSON.parse(raw) as { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; tier?: { size?: number } | null };
-    if ([value.input, value.output, value.cacheRead, value.cacheWrite].some((rate) => typeof rate !== 'number')) return null;
-    const tier = typeof value.tier?.size === 'number' ? ` · tramo ${value.tier.size}` : '';
-    return `US$/M entrada ${value.input} · salida ${value.output} · caché ${value.cacheRead}/${value.cacheWrite}${tier}`;
+    const { input, output, cacheRead, cacheWrite } = value;
+    if (typeof input !== 'number' || typeof output !== 'number' || typeof cacheRead !== 'number' || typeof cacheWrite !== 'number') return [];
+    const parts = [t('trace.quota.rates', { input, output, cacheRead, cacheWrite })];
+    if (typeof value.tier?.size === 'number') parts.push(t('trace.quota.tier', { size: value.tier.size }));
+    return parts;
   } catch {
-    return null;
+    return [];
   }
 };
 
 // Una estimación sin procedencia no se puede auditar: el dato que la explica tiene
 // que estar a la vista, y la ausencia tiene que decir por qué falta.
-export function describeQuotaProvenance(span: QuotaFields): string | null {
+export function describeQuotaProvenance(span: QuotaFields, t: Translate, language: Language): string | null {
   if (span.quotaCostEstimate != null) {
-    const parts = ['estimada'];
-    if (span.quotaCatalogFetchedAt) parts.push(`catálogo ${span.quotaCatalogFetchedAt}`);
-    const rates = formatRates(span.quotaRateSnapshot);
-    if (rates) parts.push(rates);
+    const parts = [t('trace.quota.estimated')];
+    if (span.quotaCatalogFetchedAt) parts.push(t('trace.quota.catalog', { at: formatDate(language, span.quotaCatalogFetchedAt) }));
+    parts.push(...rateParts(span.quotaRateSnapshot, t));
     return parts.join(' · ');
   }
-  if (span.quotaMissingReason) return MISSING_REASON_LABEL[span.quotaMissingReason] ?? span.quotaMissingReason;
+  if (span.quotaMissingReason) {
+    const key = MISSING_REASON_KEY[span.quotaMissingReason];
+    return key === undefined ? span.quotaMissingReason : t(key);
+  }
   return null;
 }

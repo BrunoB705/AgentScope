@@ -78,7 +78,7 @@ internal sealed class BenchmarkExecutor
         }
         catch (BenchmarkValidationException ex)
         {
-            await FailRunAsync(run, BenchmarkErrorText.Encode(ex.Code, ex.Parameters), CancellationToken.None);
+            await FailRunAsync(run, BenchmarkErrorText.Encode(ex.Code, ex.Parameters, ex.Message), CancellationToken.None);
         }
         catch (OperationCanceledException)
         {

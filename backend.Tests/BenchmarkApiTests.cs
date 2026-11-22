@@ -306,6 +306,8 @@ public sealed class BenchmarkApiTests : IDisposable
         Assert.Equal("state_changed", payload.GetProperty("errorCode").GetString());
         Assert.Equal(JsonValueKind.Null, payload.GetProperty("errorParams").ValueKind);
         Assert.Equal("The final recommendation timed out.", payload.GetProperty("verdict").GetString());
+        Assert.Equal("verdict_timeout", payload.GetProperty("verdictCode").GetString());
+        Assert.Equal(JsonValueKind.Null, payload.GetProperty("verdictParams").ValueKind);
 
         var resultPayload = payload.GetProperty("results")[0];
         Assert.Equal("The baseline verify of 'code-test' timed out.", resultPayload.GetProperty("error").GetString());
@@ -314,6 +316,31 @@ public sealed class BenchmarkApiTests : IDisposable
         Assert.Equal("Session telemetry did not arrive.", resultPayload.GetProperty("metricsError").GetString());
         Assert.Equal("metrics_missing", resultPayload.GetProperty("metricsErrorCode").GetString());
         Assert.Equal(JsonValueKind.Null, resultPayload.GetProperty("metricsErrorParams").ValueKind);
+    }
+
+    [Fact]
+    public async Task GetRun_ExposesStoredMessageForUnknownErrorCode()
+    {
+        using var client = Client();
+        using var created = JsonDocument.Parse(await (await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody())).Content.ReadAsStringAsync());
+        var id = created.RootElement.GetProperty("id").GetString()!;
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TelemetryDb>();
+            var result = await db.BenchmarkResults.FirstAsync(item => item.RunId == id);
+            result.Error = BenchmarkErrorText.Encode(
+                "suite_unreadable",
+                new Dictionary<string, string> { ["detail"] = "boom" },
+                "Could not read the suite: boom");
+            await db.SaveChangesAsync();
+        }
+
+        using var detail = JsonDocument.Parse(await client.GetStringAsync($"/api/v1/benchmarks/runs/{id}"));
+        var resultPayload = detail.RootElement.GetProperty("results")[0];
+        Assert.Equal("Could not read the suite: boom", resultPayload.GetProperty("error").GetString());
+        Assert.Equal("suite_unreadable", resultPayload.GetProperty("errorCode").GetString());
+        Assert.Equal("boom", resultPayload.GetProperty("errorParams").GetProperty("detail").GetString());
     }
 
     [Fact]

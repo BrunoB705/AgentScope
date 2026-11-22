@@ -214,6 +214,8 @@ public static class BenchmarkEndpoints
             baselineJson = run.BaselineJson,
             requestVerdict = run.RequestVerdict,
             verdict = verdict.Error,
+            verdictCode = verdict.Code,
+            verdictParams = verdict.Parameters,
             error = error.Error,
             errorCode = error.Code,
             errorParams = error.Parameters,

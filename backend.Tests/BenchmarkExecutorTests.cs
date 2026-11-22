@@ -389,9 +389,10 @@ public sealed class BenchmarkExecutorTests : IDisposable
         await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
         var run = harness.Db.BenchmarkRuns.Single();
         Assert.Equal("failed", run.Status);
-        Assert.Equal(
-            BenchmarkErrorText.Encode("suite_not_found", new Dictionary<string, string> { ["suite"] = "demo" }),
-            run.Error);
+        var error = BenchmarkErrorText.Read(run.Error);
+        Assert.Equal("suite_not_found", error.Code);
+        Assert.Equal("The suite 'demo' does not exist.", error.Error);
+        Assert.Equal("demo", error.Parameters!["suite"]);
     }
 
     [Fact]

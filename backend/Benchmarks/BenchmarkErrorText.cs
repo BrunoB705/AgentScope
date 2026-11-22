@@ -32,13 +32,28 @@ internal static class BenchmarkErrorText
     public static string Encode(string code, IReadOnlyDictionary<string, string>? parameters = null) =>
         JsonSerializer.Serialize(new ErrorPayload(
             code,
-            parameters is { Count: > 0 } ? parameters : null));
+            parameters is { Count: > 0 } ? parameters : null,
+            null));
+
+    /// <summary>
+    /// Variante para códigos sin plantilla: guarda además el mensaje humano como fallback,
+    /// así un código todavía no traducido no se filtra a la API en snake_case.
+    /// </summary>
+    public static string Encode(
+        string code,
+        IReadOnlyDictionary<string, string>? parameters,
+        string fallbackMessage) =>
+        JsonSerializer.Serialize(new ErrorPayload(
+            code,
+            parameters is { Count: > 0 } ? parameters : null,
+            string.IsNullOrWhiteSpace(fallbackMessage) ? null : fallbackMessage));
 
     public static (string Error, string? Code, IReadOnlyDictionary<string, string>? Parameters) Read(string? stored)
     {
         if (string.IsNullOrWhiteSpace(stored)) return (stored ?? "", null, null);
 
         string? code;
+        string? message = null;
         IReadOnlyDictionary<string, string>? parameters = null;
         try
         {
@@ -49,6 +64,12 @@ internal static class BenchmarkErrorText
                 return (stored, null, null);
             code = codeElement.GetString();
             if (string.IsNullOrEmpty(code)) return (stored, null, null);
+
+            if (root.TryGetProperty("message", out var messageElement) && messageElement.ValueKind == JsonValueKind.String)
+            {
+                var storedMessage = messageElement.GetString();
+                if (!string.IsNullOrWhiteSpace(storedMessage)) message = storedMessage;
+            }
 
             if (root.TryGetProperty("params", out var paramsElement) && paramsElement.ValueKind == JsonValueKind.Object)
             {
@@ -64,8 +85,9 @@ internal static class BenchmarkErrorText
             return (stored, null, null);
         }
 
-        var template = Templates.TryGetValue(code, out var text) ? text : code;
-        return (Render(template, parameters), code, parameters);
+        if (Templates.TryGetValue(code, out var template))
+            return (Render(template, parameters), code, parameters);
+        return (message ?? code, code, parameters);
     }
 
     private static string Render(string template, IReadOnlyDictionary<string, string>? parameters) =>
@@ -78,5 +100,8 @@ internal static class BenchmarkErrorText
         [property: JsonPropertyName("code")] string Code,
         [property: JsonPropertyName("params")]
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        IReadOnlyDictionary<string, string>? Parameters);
+        IReadOnlyDictionary<string, string>? Parameters,
+        [property: JsonPropertyName("message")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? Message);
 }

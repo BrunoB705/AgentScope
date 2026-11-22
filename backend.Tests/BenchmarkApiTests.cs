@@ -23,12 +23,111 @@ public sealed class BenchmarkApiTests : IDisposable
         return client;
     }
 
-    private static object RunBody(string[]? models = null, string? judge = "provider/model-c") => new
+    private static Dictionary<string, object?> RunBody(string[]? models = null, string? judge = "provider/model-c", string? language = null)
     {
-        suite = "demo",
-        models = models ?? new[] { "provider/model-a" },
-        judge,
-    };
+        var body = new Dictionary<string, object?>
+        {
+            ["suite"] = "demo",
+            ["models"] = models ?? new[] { "provider/model-a" },
+            ["judge"] = judge,
+        };
+        // Ausente por defecto: así los tests viejos siguen ejerciendo el camino
+        // "cliente que no manda idioma".
+        if (language is not null) body["language"] = language;
+        return body;
+    }
+
+    /// <summary>
+    /// El cuerpo de error es exactamente <c>{ error, code }</c>: sin campos extra y con la
+    /// prosa y el código exactos. Comparar un substring dejaba pasar una forma distinta.
+    /// </summary>
+    private static void AssertErrorBody(JsonDocument document, string error, string code)
+    {
+        var properties = document.RootElement.EnumerateObject()
+            .Select(item => item.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal(new[] { "code", "error" }, properties);
+        Assert.Equal(error, document.RootElement.GetProperty("error").GetString());
+        Assert.Equal(code, document.RootElement.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task CreateRun_DefaultsLanguageToSpanish()
+    {
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody());
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("es", json.RootElement.GetProperty("language").GetString());
+    }
+
+    [Fact]
+    public async Task CreateRun_PersistsEnglishLanguage()
+    {
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(language: "en"));
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        using var created = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("en", created.RootElement.GetProperty("language").GetString());
+        var id = created.RootElement.GetProperty("id").GetString();
+
+        using var detail = JsonDocument.Parse(await client.GetStringAsync($"/api/v1/benchmarks/runs/{id}"));
+        Assert.Equal("en", detail.RootElement.GetProperty("language").GetString());
+
+        using var history = JsonDocument.Parse(await client.GetStringAsync("/api/v1/benchmarks/runs?suite=demo"));
+        Assert.Equal("en", history.RootElement.GetProperty("items")[0].GetProperty("language").GetString());
+    }
+
+    [Fact]
+    public async Task CreateRun_RejectsUnknownLanguage()
+    {
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(language: "fr"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        AssertErrorBody(document, "Language must be 'es' or 'en'.", "invalid_language");
+    }
+
+    [Fact]
+    public async Task CreateRun_RejectsRegionalLanguageVariant()
+    {
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(language: "en-US"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        AssertErrorBody(document, "Language must be 'es' or 'en'.", "invalid_language");
+    }
+
+    [Fact]
+    public async Task CreateRun_ReportsInvalidLanguageBeforeInvalidVariant()
+    {
+        using var client = Client();
+        var response = await client.PostAsJsonAsync(
+            "/api/v1/benchmarks/runs",
+            RunBody(new[] { "provider/model-a#a&calc" }, language: "fr"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        AssertErrorBody(document, "Language must be 'es' or 'en'.", "invalid_language");
+    }
+
+    [Fact]
+    public async Task GetRun_ReadsMissingLanguageAsSpanish()
+    {
+        using var client = Client();
+        using var created = JsonDocument.Parse(await (await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(language: "en"))).Content.ReadAsStringAsync());
+        var id = created.RootElement.GetProperty("id").GetString()!;
+
+        // Corrida anterior a la columna: sin idioma guardado.
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TelemetryDb>();
+            await db.Database.ExecuteSqlRawAsync("UPDATE \"BenchmarkRuns\" SET \"OutputLanguage\" = NULL WHERE \"Id\" = {0}", id);
+        }
+
+        using var detail = JsonDocument.Parse(await client.GetStringAsync($"/api/v1/benchmarks/runs/{id}"));
+        Assert.Equal("es", detail.RootElement.GetProperty("language").GetString());
+    }
 
     [Fact]
     public async Task Suites_ReturnsCodeAndOpenWithoutPrompts()
@@ -40,6 +139,19 @@ public sealed class BenchmarkApiTests : IDisposable
         Assert.Equal("demo", suite.GetProperty("id").GetString());
         Assert.Equal(2, suite.GetProperty("tests").GetArrayLength());
         Assert.DoesNotContain("Corregí el bug.", body);
+    }
+
+    [Fact]
+    public async Task Suites_ReturnsErrorParams()
+    {
+        _factory.WriteBrokenSuite();
+        using var client = Client();
+        using var json = JsonDocument.Parse(await client.GetStringAsync("/api/v1/benchmarks/suites"));
+        var error = json.RootElement.GetProperty("errors")[0];
+        Assert.Equal("broken", error.GetProperty("id").GetString());
+        Assert.Equal("test_type_invalid", error.GetProperty("code").GetString());
+        Assert.Equal("code-test", error.GetProperty("params").GetProperty("test").GetString());
+        Assert.Equal("weird", error.GetProperty("params").GetProperty("type").GetString());
     }
 
     [Fact]
@@ -58,7 +170,10 @@ public sealed class BenchmarkApiTests : IDisposable
         using var client = Client();
         var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(new[] { "provider/model-a" }, "provider/model-a"));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("juez", await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("judge", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("judge_is_model", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -67,6 +182,10 @@ public sealed class BenchmarkApiTests : IDisposable
         using var client = Client();
         var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(judge: null));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("judge", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("judge_missing", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -75,7 +194,21 @@ public sealed class BenchmarkApiTests : IDisposable
         using var client = Client();
         var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", new { suite = "missing", models = new[] { "provider/model-a" }, judge = "provider/model-c" });
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-        Assert.Contains("no existe", await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("does not exist", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("suite_not_found", document.RootElement.GetProperty("code").GetString());
+        Assert.Equal("missing", document.RootElement.GetProperty("params").GetProperty("suite").GetString());
+    }
+
+    [Fact]
+    public async Task CreateRun_RejectsInvalidSuiteId()
+    {
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", new { suite = "Bad Id", models = new[] { "provider/model-a" }, judge = "provider/model-c" });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("suite_id_invalid", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -85,7 +218,34 @@ public sealed class BenchmarkApiTests : IDisposable
         using var client = Client();
         var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody());
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-        Assert.Contains("boom", await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("boom", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("model_catalog_unavailable", document.RootElement.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task CreateRun_Returns409WithTimeoutCodeWhenCatalogTimesOut()
+    {
+        _factory.Fake.Handler = _ => new ProcessResult(-1, "", "", true, 15000);
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody());
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("opencode models timed out.", document.RootElement.GetProperty("error").GetString());
+        Assert.Equal("model_catalog_timeout", document.RootElement.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task CreateRun_Returns409WithExitCodeWhenCatalogExitsWithoutStderr()
+    {
+        _factory.Fake.Handler = _ => new ProcessResult(1, "", "", false, 10);
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody());
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("opencode models exited with code 1.", document.RootElement.GetProperty("error").GetString());
+        Assert.Equal("model_catalog_exit", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -94,7 +254,10 @@ public sealed class BenchmarkApiTests : IDisposable
         using var client = Client();
         var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(new[] { "a&calc" }));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("catálogo", await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("catalog", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("model_not_in_catalog", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -103,7 +266,10 @@ public sealed class BenchmarkApiTests : IDisposable
         using var client = Client();
         var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(judge: "provider/model-z"));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("juez", await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("judge", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("judge_not_in_catalog", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -123,7 +289,10 @@ public sealed class BenchmarkApiTests : IDisposable
         using var client = Client();
         var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(new[] { "provider/model-a#a&calc" }));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("variante", await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("variant", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("variant_invalid", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -159,7 +328,10 @@ public sealed class BenchmarkApiTests : IDisposable
         using var client = Client();
         var response = await client.PostAsync("/api/v1/benchmarks/runs/missing/cancel", null);
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-        Assert.Contains("no existe", await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("does not exist", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("run_not_found", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -170,6 +342,10 @@ public sealed class BenchmarkApiTests : IDisposable
         var id = created.RootElement.GetProperty("id").GetString();
         var response = await client.DeleteAsync($"/api/v1/benchmarks/runs/{id}");
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("before deleting", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("cancel_before_delete", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -219,6 +395,100 @@ public sealed class BenchmarkApiTests : IDisposable
     }
 
     [Fact]
+    public async Task GetRun_ExposesEncodedErrorCodesAndParams()
+    {
+        using var client = Client();
+        using var created = JsonDocument.Parse(await (await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody())).Content.ReadAsStringAsync());
+        var id = created.RootElement.GetProperty("id").GetString()!;
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TelemetryDb>();
+            var run = await db.BenchmarkRuns.FirstAsync(item => item.Id == id);
+            var result = await db.BenchmarkResults.FirstAsync(item => item.RunId == id);
+            run.Error = BenchmarkErrorText.Encode("state_changed");
+            run.Verdict = BenchmarkErrorText.Encode("verdict_timeout");
+            result.Error = BenchmarkErrorText.Encode("baseline_verify_timeout", new Dictionary<string, string> { ["test"] = "code-test" });
+            result.MetricsError = BenchmarkErrorText.Encode("metrics_missing");
+            await db.SaveChangesAsync();
+        }
+
+        using var detail = JsonDocument.Parse(await client.GetStringAsync($"/api/v1/benchmarks/runs/{id}"));
+        var payload = detail.RootElement;
+        Assert.Equal("The run changed state while it was executing.", payload.GetProperty("error").GetString());
+        Assert.Equal("state_changed", payload.GetProperty("errorCode").GetString());
+        Assert.Equal(JsonValueKind.Null, payload.GetProperty("errorParams").ValueKind);
+        Assert.Equal("The final recommendation timed out.", payload.GetProperty("verdict").GetString());
+        Assert.Equal("verdict_timeout", payload.GetProperty("verdictCode").GetString());
+        Assert.Equal(JsonValueKind.Null, payload.GetProperty("verdictParams").ValueKind);
+
+        var resultPayload = payload.GetProperty("results")[0];
+        Assert.Equal("The baseline verify of 'code-test' timed out.", resultPayload.GetProperty("error").GetString());
+        Assert.Equal("baseline_verify_timeout", resultPayload.GetProperty("errorCode").GetString());
+        Assert.Equal("code-test", resultPayload.GetProperty("errorParams").GetProperty("test").GetString());
+        Assert.Equal("Session telemetry did not arrive.", resultPayload.GetProperty("metricsError").GetString());
+        Assert.Equal("metrics_missing", resultPayload.GetProperty("metricsErrorCode").GetString());
+        Assert.Equal(JsonValueKind.Null, resultPayload.GetProperty("metricsErrorParams").ValueKind);
+    }
+
+    [Fact]
+    public async Task GetRun_ExposesStoredMessageForUnknownErrorCode()
+    {
+        using var client = Client();
+        using var created = JsonDocument.Parse(await (await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody())).Content.ReadAsStringAsync());
+        var id = created.RootElement.GetProperty("id").GetString()!;
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TelemetryDb>();
+            var result = await db.BenchmarkResults.FirstAsync(item => item.RunId == id);
+            result.Error = BenchmarkErrorText.Encode(
+                "suite_unreadable",
+                new Dictionary<string, string> { ["detail"] = "boom" },
+                "Could not read the suite: boom");
+            await db.SaveChangesAsync();
+        }
+
+        using var detail = JsonDocument.Parse(await client.GetStringAsync($"/api/v1/benchmarks/runs/{id}"));
+        var resultPayload = detail.RootElement.GetProperty("results")[0];
+        Assert.Equal("Could not read the suite: boom", resultPayload.GetProperty("error").GetString());
+        Assert.Equal("suite_unreadable", resultPayload.GetProperty("errorCode").GetString());
+        Assert.Equal("boom", resultPayload.GetProperty("errorParams").GetProperty("detail").GetString());
+    }
+
+    [Fact]
+    public async Task GetRun_KeepsHistoricalPlainTextErrors()
+    {
+        using var client = Client();
+        using var created = JsonDocument.Parse(await (await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody())).Content.ReadAsStringAsync());
+        var id = created.RootElement.GetProperty("id").GetString()!;
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TelemetryDb>();
+            var run = await db.BenchmarkRuns.FirstAsync(item => item.Id == id);
+            var result = await db.BenchmarkResults.FirstAsync(item => item.RunId == id);
+            run.Error = "La corrida cambió de estado mientras se ejecutaba.";
+            result.Error = "El modelo superó el timeout.";
+            result.MetricsError = "No llegó la telemetría de la sesión.";
+            await db.SaveChangesAsync();
+        }
+
+        using var detail = JsonDocument.Parse(await client.GetStringAsync($"/api/v1/benchmarks/runs/{id}"));
+        var payload = detail.RootElement;
+        Assert.Equal("La corrida cambió de estado mientras se ejecutaba.", payload.GetProperty("error").GetString());
+        Assert.Equal(JsonValueKind.Null, payload.GetProperty("errorCode").ValueKind);
+        Assert.Equal(JsonValueKind.Null, payload.GetProperty("errorParams").ValueKind);
+
+        var resultPayload = payload.GetProperty("results")[0];
+        Assert.Equal("El modelo superó el timeout.", resultPayload.GetProperty("error").GetString());
+        Assert.Equal(JsonValueKind.Null, resultPayload.GetProperty("errorCode").ValueKind);
+        Assert.Equal("No llegó la telemetría de la sesión.", resultPayload.GetProperty("metricsError").GetString());
+        Assert.Equal(JsonValueKind.Null, resultPayload.GetProperty("metricsErrorCode").ValueKind);
+        Assert.Equal(JsonValueKind.Null, resultPayload.GetProperty("metricsErrorParams").ValueKind);
+    }
+
+    [Fact]
     public async Task Runs_ReturnsHistory()
     {
         using var client = Client();
@@ -254,6 +524,21 @@ public class BenchmarkApiFactory : WebApplicationFactory<Program>
     public FakeSessionReader Sessions { get; } = new();
 
     protected virtual bool WorkerEnabled => false;
+
+    /// <summary>Agrega una suite inválida para que el listado devuelva un error con parámetros.</summary>
+    public void WriteBrokenSuite()
+    {
+        var suite = Path.Combine(_root, "broken");
+        Directory.CreateDirectory(suite);
+        File.WriteAllText(Path.Combine(suite, "suite.json"), """
+        {
+          "name": "Broken",
+          "tests": [
+            { "name": "code-test", "type": "weird", "promptFile": "prompts/code.md" }
+          ]
+        }
+        """);
+    }
 
     public BenchmarkApiFactory()
     {

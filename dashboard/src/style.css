@@ -277,3 +277,4 @@ main{max-width:1880px;padding-left:3.5vw;padding-right:3.5vw}
 .unrelated-events summary{cursor:pointer;padding:12px 14px;font:12px 'DM Mono',monospace;color:#aeb4bf}
 .unrelated-events .timeline{padding:0 14px 10px;max-height:240px}
 @media(max-width:540px){.unrelated-events{margin:14px 16px 0}}
+.language-switch{display:flex;gap:3px;padding:3px;border:1px solid #272d36;border-radius:7px;background:#0d1015}.language-switch button{border:0;border-radius:5px;background:transparent;color:#9098a6;padding:6px 9px;cursor:pointer;font:10px 'DM Mono',monospace}.language-switch button.active{background:#1b2534;color:#dce8ff}

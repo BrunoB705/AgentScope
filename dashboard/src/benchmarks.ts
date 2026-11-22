@@ -38,7 +38,11 @@ export type BenchmarkResult = {
   judgeScore?: number | null;
   judgeRationale?: string | null;
   metricsError?: string | null;
+  metricsErrorCode?: string | null;
+  metricsErrorParams?: Record<string, string> | null;
   error?: string | null;
+  errorCode?: string | null;
+  errorParams?: Record<string, string> | null;
 };
 
 export type BenchmarkRun = {
@@ -53,8 +57,13 @@ export type BenchmarkRun = {
   completedAt?: string | null;
   baselineJson?: string | null;
   requestVerdict: boolean;
+  language?: 'es' | 'en' | null;
   verdict?: string | null;
+  verdictCode?: string | null;
+  verdictParams?: Record<string, string> | null;
   error?: string | null;
+  errorCode?: string | null;
+  errorParams?: Record<string, string> | null;
   results: BenchmarkResult[];
 };
 

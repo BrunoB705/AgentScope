@@ -1,7 +1,11 @@
 public static class VerdictPrompt
 {
-    public static string Build(BenchmarkRunEntity run, IReadOnlyList<BenchmarkResultEntity> results)
+    public static string Build(BenchmarkRunEntity run, IReadOnlyList<BenchmarkResultEntity> results, string language)
     {
+        var languageLine = language == "en"
+            ? "Escribí la recomendación en inglés."
+            : "Escribí la recomendación en español.";
+
         var lines = results
             .GroupBy(result => result.Model)
             .Select(group =>
@@ -23,7 +27,8 @@ public static class VerdictPrompt
             + "Tené en cuenta aprobadas, nota del juez, duración, tokens y cuota Go. "
             + "Si no hay datos suficientes, decilo. No inventes métricas. "
             + $"Encerrá tu recomendación entre una línea que diga exactamente {VerdictText.Start} y otra que diga exactamente {VerdictText.End}. "
-            + "No escribas nada fuera de esas dos líneas. No narres tu proceso ni menciones instrucciones, habilidades o herramientas.";
+            + "No escribas nada fuera de esas dos líneas. No narres tu proceso ni menciones instrucciones, habilidades o herramientas. "
+            + languageLine;
     }
 }
 

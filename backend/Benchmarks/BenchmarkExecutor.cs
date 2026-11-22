@@ -78,7 +78,7 @@ internal sealed class BenchmarkExecutor
         }
         catch (BenchmarkValidationException ex)
         {
-            await FailRunAsync(run, ex.Message, CancellationToken.None);
+            await FailRunAsync(run, BenchmarkErrorText.Encode(ex.Code, ex.Parameters, ex.Message), CancellationToken.None);
         }
         catch (OperationCanceledException)
         {
@@ -114,7 +114,7 @@ internal sealed class BenchmarkExecutor
             else
             {
                 run.Status = "failed";
-                run.Error = "La corrida cambió de estado mientras se ejecutaba.";
+                run.Error = BenchmarkErrorText.Encode("state_changed");
                 run.CompletedAt = DateTime.UtcNow;
                 foreach (var item in await _db.BenchmarkResults
                     .Where(result => result.RunId == runId && (result.Status == "pending" || result.Status == "running"))
@@ -172,13 +172,23 @@ internal sealed class BenchmarkExecutor
                 }
                 catch (Exception ex)
                 {
-                    await FailRunAsync(run, $"No se pudo ejecutar verify de línea base: {ex.Message}", CancellationToken.None);
+                    await FailRunAsync(
+                        run,
+                        BenchmarkErrorText.Encode(
+                            "baseline_verify_failed",
+                            new Dictionary<string, string> { ["detail"] = ex.Message }),
+                        CancellationToken.None);
                     return null;
                 }
 
                 if (verify.TimedOut)
                 {
-                    await FailRunAsync(run, $"El verify de línea base de '{test.Name}' superó el timeout.", CancellationToken.None);
+                    await FailRunAsync(
+                        run,
+                        BenchmarkErrorText.Encode(
+                            "baseline_verify_timeout",
+                            new Dictionary<string, string> { ["test"] = test.Name }),
+                        CancellationToken.None);
                     return null;
                 }
 
@@ -190,7 +200,12 @@ internal sealed class BenchmarkExecutor
             }
             catch (Exception ex)
             {
-                await FailRunAsync(run, $"No se pudo preparar la línea base: {ex.Message}", CancellationToken.None);
+                await FailRunAsync(
+                    run,
+                    BenchmarkErrorText.Encode(
+                        "baseline_setup_failed",
+                        new Dictionary<string, string> { ["detail"] = ex.Message }),
+                    CancellationToken.None);
                 return null;
             }
             finally
@@ -212,7 +227,7 @@ internal sealed class BenchmarkExecutor
         if (test is null)
         {
             result.Status = "failed";
-            result.Error = "La prueba ya no existe en la suite.";
+            result.Error = BenchmarkErrorText.Encode("test_missing");
             result.CompletedAt = DateTime.UtcNow;
             return;
         }
@@ -234,7 +249,7 @@ internal sealed class BenchmarkExecutor
                 if (!await InitGitAsync(workDir, cancellationToken))
                 {
                     result.Status = "failed";
-                    result.Error = "No se pudo inicializar git en el fixture.";
+                    result.Error = BenchmarkErrorText.Encode("git_init_failed");
                     result.CompletedAt = DateTime.UtcNow;
                     return;
                 }
@@ -261,7 +276,7 @@ internal sealed class BenchmarkExecutor
             if (model.TimedOut)
             {
                 result.Status = "timedout";
-                result.Error = "El modelo superó el timeout.";
+                result.Error = BenchmarkErrorText.Encode("model_timeout");
                 result.CompletedAt = DateTime.UtcNow;
                 return;
             }
@@ -285,7 +300,7 @@ internal sealed class BenchmarkExecutor
                 if (verify.TimedOut)
                 {
                     result.Status = "timedout";
-                    result.Error = "verify superó el timeout.";
+                    result.Error = BenchmarkErrorText.Encode("verify_timeout");
                     result.CompletedAt = DateTime.UtcNow;
                     return;
                 }
@@ -299,7 +314,7 @@ internal sealed class BenchmarkExecutor
                 var artifact = test.Type == "code" ? cappedText + "\n\nDIFF\n" + diff : cappedText;
                 var rubric = test.Rubric.Length > 0 ? test.Rubric : new[] { "Corrección funcional", "Claridad del cambio" };
                 var judgePath = Path.Combine(promptDir, $"{result.Id}-judge.md");
-                await File.WriteAllTextAsync(judgePath, JudgePrompt.Build(test.Prompt, rubric, artifact), cancellationToken);
+                await File.WriteAllTextAsync(judgePath, JudgePrompt.Build(test.Prompt, rubric, artifact, run.OutputLanguage ?? "es"), cancellationToken);
 
                 ResetDirectory(runRoot, judgeDir);
                 var judgeCommand = ShellCommand.OpenCode(
@@ -317,7 +332,7 @@ internal sealed class BenchmarkExecutor
                 result.JudgeSessionId = OpenCodeOutput.ExtractSessionId(judge.StandardOutput);
                 if (judge.TimedOut)
                 {
-                    result.Error = "El juez superó el timeout.";
+                    result.Error = BenchmarkErrorText.Encode("judge_timeout");
                 }
                 else
                 {
@@ -325,7 +340,7 @@ internal sealed class BenchmarkExecutor
                     var score = judgeText is null ? null : JudgeResponse.Parse(judgeText);
                     if (score is null)
                     {
-                        result.Error = "El juez no devolvió un JSON válido.";
+                        result.Error = BenchmarkErrorText.Encode("judge_invalid_json");
                     }
                     else
                     {
@@ -341,7 +356,7 @@ internal sealed class BenchmarkExecutor
                 cancellationToken);
             if (metrics is null)
             {
-                result.MetricsError = "No llegó la telemetría de la sesión.";
+                result.MetricsError = BenchmarkErrorText.Encode("metrics_missing");
                 result.SessionId = parsedSessionId;
             }
             else
@@ -387,7 +402,7 @@ internal sealed class BenchmarkExecutor
             ResetDirectory(runRoot, judgeDir);
 
             var promptPath = Path.Combine(promptDir, "verdict.md");
-            await File.WriteAllTextAsync(promptPath, VerdictPrompt.Build(run, results), cancellationToken);
+            await File.WriteAllTextAsync(promptPath, VerdictPrompt.Build(run, results, run.OutputLanguage ?? "es"), cancellationToken);
 
             var command = ShellCommand.OpenCode(
                 _options.Value.OpenCodeCommand,
@@ -403,7 +418,7 @@ internal sealed class BenchmarkExecutor
 
             if (verdict.TimedOut)
             {
-                run.Verdict = "La recomendación final superó el timeout.";
+                run.Verdict = BenchmarkErrorText.Encode("verdict_timeout");
                 return;
             }
 

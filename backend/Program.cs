@@ -60,7 +60,7 @@ app.Use(async (context, next) =>
     if (!CryptographicEquals(context.Request.Headers["X-Telemetry-Key"].ToString(), surfaceKey))
     {
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-        await context.Response.WriteAsJsonAsync(new { error = "Falta o no coincide la cabecera X-Telemetry-Key." });
+        await context.Response.WriteAsJsonAsync(new { error = "The X-Telemetry-Key header is missing or does not match.", code = "telemetry_key_missing" });
         return;
     }
     await next();
@@ -105,7 +105,7 @@ app.MapGet("/api/v1/version", async (TelemetryDb db, IConfiguration config) =>
 });
 var ingestLock = new SemaphoreSlim(1, 1);
 app.MapPut("/api/v1/sessions/{id}/review", async (string id, SessionReviewDto dto, TelemetryDb db, IHubContext<TelemetryHub> hub) => {
-    if (dto.Rating is < 1 or > 5 || dto.Note?.Length > 2000 || dto.TaskLabel?.Length > 120) return Results.BadRequest(new { error = "La puntuación debe ser de 1 a 5, la tarea no puede superar 120 caracteres y la nota 2000." });
+    if (dto.Rating is < 1 or > 5 || dto.Note?.Length > 2000 || dto.TaskLabel?.Length > 120) return Results.BadRequest(new { error = "The rating must be from 1 to 5, the task cannot exceed 120 characters and the note cannot exceed 2000.", code = "rating_invalid" });
     IResult response;
     await ingestLock.WaitAsync();
     try {
@@ -161,7 +161,7 @@ app.MapGet("/api/v1/budgets", async (TelemetryDb db) => {
 });
 app.MapPut("/api/v1/budgets", async (BudgetDto dto, TelemetryDb db) => {
     var project = Safe(dto.Project?.Trim(), 120);
-    if (string.IsNullOrWhiteSpace(project) || !double.IsFinite(dto.MonthlyLimit) || dto.MonthlyLimit <= 0 || dto.MonthlyLimit > 1_000_000 || dto.Metric is not ("cost" or "quota")) return Results.BadRequest(new { error = "Indica proyecto, límite mensual válido y métrica cost o quota." });
+    if (string.IsNullOrWhiteSpace(project) || !double.IsFinite(dto.MonthlyLimit) || dto.MonthlyLimit <= 0 || dto.MonthlyLimit > 1_000_000 || dto.Metric is not ("cost" or "quota")) return Results.BadRequest(new { error = "Provide a project, a valid monthly limit and a metric of cost or quota.", code = "budget_invalid" });
     var budget = await db.Budgets.FindAsync(project);
     if (budget is null) { budget = new Budget { Project = project }; db.Budgets.Add(budget); }
     budget.MonthlyLimit = dto.MonthlyLimit;
@@ -346,16 +346,16 @@ app.MapGet("/api/v1/behavior", async (TelemetryDb db, int? days, string? scope) 
             var errors = group.Count(s => s.Status is "error" or "failed");
             var maxConsecutive = maxRuns.GetValueOrDefault(group.Key);
             if (calls >= 4 || maxConsecutive >= 3)
-                signals.Add(new BehaviorSignalDto("tool_loop", "warning", $"Bucle de herramienta: {group.Key}", $"{group.Key} se llamó {calls} veces; {errors} fallaron y la racha máxima fue {maxConsecutive}.", new { tool = group.Key, calls, maxConsecutive, errors }));
+                signals.Add(new BehaviorSignalDto("tool_loop", "warning", $"Tool loop: {group.Key}", $"{group.Key} was called {calls} times; {errors} failed and the longest streak was {maxConsecutive}.", new { tool = group.Key, calls, maxConsecutive, errors }));
         }
         var toolErrors = toolSpans.Count(s => s.Status is "error" or "failed");
         var modelErrors = modelSpans.Count(s => s.Status is "error" or "failed");
         if (toolErrors >= 3 || modelErrors >= 2)
-            signals.Add(new BehaviorSignalDto("error_burst", "alert", "Ráfaga de errores", $"Se registraron {toolErrors} errores de herramientas y {modelErrors} de modelo.", new { toolErrors, modelErrors }));
+            signals.Add(new BehaviorSignalDto("error_burst", "alert", "Error burst", $"{toolErrors} tool errors and {modelErrors} model errors were recorded.", new { toolErrors, modelErrors }));
         if (modelSpans.Count >= 20 || sessionSpans.Count >= 30)
-            signals.Add(new BehaviorSignalDto("long_session", "warning", "Sesión larga", $"La sesión tiene {modelSpans.Count} pasos de modelo y {sessionSpans.Count} spans.", new { modelSteps = modelSpans.Count, spans = sessionSpans.Count }));
+            signals.Add(new BehaviorSignalDto("long_session", "warning", "Long session", $"The session has {modelSpans.Count} model steps and {sessionSpans.Count} spans.", new { modelSteps = modelSpans.Count, spans = sessionSpans.Count }));
         if (session.Status == "interrupted")
-            signals.Add(new BehaviorSignalDto("interrupted", "alert", "Sesión interrumpida", "La ejecución quedó interrumpida.", new { endedAt = session.EndedAt }));
+            signals.Add(new BehaviorSignalDto("interrupted", "alert", "Interrupted session", "The run was left interrupted.", new { endedAt = session.EndedAt }));
         if (signals.Count == 0) continue;
         rows.Add(new BehaviorSessionDto(session.Id, session.Title, session.Project, session.Model, session.Status, session.StartedAt, session.UpdatedAt, signals.OrderBy(s => s.Severity == "alert" ? 0 : 1).ThenBy(s => s.Kind).ToArray()));
     }
@@ -440,8 +440,8 @@ app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEve
     request.HttpContext.Response.Headers["X-Telemetry-Protocol"] = TelemetryProtocolVersion.ToString();
     if ((request.Headers.TryGetValue("X-Telemetry-Protocol", out var rawHeader) && (!int.TryParse(rawHeader.ToString(), out var headerVersion) || headerVersion != TelemetryProtocolVersion))
         || (dto.ProtocolVersion.HasValue && dto.ProtocolVersion.Value != TelemetryProtocolVersion))
-        return Results.Json(new { error = $"Versión de protocolo no soportada. Se esperaba {TelemetryProtocolVersion}.", expectedProtocolVersion = TelemetryProtocolVersion }, statusCode: StatusCodes.Status426UpgradeRequired);
-    if (string.IsNullOrWhiteSpace(dto.EventId) || dto.EventId.Length > 200 || string.IsNullOrWhiteSpace(dto.Source) || dto.Source.Length > 80 || string.IsNullOrWhiteSpace(dto.SessionId) || dto.SessionId.Length > 200 || string.IsNullOrWhiteSpace(dto.Type) || dto.Type.Length > 120 || dto.Timestamp == default || dto.DurationMs < 0 || dto.InputTokens < 0 || dto.OutputTokens < 0 || dto.ReasoningTokens < 0 || dto.CacheReadTokens < 0 || dto.CacheWriteTokens < 0 || dto.Cost is < 0 || dto.Cost is double cost && !double.IsFinite(cost) || dto.QuotaCostEstimate is < 0 || dto.QuotaCostEstimate is double estimate && !double.IsFinite(estimate) || dto.QuotaCatalogFetchedAt?.Length > 40 || dto.QuotaRateSnapshot?.Length > 500 || dto.QuotaMissingReason?.Length > 40) return Results.BadRequest(new { error = "Required fields are missing or exceed supported limits" });
+        return Results.Json(new { error = $"Unsupported protocol version. Expected {TelemetryProtocolVersion}.", code = "protocol_unsupported", expectedProtocolVersion = TelemetryProtocolVersion }, statusCode: StatusCodes.Status426UpgradeRequired);
+    if (string.IsNullOrWhiteSpace(dto.EventId) || dto.EventId.Length > 200 || string.IsNullOrWhiteSpace(dto.Source) || dto.Source.Length > 80 || string.IsNullOrWhiteSpace(dto.SessionId) || dto.SessionId.Length > 200 || string.IsNullOrWhiteSpace(dto.Type) || dto.Type.Length > 120 || dto.Timestamp == default || dto.DurationMs < 0 || dto.InputTokens < 0 || dto.OutputTokens < 0 || dto.ReasoningTokens < 0 || dto.CacheReadTokens < 0 || dto.CacheWriteTokens < 0 || dto.Cost is < 0 || dto.Cost is double cost && !double.IsFinite(cost) || dto.QuotaCostEstimate is < 0 || dto.QuotaCostEstimate is double estimate && !double.IsFinite(estimate) || dto.QuotaCatalogFetchedAt?.Length > 40 || dto.QuotaRateSnapshot?.Length > 500 || dto.QuotaMissingReason?.Length > 40) return Results.BadRequest(new { error = "Required fields are missing or exceed supported limits", code = "ingest_invalid" });
     await ingestLock.WaitAsync();
     try {
         var existing = await db.Events.AnyAsync(e => e.Source == dto.Source && e.EventId == dto.EventId);
@@ -536,7 +536,7 @@ app.MapDelete("/api/v1/sessions/{id}", async (string id, TelemetryDb db, IHubCon
     await ingestLock.WaitAsync();
     try {
         if (!await db.Sessions.AsNoTracking().AnyAsync(s => s.Id == id))
-            return Results.NotFound(new { error = "La sesión no existe." });
+            return Results.NotFound(new { error = "The session does not exist.", code = "session_not_found" });
         await using var transaction = await db.Database.BeginTransactionAsync();
         await db.Events.Where(e => e.SessionId == id).ExecuteDeleteAsync();
         await db.Spans.Where(s => s.SessionId == id).ExecuteDeleteAsync();
@@ -550,7 +550,7 @@ app.MapDelete("/api/v1/sessions/{id}", async (string id, TelemetryDb db, IHubCon
     return Results.NoContent();
 });
 app.MapDelete("/api/v1/data", async (DateTimeOffset? before, bool? dryRun, TelemetryDb db, IHubContext<TelemetryHub> hub) => {
-    if (!before.HasValue) return Results.BadRequest(new { error = "Indica el parámetro 'before' con una fecha ISO válida." });
+    if (!before.HasValue) return Results.BadRequest(new { error = "Provide the 'before' parameter with a valid ISO date.", code = "before_invalid" });
     PurgeResult result;
     await ingestLock.WaitAsync();
     try {

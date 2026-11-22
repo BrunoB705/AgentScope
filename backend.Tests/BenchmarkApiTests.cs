@@ -282,6 +282,73 @@ public sealed class BenchmarkApiTests : IDisposable
     }
 
     [Fact]
+    public async Task GetRun_ExposesEncodedErrorCodesAndParams()
+    {
+        using var client = Client();
+        using var created = JsonDocument.Parse(await (await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody())).Content.ReadAsStringAsync());
+        var id = created.RootElement.GetProperty("id").GetString()!;
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TelemetryDb>();
+            var run = await db.BenchmarkRuns.FirstAsync(item => item.Id == id);
+            var result = await db.BenchmarkResults.FirstAsync(item => item.RunId == id);
+            run.Error = BenchmarkErrorText.Encode("state_changed");
+            run.Verdict = BenchmarkErrorText.Encode("verdict_timeout");
+            result.Error = BenchmarkErrorText.Encode("baseline_verify_timeout", new Dictionary<string, string> { ["test"] = "code-test" });
+            result.MetricsError = BenchmarkErrorText.Encode("metrics_missing");
+            await db.SaveChangesAsync();
+        }
+
+        using var detail = JsonDocument.Parse(await client.GetStringAsync($"/api/v1/benchmarks/runs/{id}"));
+        var payload = detail.RootElement;
+        Assert.Equal("The run changed state while it was executing.", payload.GetProperty("error").GetString());
+        Assert.Equal("state_changed", payload.GetProperty("errorCode").GetString());
+        Assert.Equal(JsonValueKind.Null, payload.GetProperty("errorParams").ValueKind);
+        Assert.Equal("The final recommendation timed out.", payload.GetProperty("verdict").GetString());
+
+        var resultPayload = payload.GetProperty("results")[0];
+        Assert.Equal("The baseline verify of 'code-test' timed out.", resultPayload.GetProperty("error").GetString());
+        Assert.Equal("baseline_verify_timeout", resultPayload.GetProperty("errorCode").GetString());
+        Assert.Equal("code-test", resultPayload.GetProperty("errorParams").GetProperty("test").GetString());
+        Assert.Equal("Session telemetry did not arrive.", resultPayload.GetProperty("metricsError").GetString());
+        Assert.Equal("metrics_missing", resultPayload.GetProperty("metricsErrorCode").GetString());
+        Assert.Equal(JsonValueKind.Null, resultPayload.GetProperty("metricsErrorParams").ValueKind);
+    }
+
+    [Fact]
+    public async Task GetRun_KeepsHistoricalPlainTextErrors()
+    {
+        using var client = Client();
+        using var created = JsonDocument.Parse(await (await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody())).Content.ReadAsStringAsync());
+        var id = created.RootElement.GetProperty("id").GetString()!;
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TelemetryDb>();
+            var run = await db.BenchmarkRuns.FirstAsync(item => item.Id == id);
+            var result = await db.BenchmarkResults.FirstAsync(item => item.RunId == id);
+            run.Error = "La corrida cambió de estado mientras se ejecutaba.";
+            result.Error = "El modelo superó el timeout.";
+            result.MetricsError = "No llegó la telemetría de la sesión.";
+            await db.SaveChangesAsync();
+        }
+
+        using var detail = JsonDocument.Parse(await client.GetStringAsync($"/api/v1/benchmarks/runs/{id}"));
+        var payload = detail.RootElement;
+        Assert.Equal("La corrida cambió de estado mientras se ejecutaba.", payload.GetProperty("error").GetString());
+        Assert.Equal(JsonValueKind.Null, payload.GetProperty("errorCode").ValueKind);
+        Assert.Equal(JsonValueKind.Null, payload.GetProperty("errorParams").ValueKind);
+
+        var resultPayload = payload.GetProperty("results")[0];
+        Assert.Equal("El modelo superó el timeout.", resultPayload.GetProperty("error").GetString());
+        Assert.Equal(JsonValueKind.Null, resultPayload.GetProperty("errorCode").ValueKind);
+        Assert.Equal("No llegó la telemetría de la sesión.", resultPayload.GetProperty("metricsError").GetString());
+        Assert.Equal(JsonValueKind.Null, resultPayload.GetProperty("metricsErrorCode").ValueKind);
+        Assert.Equal(JsonValueKind.Null, resultPayload.GetProperty("metricsErrorParams").ValueKind);
+    }
+
+    [Fact]
     public async Task Runs_ReturnsHistory()
     {
         using var client = Client();

@@ -196,44 +196,60 @@ public static class BenchmarkEndpoints
         });
     }
 
-    private static object ToDto(BenchmarkRunEntity run, IEnumerable<BenchmarkResultEntity> results) => new
+    private static object ToDto(BenchmarkRunEntity run, IEnumerable<BenchmarkResultEntity> results)
     {
-        id = run.Id,
-        suite = run.Suite,
-        judgeModel = run.JudgeModel,
-        status = run.Status,
-        total = run.Total,
-        completed = run.Completed,
-        createdAt = run.CreatedAt,
-        startedAt = run.StartedAt,
-        completedAt = run.CompletedAt,
-        baselineJson = run.BaselineJson,
-        requestVerdict = run.RequestVerdict,
-        verdict = run.Verdict,
-        error = run.Error,
-        results = results.Select(result => new
+        var error = BenchmarkErrorText.Read(run.Error);
+        var verdict = BenchmarkErrorText.Read(run.Verdict);
+        return new
         {
-            id = result.Id,
-            testName = result.TestName,
-            testType = result.TestType,
-            model = result.Model,
-            status = result.Status,
-            verifyPassed = result.VerifyPassed,
-            verifyExitCode = result.VerifyExitCode,
-            sessionId = result.SessionId,
-            judgeSessionId = result.JudgeSessionId,
-            durationMs = result.DurationMs,
-            inputTokens = result.InputTokens,
-            outputTokens = result.OutputTokens,
-            reasoningTokens = result.ReasoningTokens,
-            cacheReadTokens = result.CacheReadTokens,
-            cacheWriteTokens = result.CacheWriteTokens,
-            cost = result.Cost,
-            quotaCostEstimate = result.QuotaCostEstimate,
-            judgeScore = result.JudgeScore,
-            judgeRationale = result.JudgeRationale,
-            metricsError = result.MetricsError,
-            error = result.Error,
-        }).ToArray(),
-    };
+            id = run.Id,
+            suite = run.Suite,
+            judgeModel = run.JudgeModel,
+            status = run.Status,
+            total = run.Total,
+            completed = run.Completed,
+            createdAt = run.CreatedAt,
+            startedAt = run.StartedAt,
+            completedAt = run.CompletedAt,
+            baselineJson = run.BaselineJson,
+            requestVerdict = run.RequestVerdict,
+            verdict = verdict.Error,
+            error = error.Error,
+            errorCode = error.Code,
+            errorParams = error.Parameters,
+            results = results.Select(result =>
+            {
+                var resultError = BenchmarkErrorText.Read(result.Error);
+                var metricsError = BenchmarkErrorText.Read(result.MetricsError);
+                return new
+                {
+                    id = result.Id,
+                    testName = result.TestName,
+                    testType = result.TestType,
+                    model = result.Model,
+                    status = result.Status,
+                    verifyPassed = result.VerifyPassed,
+                    verifyExitCode = result.VerifyExitCode,
+                    sessionId = result.SessionId,
+                    judgeSessionId = result.JudgeSessionId,
+                    durationMs = result.DurationMs,
+                    inputTokens = result.InputTokens,
+                    outputTokens = result.OutputTokens,
+                    reasoningTokens = result.ReasoningTokens,
+                    cacheReadTokens = result.CacheReadTokens,
+                    cacheWriteTokens = result.CacheWriteTokens,
+                    cost = result.Cost,
+                    quotaCostEstimate = result.QuotaCostEstimate,
+                    judgeScore = result.JudgeScore,
+                    judgeRationale = result.JudgeRationale,
+                    metricsError = metricsError.Error,
+                    metricsErrorCode = metricsError.Code,
+                    metricsErrorParams = metricsError.Parameters,
+                    error = resultError.Error,
+                    errorCode = resultError.Code,
+                    errorParams = resultError.Parameters,
+                };
+            }).ToArray(),
+        };
+    }
 }

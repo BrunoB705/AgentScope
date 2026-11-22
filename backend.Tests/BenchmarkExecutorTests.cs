@@ -207,7 +207,9 @@ public sealed class BenchmarkExecutorTests : IDisposable
             return DefaultHandler(request);
         };
         await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
-        Assert.Equal("timedout", harness.Db.BenchmarkResults.Single(item => item.Id == "res1").Status);
+        var result = harness.Db.BenchmarkResults.Single(item => item.Id == "res1");
+        Assert.Equal("timedout", result.Status);
+        Assert.Equal(BenchmarkErrorText.Encode("model_timeout"), result.Error);
         Assert.Equal("completed", harness.Db.BenchmarkRuns.Single().Status);
     }
 
@@ -219,7 +221,7 @@ public sealed class BenchmarkExecutorTests : IDisposable
         await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
         var result = harness.Db.BenchmarkResults.Single(item => item.Id == "res1");
         Assert.Equal("completed", result.Status);
-        Assert.False(string.IsNullOrWhiteSpace(result.MetricsError));
+        Assert.Equal(BenchmarkErrorText.Encode("metrics_missing"), result.MetricsError);
     }
 
     [Fact]
@@ -262,7 +264,121 @@ public sealed class BenchmarkExecutorTests : IDisposable
         await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
         var run = harness.Db.BenchmarkRuns.Single();
         Assert.Equal("failed", run.Status);
+        Assert.Equal(
+            BenchmarkErrorText.Encode("baseline_verify_timeout", new Dictionary<string, string> { ["test"] = "code-test" }),
+            run.Error);
         Assert.DoesNotContain(harness.Process.Requests, IsModel);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BaselineVerifyThrows_StoresEncodedError()
+    {
+        var harness = Create("code");
+        harness.Process.Handler = request => IsVerify(request)
+            ? throw new InvalidOperationException("boom")
+            : DefaultHandler(request);
+        await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
+        var run = harness.Db.BenchmarkRuns.Single();
+        Assert.Equal("failed", run.Status);
+        Assert.Equal(
+            BenchmarkErrorText.Encode("baseline_verify_failed", new Dictionary<string, string> { ["detail"] = "boom" }),
+            run.Error);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BaselineDirectoryBlocked_StoresEncodedError()
+    {
+        var harness = Create("code");
+        var baseline = Path.Combine(_root, "work", harness.RunId, "baseline");
+        Directory.CreateDirectory(Path.GetDirectoryName(baseline)!);
+        File.WriteAllText(baseline, "blocked");
+        await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
+        var run = harness.Db.BenchmarkRuns.Single();
+        Assert.Equal("failed", run.Status);
+        var error = BenchmarkErrorText.Read(run.Error);
+        Assert.Equal("baseline_setup_failed", error.Code);
+        Assert.False(string.IsNullOrWhiteSpace(error.Parameters!["detail"]));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_GitInitFails_StoresEncodedError()
+    {
+        var harness = Create("code");
+        harness.Process.Handler = request => request.FileName == "git"
+            ? new ProcessResult(1, "", "fatal", false, 10)
+            : DefaultHandler(request);
+        await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
+        var result = harness.Db.BenchmarkResults.Single(item => item.Id == "res1");
+        Assert.Equal("failed", result.Status);
+        Assert.Equal(BenchmarkErrorText.Encode("git_init_failed"), result.Error);
+        Assert.DoesNotContain(harness.Process.Requests, IsModel);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_MissingTest_StoresEncodedError()
+    {
+        var harness = Create("code");
+        var pending = harness.Db.BenchmarkResults.Single(item => item.Id == "res1");
+        pending.TestName = "gone";
+        harness.Db.SaveChanges();
+        await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
+        var result = harness.Db.BenchmarkResults.Single(item => item.Id == "res1");
+        Assert.Equal("failed", result.Status);
+        Assert.Equal(BenchmarkErrorText.Encode("test_missing"), result.Error);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_VerifyTimeout_StoresEncodedError()
+    {
+        var harness = Create("code");
+        var verifyCalls = 0;
+        harness.Process.Handler = request =>
+        {
+            if (!IsVerify(request)) return DefaultHandler(request);
+            verifyCalls++;
+            return verifyCalls == 1
+                ? new ProcessResult(0, "", "", false, 10)
+                : new ProcessResult(-1, "", "", true, 10);
+        };
+        await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
+        var result = harness.Db.BenchmarkResults.Single(item => item.Id == "res1");
+        Assert.Equal("timedout", result.Status);
+        Assert.Equal(BenchmarkErrorText.Encode("verify_timeout"), result.Error);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_JudgeTimeout_StoresEncodedError()
+    {
+        var harness = Create("open");
+        harness.Process.Handler = request => IsJudge(request)
+            ? new ProcessResult(-1, "", "", true, 10)
+            : DefaultHandler(request);
+        await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
+        var result = harness.Db.BenchmarkResults.Single(item => item.Id == "res1");
+        Assert.Equal(BenchmarkErrorText.Encode("judge_timeout"), result.Error);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_JudgeInvalidJson_StoresEncodedError()
+    {
+        var harness = Create("open");
+        harness.Process.Handler = request => IsJudge(request)
+            ? new ProcessResult(0, JsonText("no es json", "ses_judge"), "", false, 10)
+            : DefaultHandler(request);
+        await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
+        var result = harness.Db.BenchmarkResults.Single(item => item.Id == "res1");
+        Assert.Equal(BenchmarkErrorText.Encode("judge_invalid_json"), result.Error);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_VerdictTimeout_StoresEncodedError()
+    {
+        var harness = Create("code", verdict: true);
+        harness.Process.Handler = request => request.Arguments.Any(argument => argument.Contains("bench-verdict"))
+            ? new ProcessResult(-1, "", "", true, 10)
+            : DefaultHandler(request);
+        await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
+        Assert.Equal(BenchmarkErrorText.Encode("verdict_timeout"), harness.Db.BenchmarkRuns.Single().Verdict);
     }
 
     [Fact]
@@ -273,7 +389,9 @@ public sealed class BenchmarkExecutorTests : IDisposable
         await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
         var run = harness.Db.BenchmarkRuns.Single();
         Assert.Equal("failed", run.Status);
-        Assert.Contains("does not exist", run.Error);
+        Assert.Equal(
+            BenchmarkErrorText.Encode("suite_not_found", new Dictionary<string, string> { ["suite"] = "demo" }),
+            run.Error);
     }
 
     [Fact]

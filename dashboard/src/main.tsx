@@ -5,7 +5,7 @@ import { buildWaterfall, describeQuotaProvenance, findSpanForEvent, isErrorStatu
 import { BenchmarksPage } from './benchmarks-page';
 import { budgetAmountText, budgetMetricLabel, budgetPanelSummary } from './budgets';
 import { buildScatterPlot, computeModelHighlights, filterModelsByMinCalls, layoutScatterLabels, type CostAxisMetric, type ModelBreakdownItem, type ValueAxisMetric } from './model-efficiency';
-import { formatClock, formatCompact, formatDate, formatMoney, formatNumber, LanguageProvider, useLanguage, type Language, type Translate } from './i18n';
+import { formatClock, formatCompact, formatDate, formatMoney, formatNumber, LanguageProvider, translateError, translateSignal, useLanguage, type Language, type Translate } from './i18n';
 import './style.css';
 
 type Session = { id: string; source: string; project?: string; title?: string; status: string; model?: string; startedAt: string; endedAt?: string; spanCount: number; errorCount: number; inputTokens: number | null; outputTokens: number | null };
@@ -36,6 +36,8 @@ type OverviewSession = { id: string; title?: string; project?: string; model?: s
 type OverviewReport = { windowDays?: number | null; totals: OverviewTotals; topTools: OverviewTool[]; topModels: OverviewModel[]; recentSessions: OverviewSession[] };
 type Listing = { items: Session[]; total: number; page: number; pageSize: number };
 type InstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }> };
+/** Error de una carga: el mensaje propio del cliente y el `code` estable de la API cuando vino. */
+type RequestError = { message: string; code?: string };
 const time = (value: string | undefined, language: Language) => value ? formatDate(language, value) : '—';
 const duration = (milliseconds: number, t: Translate, language: Language) => milliseconds < 60_000
   ? t('duration.seconds', { value: formatNumber(language, milliseconds / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })
@@ -63,6 +65,17 @@ const qualitySummary = (quality: TraceQuality, t: Translate) => {
   return gaps.join(t('common.listSeparator'));
 };
 
+/** Lee el `code` estable del cuerpo de error; sin JSON o sin código queda indefinido. */
+async function responseErrorCode(response: Response): Promise<string | undefined> {
+  try {
+    const body = await response.json() as { code?: unknown };
+    return typeof body.code === 'string' ? body.code : undefined;
+  } catch {
+    // La respuesta no trae JSON; el cliente muestra su propio mensaje.
+    return undefined;
+  }
+}
+
 type SectionIcon = 'overview' | 'monitoring' | 'tools' | 'models' | 'behavior' | 'compare';
 function SectionHeader({ icon, eyebrow, title, description, actions }: { icon: SectionIcon; eyebrow: string; title: string; description: string; actions?: React.ReactNode }) {
   return <div className="model-analytics-header section-header"><div className="analytics-title"><span className="analytics-icon"><svg viewBox="0 0 24 24" aria-hidden="true">{icon === 'overview' ? <><path d="M3 11 12 3l9 8"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></> : icon === 'monitoring' ? <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10M15 10v10"/></> : icon === 'tools' ? <path d="M13 2 4 14h7l-1 8 10-12h-7l1-8Z"/> : icon === 'models' ? <><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/><path d="M2 19h21"/></> : icon === 'behavior' ? <path d="M3 12h4l2-7 4 14 2-7h6"/> : <><path d="M4 7h15l-3-3M20 17H5l3 3"/><path d="m16 4 3 3-3 3M8 14l-3 3 3 3"/></>}</svg></span><div><span className="eyebrow">{eyebrow}</span><h2>{title}</h2><p>{description}</p></div></div>{actions && <div className="section-header-actions">{actions}</div>}</div>;
@@ -74,7 +87,7 @@ function ScopeSelect({ scope, setScope }: { scope: ScopeFilter; setScope: (value
 }
 
 function ModelAnalyticsPage(props: {
-  data: ModelAnalytics | null; error: string; bucket: 'day' | 'week' | 'month'; setBucket: (value: 'day' | 'week' | 'month') => void;
+  data: ModelAnalytics | null; error: RequestError | null; bucket: 'day' | 'week' | 'month'; setBucket: (value: 'day' | 'week' | 'month') => void;
   from: string; to: string; setFrom: (value: string) => void; setTo: (value: string) => void;
   source: string; setSource: (value: string) => void; model: string; setModel: (value: string) => void;
   scope: ScopeFilter; setScope: (value: ScopeFilter) => void; onRefresh: () => void;
@@ -87,8 +100,9 @@ function ModelAnalyticsPage(props: {
   const [minCalls, setMinCalls] = React.useState<number>(10);
   const [hoveredModel, setHoveredModel] = React.useState<string | null>(null);
   const scatterColors = ['#72a7ff', '#66d3a4', '#f0b65c', '#bd8cff', '#ff7e82', '#4fd1c5', '#f6ad55', '#fc8181', '#a3bffa', '#9ae6b4'];
-  const pct = (value?: number | null) => value == null ? 'Sin dato' : `${(value * 100).toFixed(1)}%`;
-  const speedText = (value?: number | null) => value == null ? 'Sin dato' : `${value.toFixed(1)} tok/s`;
+  const decimals = (value: number, digits: number) => formatNumber(language, value, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  const pct = (value?: number | null) => value == null ? t('common.noData') : t('models.metric.percent', { value: decimals(value * 100, 1) });
+  const speedText = (value?: number | null) => value == null ? t('common.noData') : t('models.metric.tokensPerSecond', { value: decimals(value, 1) });
   const max = Math.max(1, ...(data?.trend.map(point => point.totalTokens ?? 0) ?? []));
   const points = (select: (point: ModelAnalytics['trend'][number]) => number | null) => (data?.trend ?? []).map((point, index) => {
     const x = 42 + index * (716 / Math.max(1, (data?.trend.length ?? 1) - 1));
@@ -108,50 +122,51 @@ function ModelAnalyticsPage(props: {
   const highlights = React.useMemo(() => computeModelHighlights(efficiencyModels, t, language), [efficiencyModels, t, language]);
   const scatter = React.useMemo(() => buildScatterPlot(efficiencyModels, costAxis, valueAxis), [efficiencyModels, costAxis, valueAxis]);
   const scatterLabels = React.useMemo(() => layoutScatterLabels(scatter.points), [scatter]);
-  const formatXValue = (value: number) => costAxis === 'tokensPerCall' ? `${Math.round(value).toLocaleString()} tok` : costAxis === 'quotaPer1M' ? `US$ ${value.toFixed(2)}` : `US$ ${value.toFixed(4)}`;
-  const formatYValue = (value: number) => valueAxis === 'speed' ? `${value.toFixed(1)} tok/s` : valueAxis === 'latency' ? `${value.toFixed(1)} s` : valueAxis === 'benchmarkJudge' ? `${value.toFixed(1)}/5` : `${value.toFixed(0)}%`;
+  const formatXValue = (value: number) => costAxis === 'tokensPerCall' ? t('models.axis.tokens', { value: formatNumber(language, Math.round(value)) }) : costAxis === 'quotaPer1M' ? t('models.metric.usd', { value: decimals(value, 2) }) : t('models.metric.usd', { value: decimals(value, 4) });
+  const formatYValue = (value: number) => valueAxis === 'speed' ? t('models.metric.tokensPerSecond', { value: decimals(value, 1) }) : valueAxis === 'latency' ? t('models.metric.seconds', { value: decimals(value, 1) }) : valueAxis === 'benchmarkJudge' ? t('models.metric.judgeScale', { value: decimals(value, 1) }) : t('models.metric.percent', { value: decimals(value, 0) });
+  const bucketPeriod = t(bucket === 'day' ? 'models.bucket.daily' : bucket === 'week' ? 'models.bucket.weekly' : 'models.bucket.monthly');
   return <section className="model-analytics-page">
-    <SectionHeader icon="models" eyebrow="ANALÍTICA" title="Modelos y contexto" description="Análisis de tokens, velocidad, eficiencia y costo observado." actions={<><div className="subview-switch" role="tablist" aria-label="Vista de modelos"><button type="button" role="tab" aria-selected={subView === 'consumption'} className={subView === 'consumption' ? 'active' : ''} onClick={() => setSubView('consumption')}>Consumo y contexto</button><button type="button" role="tab" aria-selected={subView === 'efficiency'} className={subView === 'efficiency' ? 'active' : ''} onClick={() => setSubView('efficiency')}>Eficiencia y valor</button></div><button className="rates-label" title="Se muestran costos devueltos por OpenCode y estimaciones de cuota cuando están disponibles">$ Costos observados</button></>} />
-    <div className="model-filter-bar"><div className="bucket-control"><span>AGRUPAR</span>{(['day', 'week', 'month'] as const).map(value => <button key={value} className={bucket === value ? 'active' : ''} onClick={() => setBucket(value)}>{value === 'day' ? 'Día' : value === 'week' ? 'Semana' : 'Mes'}</button>)}</div><label className="date-control">Desde<input type="date" value={from} onChange={event => setFrom(event.target.value)} /></label><label className="date-control">Hasta<input type="date" value={to} onChange={event => setTo(event.target.value)} /></label><ScopeSelect scope={scope} setScope={setScope} /><button className="refresh-analytics" onClick={onRefresh}>Actualizar</button></div>
-    {data && <><div className="chip-filter-row"><span>ORÍGENES</span><button className={!source ? 'selected' : ''} onClick={() => setSource('')}>Todos</button>{data.availableSources.map((item, index) => <button className={source === item ? 'selected' : ''} key={item} onClick={() => toggle(source, item, setSource)}>{item}<i style={{ background: agentColors[index % agentColors.length] }} /></button>)}</div><div className="chip-filter-row models-filter"><span>MODELOS</span><button className={!model ? 'selected' : ''} onClick={() => setModel('')}>Todos</button>{data.availableModels.map(item => <button className={model === item ? 'selected' : ''} key={item} title={item} onClick={() => toggle(model, item, setModel)}>{item}</button>)}</div></>}
-    {error && <div className="api-error">{error}</div>}
-    {!data ? <div className="empty comparison-empty">Cargando analítica de modelos…</div> : subView === 'consumption' ? <>
-      <div className="analytics-section-label">TOTALES</div><div className="model-total-grid"><article className="model-total-card total-primary"><span>TOKENS TOTALES</span><b>{tokenText(data.totals.totalTokens, t, language)}</b><small>{data.totals.calls.toLocaleString()} llamadas de modelo</small></article><article className="model-total-card"><span>ENTRADA</span><b>{tokenCompact(data.totals.inputTokens, t, language)}</b><small>{data.totals.totalTokens && data.totals.inputTokens != null ? `${(data.totals.inputTokens / data.totals.totalTokens * 100).toFixed(1)}% del total · tokens sin caché` : 'Sin datos de entrada'}</small></article><article className="model-total-card total-output"><span>SALIDA</span><b>{tokenCompact(data.totals.outputTokens, t, language)}</b><small>{data.totals.totalTokens && data.totals.outputTokens != null ? `${(data.totals.outputTokens / data.totals.totalTokens * 100).toFixed(1)}% del total · ` : ''}{tokenText(data.totals.reasoningTokens, t, language)} de razonamiento incluido</small></article><article className="model-total-card total-cache"><span>EFICIENCIA DE CACHÉ</span><b>{data.totals.cacheEfficiency == null ? 'Sin dato' : `${(data.totals.cacheEfficiency * 100).toFixed(1)}%`}</b><small>{tokenCompact(data.totals.cacheReadTokens, t, language)} leídos · {tokenCompact(data.totals.cacheWriteTokens, t, language)} escritos</small></article></div>
-      <div className="model-cost-row"><span>Costo reportado por OpenCode <b>{money(data.totals.reportedCost, t, language)}</b></span><span>Cuota Go estimada <b>{money(data.totals.quotaEstimate, t, language)}</b></span><span>Errores <b>{data.totals.errorCount.toLocaleString()}</b></span></div>
-      <div className="model-analytics-grid"><article className="model-chart-card"><div className="model-card-heading"><div><h3>Consumo de tokens ({bucket === 'day' ? 'diario' : bucket === 'week' ? 'semanal' : 'mensual'})</h3><p>{tokenCompact(data.totals.totalTokens, t, language)} tokens en el período</p></div><div className="chart-legend"><span><i className="legend-total"/>Total</span><span><i className="legend-input"/>Entrada</span><span><i className="legend-output"/>Salida</span></div></div>{data.trend.length ? <div className="model-chart-wrap"><svg viewBox="0 0 780 230" role="img" aria-label="Tendencia de tokens en el período"><line x1="42" y1="30" x2="758" y2="30"/><line x1="42" y1="84" x2="758" y2="84"/><line x1="42" y1="139" x2="758" y2="139"/><line x1="42" y1="194" x2="758" y2="194"/><text x="4" y="34">{compactNumber(max, language)}</text><text x="4" y="88">{compactNumber(max * .67, language)}</text><text x="4" y="143">{compactNumber(max * .33, language)}</text><text x="20" y="198">0</text><polyline className="series-total" points={points(point => point.totalTokens)}/><polyline className="series-input" points={points(point => point.inputTokens)}/><polyline className="series-output" points={points(point => point.outputTokens)}/>{data.trend.map((point, index) => <circle key={`${point.period}-${index}`} cx={42 + index * (716 / Math.max(1, data.trend.length - 1))} cy={194 - (point.totalTokens ?? 0) / max * 164} r="3"><title>{time(point.period, language)} · {tokenText(point.totalTokens, t, language)} tokens</title></circle>)}</svg><div className="chart-period-labels"><span>{time(data.trend[0].period, language).split(',')[0]}</span><span>{data.trend.length > 2 ? time(data.trend[Math.floor(data.trend.length / 2)].period, language).split(',')[0] : ''}</span><span>{time(data.trend[data.trend.length - 1].period, language).split(',')[0]}</span></div></div> : <div className="empty compact">No hay consumo de modelos en este período.</div>}</article>
-        <article className="agent-share-card"><div className="model-card-heading"><div><h3>Distribución por origen</h3><p>{data.agents.length} orígenes</p></div></div><div className="agent-share-content"><div className="agent-donut" style={donutStyle}><div><b>{tokenCompact(data.totals.totalTokens, t, language)}</b><small>tokens</small></div></div><div className="agent-share-legend">{data.agents.map((agent, index) => <div key={agent.name}><i style={{ background: agentColors[index % agentColors.length] }}/><span>{agent.name}</span><b>{agent.share == null ? 'Sin dato' : `${(agent.share * 100).toFixed(1)}%`}</b></div>)}</div></div></article></div>
-      <article className="model-breakdown-card"><div className="model-card-heading"><div><h3>Uso por modelo</h3><p>Tokens, velocidad, fallos y datos de costo disponibles para cada modelo.</p></div></div>{data.models.length ? <div className="table-wrap"><table className="model-breakdown-table"><thead><tr><th>MODELO</th><th>LLAMADAS</th><th>TOKENS</th><th>LATENCIA</th><th>TOK/S</th><th>CACHÉ</th><th>ERRORES</th><th>COSTO REPORTADO</th><th>CUOTA GO</th><th>CUOTA / LLAMADA</th></tr></thead><tbody>{data.models.map(item => <tr key={item.name}><td><b title={item.name}>{item.name}</b><small>{item.share == null ? 'Sin dato' : `${(item.share * 100).toFixed(1)}% del total`}</small></td><td>{item.calls.toLocaleString()}</td><td>{tokenText(item.tokens, t, language)}</td><td>{spanDuration(item.averageDurationMs, t, language)}</td><td>{speedText(item.outputTokensPerSec)}</td><td>{pct(item.cacheEfficiency)}</td><td>{item.errorCount.toLocaleString()}</td><td>{money(item.reportedCost, t, language)}</td><td>{money(item.quotaEstimate, t, language)}</td><td>{money(item.quotaPerCall, t, language)}</td></tr>)}</tbody></table></div> : <div className="empty compact">No hay datos de modelo para mostrar.</div>}</article>
-      <p className="analytics-footnote">Los tokens se suman desde spans de inferencia observados. El costo reportado y la cuota Go estimada son métricas distintas; los valores ausentes no se calculan ni se sustituyen por precios hipotéticos.</p>
+    <SectionHeader icon="models" eyebrow={t('models.eyebrow')} title={t('models.title')} description={t('models.description')} actions={<><div className="subview-switch" role="tablist" aria-label={t('models.subview.label')}><button type="button" role="tab" aria-selected={subView === 'consumption'} className={subView === 'consumption' ? 'active' : ''} onClick={() => setSubView('consumption')}>{t('models.subview.consumption')}</button><button type="button" role="tab" aria-selected={subView === 'efficiency'} className={subView === 'efficiency' ? 'active' : ''} onClick={() => setSubView('efficiency')}>{t('models.subview.efficiency')}</button></div><button className="rates-label" title={t('models.rates.title')}>{t('models.rates.label')}</button></>} />
+    <div className="model-filter-bar"><div className="bucket-control"><span>{t('models.filter.group')}</span>{(['day', 'week', 'month'] as const).map(value => <button key={value} className={bucket === value ? 'active' : ''} onClick={() => setBucket(value)}>{t(value === 'day' ? 'models.bucket.day' : value === 'week' ? 'models.bucket.week' : 'models.bucket.month')}</button>)}</div><label className="date-control">{t('models.filter.from')}<input type="date" value={from} onChange={event => setFrom(event.target.value)} /></label><label className="date-control">{t('models.filter.to')}<input type="date" value={to} onChange={event => setTo(event.target.value)} /></label><ScopeSelect scope={scope} setScope={setScope} /><button className="refresh-analytics" onClick={onRefresh}>{t('common.refresh')}</button></div>
+    {data && <><div className="chip-filter-row"><span>{t('models.filter.sources')}</span><button className={!source ? 'selected' : ''} onClick={() => setSource('')}>{t('common.all')}</button>{data.availableSources.map((item, index) => <button className={source === item ? 'selected' : ''} key={item} onClick={() => toggle(source, item, setSource)}>{item}<i style={{ background: agentColors[index % agentColors.length] }} /></button>)}</div><div className="chip-filter-row models-filter"><span>{t('models.filter.models')}</span><button className={!model ? 'selected' : ''} onClick={() => setModel('')}>{t('common.all')}</button>{data.availableModels.map(item => <button className={model === item ? 'selected' : ''} key={item} title={item} onClick={() => toggle(model, item, setModel)}>{item}</button>)}</div></>}
+    {error && <div className="api-error">{translateError(t, error.code, error.message)}</div>}
+    {!data ? <div className="empty comparison-empty">{t('models.loading')}</div> : subView === 'consumption' ? <>
+      <div className="analytics-section-label">{t('models.totals.label')}</div><div className="model-total-grid"><article className="model-total-card total-primary"><span>{t('models.totals.tokens')}</span><b>{tokenText(data.totals.totalTokens, t, language)}</b><small>{t('models.totals.calls', { count: data.totals.calls })}</small></article><article className="model-total-card"><span>{t('models.totals.input')}</span><b>{tokenCompact(data.totals.inputTokens, t, language)}</b><small>{data.totals.totalTokens && data.totals.inputTokens != null ? t('models.totals.inputNote', { percent: decimals(data.totals.inputTokens / data.totals.totalTokens * 100, 1) }) : t('models.totals.inputEmpty')}</small></article><article className="model-total-card total-output"><span>{t('models.totals.output')}</span><b>{tokenCompact(data.totals.outputTokens, t, language)}</b><small>{data.totals.totalTokens && data.totals.outputTokens != null ? t('models.totals.outputNote', { percent: decimals(data.totals.outputTokens / data.totals.totalTokens * 100, 1), reasoning: tokenText(data.totals.reasoningTokens, t, language) }) : t('models.totals.outputNoteNoPercent', { reasoning: tokenText(data.totals.reasoningTokens, t, language) })}</small></article><article className="model-total-card total-cache"><span>{t('models.totals.cache')}</span><b>{data.totals.cacheEfficiency == null ? t('common.noData') : t('models.metric.percent', { value: decimals(data.totals.cacheEfficiency * 100, 1) })}</b><small>{t('models.totals.cacheNote', { read: tokenCompact(data.totals.cacheReadTokens, t, language), write: tokenCompact(data.totals.cacheWriteTokens, t, language) })}</small></article></div>
+      <div className="model-cost-row"><span>{t('models.totals.reportedCost')} <b>{money(data.totals.reportedCost, t, language)}</b></span><span>{t('models.totals.quota')} <b>{money(data.totals.quotaEstimate, t, language)}</b></span><span>{t('models.totals.errors')} <b>{formatNumber(language, data.totals.errorCount)}</b></span></div>
+      <div className="model-analytics-grid"><article className="model-chart-card"><div className="model-card-heading"><div><h3>{t('models.chart.title', { period: bucketPeriod })}</h3><p>{t('models.chart.subtitle', { tokens: tokenCompact(data.totals.totalTokens, t, language) })}</p></div><div className="chart-legend"><span><i className="legend-total"/>{t('models.chart.total')}</span><span><i className="legend-input"/>{t('models.chart.input')}</span><span><i className="legend-output"/>{t('models.chart.output')}</span></div></div>{data.trend.length ? <div className="model-chart-wrap"><svg viewBox="0 0 780 230" role="img" aria-label={t('models.chart.aria')}><line x1="42" y1="30" x2="758" y2="30"/><line x1="42" y1="84" x2="758" y2="84"/><line x1="42" y1="139" x2="758" y2="139"/><line x1="42" y1="194" x2="758" y2="194"/><text x="4" y="34">{compactNumber(max, language)}</text><text x="4" y="88">{compactNumber(max * .67, language)}</text><text x="4" y="143">{compactNumber(max * .33, language)}</text><text x="20" y="198">0</text><polyline className="series-total" points={points(point => point.totalTokens)}/><polyline className="series-input" points={points(point => point.inputTokens)}/><polyline className="series-output" points={points(point => point.outputTokens)}/>{data.trend.map((point, index) => <circle key={`${point.period}-${index}`} cx={42 + index * (716 / Math.max(1, data.trend.length - 1))} cy={194 - (point.totalTokens ?? 0) / max * 164} r="3"><title>{t('models.chart.tooltip', { time: time(point.period, language), tokens: tokenText(point.totalTokens, t, language) })}</title></circle>)}</svg><div className="chart-period-labels"><span>{time(data.trend[0].period, language).split(',')[0]}</span><span>{data.trend.length > 2 ? time(data.trend[Math.floor(data.trend.length / 2)].period, language).split(',')[0] : ''}</span><span>{time(data.trend[data.trend.length - 1].period, language).split(',')[0]}</span></div></div> : <div className="empty compact">{t('models.chart.empty')}</div>}</article>
+        <article className="agent-share-card"><div className="model-card-heading"><div><h3>{t('models.agents.title')}</h3><p>{t('models.agents.count', { count: data.agents.length })}</p></div></div><div className="agent-share-content"><div className="agent-donut" style={donutStyle}><div><b>{tokenCompact(data.totals.totalTokens, t, language)}</b><small>{t('models.agents.tokens')}</small></div></div><div className="agent-share-legend">{data.agents.map((agent, index) => <div key={agent.name}><i style={{ background: agentColors[index % agentColors.length] }}/><span>{agent.name}</span><b>{agent.share == null ? t('common.noData') : t('models.metric.percent', { value: decimals(agent.share * 100, 1) })}</b></div>)}</div></div></article></div>
+      <article className="model-breakdown-card"><div className="model-card-heading"><div><h3>{t('models.breakdown.title')}</h3><p>{t('models.breakdown.subtitle')}</p></div></div>{data.models.length ? <div className="table-wrap"><table className="model-breakdown-table"><thead><tr><th>{t('models.column.model')}</th><th>{t('models.column.calls')}</th><th>{t('models.column.tokens')}</th><th>{t('models.column.latency')}</th><th>{t('models.column.throughput')}</th><th>{t('models.column.cache')}</th><th>{t('models.column.errors')}</th><th>{t('models.column.reportedCost')}</th><th>{t('models.column.quota')}</th><th>{t('models.column.quotaPerCall')}</th></tr></thead><tbody>{data.models.map(item => <tr key={item.name}><td><b title={item.name}>{item.name}</b><small>{item.share == null ? t('common.noData') : t('models.breakdown.share', { percent: decimals(item.share * 100, 1) })}</small></td><td>{formatNumber(language, item.calls)}</td><td>{tokenText(item.tokens, t, language)}</td><td>{spanDuration(item.averageDurationMs, t, language)}</td><td>{speedText(item.outputTokensPerSec)}</td><td>{pct(item.cacheEfficiency)}</td><td>{formatNumber(language, item.errorCount)}</td><td>{money(item.reportedCost, t, language)}</td><td>{money(item.quotaEstimate, t, language)}</td><td>{money(item.quotaPerCall, t, language)}</td></tr>)}</tbody></table></div> : <div className="empty compact">{t('models.breakdown.empty')}</div>}</article>
+      <p className="analytics-footnote">{t('models.footnote.consumption')}</p>
     </> : <>
       <div className="efficiency-toolbar">
-        <div className="analytics-section-label">DESTACADOS AUTOMÁTICOS</div>
+        <div className="analytics-section-label">{t('models.efficiency.highlights')}</div>
         <div className="efficiency-min-calls">
-          {hiddenByMinCalls > 0 && <span className="min-calls-note">Ocultos {hiddenByMinCalls} modelo(s) con &lt; {minCalls} llamadas <button type="button" className="text-button" onClick={() => setMinCalls(1)}>Ver todos</button></span>}
-          <label>Mín. llamadas
+          {hiddenByMinCalls > 0 && <span className="min-calls-note">{t('models.efficiency.hidden', { count: hiddenByMinCalls, min: minCalls })} <button type="button" className="text-button" onClick={() => setMinCalls(1)}>{t('models.efficiency.showAll')}</button></span>}
+          <label>{t('models.efficiency.minCalls')}
             <select value={minCalls} onChange={e => setMinCalls(Number(e.target.value))}>
-              <option value={1}>Todos (1+)</option>
-              <option value={5}>≥ 5 llamadas</option>
-              <option value={10}>≥ 10 llamadas</option>
-              <option value={25}>≥ 25 llamadas</option>
-              <option value={50}>≥ 50 llamadas</option>
-              <option value={100}>≥ 100 llamadas</option>
-              <option value={500}>≥ 500 llamadas</option>
+              <option value={1}>{t('models.efficiency.minCallsAll')}</option>
+              <option value={5}>{t('models.efficiency.minCallsAt', { count: 5 })}</option>
+              <option value={10}>{t('models.efficiency.minCallsAt', { count: 10 })}</option>
+              <option value={25}>{t('models.efficiency.minCallsAt', { count: 25 })}</option>
+              <option value={50}>{t('models.efficiency.minCallsAt', { count: 50 })}</option>
+              <option value={100}>{t('models.efficiency.minCallsAt', { count: 100 })}</option>
+              <option value={500}>{t('models.efficiency.minCallsAt', { count: 500 })}</option>
             </select>
           </label>
         </div>
       </div>
-      {highlights.length ? <div className="efficiency-highlights">{highlights.map(item => <article className="efficiency-highlight-card" key={item.id}><span>{item.label}</span><b title={item.model}>{item.model}</b><strong>{item.metricText}</strong><small>{item.sampleNote}</small></article>)}</div> : <div className="empty compact">Se necesitan al menos dos modelos con datos comparables en una misma métrica para destacar ganadores.</div>}
+      {highlights.length ? <div className="efficiency-highlights">{highlights.map(item => <article className="efficiency-highlight-card" key={item.id}><span>{item.label}</span><b title={item.model}>{item.model}</b><strong>{item.metricText}</strong><small>{item.sampleNote}</small></article>)}</div> : <div className="empty compact">{t('models.efficiency.empty')}</div>}
       <article className="model-chart-card scatter-card">
         <div className="model-card-heading">
-          <div><h3>Costo y consumo vs rendimiento</h3><p>{valueAxis === 'latency' ? 'Abajo a la izquierda: menor espera a menor costo o consumo.' : 'Arriba a la izquierda: mayor rendimiento a menor costo o consumo.'}</p></div>
+          <div><h3>{t('models.scatter.title')}</h3><p>{valueAxis === 'latency' ? t('models.scatter.hintLatency') : t('models.scatter.hint')}</p></div>
           <div className="scatter-controls">
-            <label>Eje X<select value={costAxis} onChange={e => setCostAxis(e.target.value as CostAxisMetric)}><option value="quotaPerCall">Cuota Go / llamada</option><option value="quotaPer1M">Cuota Go / 1M tokens</option><option value="tokensPerCall">Tokens / llamada</option></select></label>
-            <label>Eje Y<select value={valueAxis} onChange={e => setValueAxis(e.target.value as ValueAxisMetric)}><option value="speed">Velocidad (tok/s)</option><option value="latency">Latencia promedio (s)</option><option value="cache">Ahorro de caché (%)</option><option value="benchmarkPass">% aprobado en Pruebas</option><option value="benchmarkJudge">Nota del juez (1–5)</option></select></label>
+            <label>{t('models.scatter.axisX')}<select value={costAxis} onChange={e => setCostAxis(e.target.value as CostAxisMetric)}><option value="quotaPerCall">{t('models.scatter.x.quotaPerCall')}</option><option value="quotaPer1M">{t('models.scatter.x.quotaPer1M')}</option><option value="tokensPerCall">{t('models.scatter.x.tokensPerCall')}</option></select></label>
+            <label>{t('models.scatter.axisY')}<select value={valueAxis} onChange={e => setValueAxis(e.target.value as ValueAxisMetric)}><option value="speed">{t('models.scatter.y.speed')}</option><option value="latency">{t('models.scatter.y.latency')}</option><option value="cache">{t('models.scatter.y.cache')}</option><option value="benchmarkPass">{t('models.scatter.y.benchmarkPass')}</option><option value="benchmarkJudge">{t('models.scatter.y.benchmarkJudge')}</option></select></label>
           </div>
         </div>
         {scatter.points.length ? <div className="model-chart-wrap scatter-wrap">
           <div className="scatter-stage">
-            <svg className="scatter-svg" viewBox="0 0 920 380" role="img" aria-label="Dispersión de costo contra rendimiento de modelos">
+            <svg className="scatter-svg" viewBox="0 0 920 380" role="img" aria-label={t('models.scatter.aria')}>
               <line x1="84" y1="28" x2="876" y2="28"/><line x1="84" y1="125" x2="876" y2="125"/><line x1="84" y1="222" x2="876" y2="222"/><line x1="84" y1="318" x2="876" y2="318"/>
               <line x1="84" y1="28" x2="84" y2="318"/><line x1="348" y1="28" x2="348" y2="318"/><line x1="612" y1="28" x2="612" y2="318"/><line x1="876" y1="28" x2="876" y2="318"/>
               <text x="10" y="33">{formatYValue(scatter.yMax)}</text><text x="10" y="130">{formatYValue(scatter.yMax * 0.67)}</text><text x="10" y="227">{formatYValue(scatter.yMax * 0.33)}</text><text x="10" y="322">{formatYValue(0)}</text>
@@ -184,32 +199,33 @@ function ModelAnalyticsPage(props: {
               return <div className={`scatter-tooltip ${pt.xNorm > 0.62 ? 'flip-x' : ''} ${pt.yNorm > 0.72 ? 'flip-y' : ''}`} style={{ left: `${leftPct}%`, top: `${topPct}%` }} role="status">
                 <div className="scatter-tooltip-title"><i style={{ background: color }} /><b>{pt.name}</b></div>
                 <div><span>{formatXValue(pt.x)}</span> · <span>{formatYValue(pt.y)}</span></div>
-                <small>{pt.calls.toLocaleString()} llamadas{pt.errorCount ? ` · ${pt.errorCount} errores` : ''}</small>
+                <small>{t('models.scatter.calls', { count: pt.calls })}{pt.errorCount ? `${t('common.listSeparator')}${t('common.errors', { count: pt.errorCount })}` : ''}</small>
               </div>;
             })()}
           </div>
           <div className="scatter-legend">{scatter.points.map((pt, idx) => <button type="button" className={`scatter-legend-item ${hoveredModel === pt.name ? 'active' : ''}`} key={pt.name} onMouseEnter={() => setHoveredModel(pt.name)} onMouseLeave={() => setHoveredModel(null)}><i style={{ background: scatterColors[idx % scatterColors.length] }}/><b title={pt.name}>{pt.name}</b><small>{formatXValue(pt.x)} · {formatYValue(pt.y)}</small></button>)}</div>
-          {scatter.excludedCount > 0 && <small className="scatter-note">Se omitieron {scatter.excludedCount} modelo(s) sin dato en el eje X o Y elegido.</small>}
-        </div> : <div className="empty compact">No hay modelos con ambos ejes disponibles para esta combinación.</div>}
+          {scatter.excludedCount > 0 && <small className="scatter-note">{t('models.scatter.excluded', { count: scatter.excludedCount })}</small>}
+        </div> : <div className="empty compact">{t('models.scatter.empty')}</div>}
       </article>
-      <article className="model-breakdown-card"><div className="model-card-heading"><div><h3>Matriz comparativa de eficiencia y calidad automática</h3><p>Velocidad, eficiencia unitaria, estabilidad en sesiones reales y resultados de Pruebas sin puntajes inventados.</p></div></div>{efficiencyModels.length ? <div className="table-wrap"><table className="model-breakdown-table efficiency-table"><thead><tr><th>MODELO</th><th>LATENCIA</th><th>TOK/S</th><th>CACHÉ</th><th>TOKENS / LLAMADA</th><th>CUOTA / LLAMADA</th><th>CUOTA / 1M TOK</th><th>COSTO REPORTADO</th><th>SESIONES OK</th><th>PRUEBAS</th></tr></thead><tbody>{efficiencyModels.map(item => <tr key={item.name}><td><b title={item.name}>{item.name}</b><small>{item.calls.toLocaleString()} llamadas · {item.sessionCount ?? 0} sesiones</small></td><td>{spanDuration(item.averageDurationMs, t, language)}</td><td>{speedText(item.outputTokensPerSec)}</td><td>{pct(item.cacheEfficiency)}</td><td>{item.tokens != null && item.calls > 0 ? Math.round(item.tokens / item.calls).toLocaleString() : 'Sin dato'}</td><td>{money(item.quotaPerCall, t, language)}</td><td>{item.quotaPer1MTokens == null ? 'Sin dato' : `US$ ${item.quotaPer1MTokens.toFixed(2)}`}</td><td>{money(item.reportedCost, t, language)}</td><td>{pct(item.completedSessionRate)}</td><td>{item.benchmarkCases ? `${pct(item.benchmarkPassRate)} (${item.benchmarkCases})${item.benchmarkJudgeAvg != null ? ` · Juez ${item.benchmarkJudgeAvg.toFixed(1)}/5` : ''}` : 'Sin dato'}</td></tr>)}</tbody></table></div> : <div className="empty compact">No hay modelos con al menos {minCalls} llamadas en este período.</div>}</article>
-      <p className="analytics-footnote">Todas las métricas provienen de spans reales y resultados automáticos de Pruebas. Cada dimensión se muestra por separado; si falta duración, costo, cuota o corridas, se indica “Sin dato”.</p>
+      <article className="model-breakdown-card"><div className="model-card-heading"><div><h3>{t('models.matrix.title')}</h3><p>{t('models.matrix.subtitle')}</p></div></div>{efficiencyModels.length ? <div className="table-wrap"><table className="model-breakdown-table efficiency-table"><thead><tr><th>{t('models.column.model')}</th><th>{t('models.column.latency')}</th><th>{t('models.column.throughput')}</th><th>{t('models.column.cache')}</th><th>{t('models.column.tokensPerCall')}</th><th>{t('models.column.quotaPerCall')}</th><th>{t('models.column.quotaPer1M')}</th><th>{t('models.column.reportedCost')}</th><th>{t('models.column.sessionsOk')}</th><th>{t('models.column.benchmarks')}</th></tr></thead><tbody>{efficiencyModels.map(item => <tr key={item.name}><td><b title={item.name}>{item.name}</b><small>{t('models.matrix.usage', { calls: formatNumber(language, item.calls), sessions: formatNumber(language, item.sessionCount ?? 0) })}</small></td><td>{spanDuration(item.averageDurationMs, t, language)}</td><td>{speedText(item.outputTokensPerSec)}</td><td>{pct(item.cacheEfficiency)}</td><td>{item.tokens != null && item.calls > 0 ? formatNumber(language, Math.round(item.tokens / item.calls)) : t('common.noData')}</td><td>{money(item.quotaPerCall, t, language)}</td><td>{item.quotaPer1MTokens == null ? t('common.noData') : t('models.metric.usd', { value: decimals(item.quotaPer1MTokens, 2) })}</td><td>{money(item.reportedCost, t, language)}</td><td>{pct(item.completedSessionRate)}</td><td>{item.benchmarkCases ? (item.benchmarkJudgeAvg != null ? t('models.matrix.benchmarkWithJudge', { pass: pct(item.benchmarkPassRate), cases: item.benchmarkCases, value: decimals(item.benchmarkJudgeAvg, 1) }) : t('models.matrix.benchmark', { pass: pct(item.benchmarkPassRate), cases: item.benchmarkCases })) : t('common.noData')}</td></tr>)}</tbody></table></div> : <div className="empty compact">{t('models.matrix.empty', { count: minCalls })}</div>}</article>
+      <p className="analytics-footnote">{t('models.footnote.efficiency')}</p>
     </>}
   </section>;
 }
 
 function BehaviorPage(props: {
-  data: BehaviorReport | null; error: string; period: string; setPeriod: (value: string) => void;
+  data: BehaviorReport | null; error: RequestError | null; period: string; setPeriod: (value: string) => void;
   scope: ScopeFilter; setScope: (value: ScopeFilter) => void;
   onRefresh: () => void; onOpenSession: (id: string) => void;
 }) {
   const { data, error, period, setPeriod, scope, setScope, onRefresh, onOpenSession } = props;
+  const { language, t } = useLanguage();
   return <section className="comparison-page behavior-page">
-    <SectionHeader icon="behavior" eyebrow="DIAGNÓSTICO" title="Comportamiento" description="Sesiones que merecen una mirada." actions={<div className="analytics-actions"><ScopeSelect scope={scope} setScope={setScope} /><select aria-label="Período de análisis" value={period} onChange={event => setPeriod(event.target.value)}><option value="1">Último día</option><option value="7">Últimos 7 días</option><option value="30">Últimos 30 días</option><option value="90">Últimos 90 días</option><option value="all">Todo el historial</option></select><button onClick={onRefresh}>Actualizar</button></div>} />
-    {error && <div className="api-error">{error}</div>}
-    {!data ? <div className="empty comparison-empty">Cargando comportamiento…</div> : <>
-      <div className="analytics-summary"><article><span>Sesiones analizadas</span><b>{data.totals.sessions.toLocaleString()}</b></article><article><span>Sesiones marcadas</span><b>{data.totals.flaggedSessions.toLocaleString()}</b></article><article><span>Señales</span><b>{data.totals.signals.toLocaleString()}</b></article></div>
-      {data.sessions.length === 0 ? <div className="empty comparison-empty"><div className="empty-icon">✓</div><b>Sin señales en este período</b><p>No hay sesiones que coincidan con los patrones detectados.</p></div> : <div className="tool-analytics-list">{data.sessions.map(session => <article className="tool-analytics-card" key={session.id}><div className="tool-analytics-heading"><div><h3>{session.title || 'Sesión sin título'}</h3><p>{[session.project, session.model].filter(Boolean).join(' · ') || 'Sin proyecto ni modelo'}</p></div><span className={`badge ${session.status}`}>{session.status}</span></div><div className="signal-list">{session.signals.map((signal, index) => <div className={`signal ${signal.severity}`} key={`${signal.kind}-${index}`}><b>{signal.title}</b><span>{signal.explanation}</span></div>)}</div><div className="behavior-actions"><button className="text-button" onClick={() => onOpenSession(session.id)}>Ver sesión</button></div></article>)}</div>}
+    <SectionHeader icon="behavior" eyebrow={t('behavior.eyebrow')} title={t('behavior.title')} description={t('behavior.description')} actions={<div className="analytics-actions"><ScopeSelect scope={scope} setScope={setScope} /><select aria-label={t('behavior.period.label')} value={period} onChange={event => setPeriod(event.target.value)}><option value="1">{t('behavior.period.lastDay')}</option><option value="7">{t('behavior.period.last7')}</option><option value="30">{t('behavior.period.last30')}</option><option value="90">{t('behavior.period.last90')}</option><option value="all">{t('behavior.period.all')}</option></select><button onClick={onRefresh}>{t('common.refresh')}</button></div>} />
+    {error && <div className="api-error">{translateError(t, error.code, error.message)}</div>}
+    {!data ? <div className="empty comparison-empty">{t('behavior.loading')}</div> : <>
+      <div className="analytics-summary"><article><span>{t('behavior.totals.sessions')}</span><b>{formatNumber(language, data.totals.sessions)}</b></article><article><span>{t('behavior.totals.flagged')}</span><b>{formatNumber(language, data.totals.flaggedSessions)}</b></article><article><span>{t('behavior.totals.signals')}</span><b>{formatNumber(language, data.totals.signals)}</b></article></div>
+      {data.sessions.length === 0 ? <div className="empty comparison-empty"><div className="empty-icon">✓</div><b>{t('behavior.empty.title')}</b><p>{t('behavior.empty.body')}</p></div> : <div className="tool-analytics-list">{data.sessions.map(session => <article className="tool-analytics-card" key={session.id}><div className="tool-analytics-heading"><div><h3>{session.title || t('common.untitledSession')}</h3><p>{[session.project, session.model].filter(Boolean).join(t('common.listSeparator')) || t('behavior.session.metaEmpty')}</p></div><span className={`badge ${session.status}`}>{session.status}</span></div><div className="signal-list">{session.signals.map((signal, index) => { const text = translateSignal(t, signal); return <div className={`signal ${signal.severity}`} key={`${signal.kind}-${index}`}><b>{text.title}</b><span>{text.explanation}</span></div>; })}</div><div className="behavior-actions"><button className="text-button" onClick={() => onOpenSession(session.id)}>{t('common.openSession')}</button></div></article>)}</div>}
     </>}
   </section>;
 }
@@ -370,7 +386,7 @@ function App() {
   const [toolWindow, setToolWindow] = React.useState('30');
   const [toolError, setToolError] = React.useState('');
   const [modelAnalytics, setModelAnalytics] = React.useState<ModelAnalytics | null>(null);
-  const [modelError, setModelError] = React.useState('');
+  const [modelError, setModelError] = React.useState<RequestError | null>(null);
   const [modelBucket, setModelBucket] = React.useState<'day' | 'week' | 'month'>('day');
   const [modelFrom, setModelFrom] = React.useState(() => new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10));
   const [modelTo, setModelTo] = React.useState(() => new Date().toISOString().slice(0, 10));
@@ -378,7 +394,7 @@ function App() {
   const [modelName, setModelName] = React.useState('');
   const [behavior, setBehavior] = React.useState<BehaviorReport | null>(null);
   const [behaviorPeriod, setBehaviorPeriod] = React.useState('30');
-  const [behaviorError, setBehaviorError] = React.useState('');
+  const [behaviorError, setBehaviorError] = React.useState<RequestError | null>(null);
   const [overview, setOverview] = React.useState<OverviewReport | null>(null);
   const [overviewPeriod, setOverviewPeriod] = React.useState('30');
   const [overviewError, setOverviewError] = React.useState('');
@@ -476,9 +492,9 @@ function App() {
       if (modelName) params.set('model', modelName);
       if (scope !== 'all') params.set('scope', scope);
       const response = await fetch(`/api/v1/analytics/models?${params}`);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      setModelAnalytics(await response.json()); setModelError('');
-    } catch { setModelError('No se pudo cargar la analítica de modelos. Comprueba que la API esté actualizada.'); }
+      if (!response.ok) { setModelError({ message: 'No se pudo cargar la analítica de modelos. Comprueba que la API esté actualizada.', code: await responseErrorCode(response) }); return; }
+      setModelAnalytics(await response.json()); setModelError(null);
+    } catch { setModelError({ message: 'No se pudo cargar la analítica de modelos. Comprueba que la API esté actualizada.' }); }
   }, [modelBucket, modelFrom, modelTo, modelSource, modelName, scope]);
   const loadBehavior = React.useCallback(async () => {
     try {
@@ -486,9 +502,9 @@ function App() {
       if (behaviorPeriod !== 'all') params.set('days', behaviorPeriod);
       if (scope !== 'all') params.set('scope', scope);
       const response = await fetch(`/api/v1/behavior?${params}`);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      setBehavior(await response.json()); setBehaviorError('');
-    } catch { setBehaviorError('No se pudo cargar el comportamiento. Comprueba que la API esté actualizada.'); }
+      if (!response.ok) { setBehaviorError({ message: 'No se pudo cargar el comportamiento. Comprueba que la API esté actualizada.', code: await responseErrorCode(response) }); return; }
+      setBehavior(await response.json()); setBehaviorError(null);
+    } catch { setBehaviorError({ message: 'No se pudo cargar el comportamiento. Comprueba que la API esté actualizada.' }); }
   }, [behaviorPeriod, scope]);
   const loadOverview = React.useCallback(async () => {
     try {

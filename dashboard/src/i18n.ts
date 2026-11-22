@@ -116,6 +116,43 @@ export function translateError(t: Translate, code: string | undefined, fallback:
   return key === undefined ? fallback : t(key);
 }
 
+export type BehaviorSignalText = { kind: string; title: string; explanation: string; evidence: Record<string, unknown> };
+
+/**
+ * Clave del diccionario para una señal: `signals.<kind>.<part>`. El cast es seguro
+ * porque el `kind` sólo se usa después de que `hasSignal` confirme que la clave existe.
+ */
+export function signalTextKey(kind: string, part: 'title' | 'explanation'): TranslationKey {
+  return `signals.${kind}.${part}` as TranslationKey;
+}
+
+/** ¿El diccionario conoce el `kind` de señal? Si no, se muestra el texto de la API. */
+export function hasSignal(kind: string): boolean {
+  return signalTextKey(kind, 'title') in es;
+}
+
+/** Sólo los valores escalares de `evidence` sirven como parámetros de plantilla. */
+function signalParams(evidence: Record<string, unknown>): Record<string, string | number> {
+  const params: Record<string, string | number> = {};
+  for (const [name, value] of Object.entries(evidence)) {
+    if (typeof value === 'string' || typeof value === 'number') params[name] = value;
+  }
+  return params;
+}
+
+/**
+ * Traduce una señal por `kind` y `evidence`. Un `kind` que el diccionario no
+ * conoce conserva el título y la explicación que mandó la API, nunca una clave.
+ */
+export function translateSignal(t: Translate, signal: BehaviorSignalText): { title: string; explanation: string } {
+  if (!hasSignal(signal.kind)) return { title: signal.title, explanation: signal.explanation };
+  const params = signalParams(signal.evidence);
+  return {
+    title: t(signalTextKey(signal.kind, 'title'), params),
+    explanation: t(signalTextKey(signal.kind, 'explanation'), params),
+  };
+}
+
 export function formatCompact(language: Language, value: number): string {
   return new Intl.NumberFormat(locales[language], { notation: 'compact', maximumFractionDigits: 1 }).format(value);
 }

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { es } from './locales/es.ts';
 import { en } from './locales/en.ts';
-import { apiErrorText, formatMoney, formatNumber, plural, resolveInitialLanguage, translate, translateError } from './i18n.ts';
+import { apiErrorText, formatMoney, formatNumber, hasSignal, plural, resolveInitialLanguage, translate, translateError, translateSignal } from './i18n.ts';
 
 test('los diccionarios tienen las mismas claves', () => {
   assert.deepEqual(Object.keys(en).sort(), Object.keys(es).sort());
@@ -50,4 +50,21 @@ test('un código desconocido cae al texto de la API', () => {
 test('una clave inexistente devuelve la clave y nunca undefined', () => {
   // @ts-expect-error clave inexistente a propósito
   assert.equal(translate('en', 'signals.unknown.title'), 'signals.unknown.title');
+});
+
+test('una señal conocida se traduce con la evidencia', () => {
+  const signal = { kind: 'tool_loop', title: 'Tool loop: bash', explanation: 'text from the API', evidence: { tool: 'bash', calls: 9, maxConsecutive: 4, errors: 2 } };
+  const text = translateSignal(translate.bind(null, 'es'), signal);
+  assert.equal(text.title, 'Bucle de herramienta: bash');
+  assert.equal(text.explanation, 'bash se llamó 9 veces; 2 fallaron y la racha máxima fue 4.');
+});
+
+test('un kind de señal desconocido conserva el texto en inglés que mandó la API', () => {
+  assert.equal(hasSignal('tool_loop'), true);
+  assert.equal(hasSignal('future_kind'), false);
+  const signal = { kind: 'future_kind', title: 'Future signal', explanation: 'Something the dictionary does not know yet.', evidence: { count: 2, extra: null } };
+  assert.deepEqual(translateSignal(translate.bind(null, 'es'), signal), {
+    title: 'Future signal',
+    explanation: 'Something the dictionary does not know yet.',
+  });
 });

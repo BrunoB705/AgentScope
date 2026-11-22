@@ -74,7 +74,7 @@ function ModelAnalyticsPage(props: {
   scope: ScopeFilter; setScope: (value: ScopeFilter) => void; onRefresh: () => void;
 }) {
   const { data, error, bucket, setBucket, from, to, setFrom, setTo, source, setSource, model, setModel, scope, setScope, onRefresh } = props;
-  const { t } = useLanguage();
+  const { language, t } = useLanguage();
   const [subView, setSubView] = React.useState<'consumption' | 'efficiency'>('consumption');
   const [costAxis, setCostAxis] = React.useState<CostAxisMetric>('quotaPerCall');
   const [valueAxis, setValueAxis] = React.useState<ValueAxisMetric>('speed');
@@ -99,7 +99,7 @@ function ModelAnalyticsPage(props: {
   const toggle = (current: string, next: string, set: (value: string) => void) => set(current === next ? '' : next);
   const efficiencyModels = React.useMemo(() => filterModelsByMinCalls(data?.models ?? [], minCalls), [data, minCalls]);
   const hiddenByMinCalls = (data?.models.length ?? 0) - efficiencyModels.length;
-  const highlights = React.useMemo(() => computeModelHighlights(efficiencyModels, t), [efficiencyModels, t]);
+  const highlights = React.useMemo(() => computeModelHighlights(efficiencyModels, t, language), [efficiencyModels, t, language]);
   const scatter = React.useMemo(() => buildScatterPlot(efficiencyModels, costAxis, valueAxis), [efficiencyModels, costAxis, valueAxis]);
   const scatterLabels = React.useMemo(() => layoutScatterLabels(scatter.points), [scatter]);
   const formatXValue = (value: number) => costAxis === 'tokensPerCall' ? `${Math.round(value).toLocaleString()} tok` : costAxis === 'quotaPer1M' ? `US$ ${value.toFixed(2)}` : `US$ ${value.toFixed(4)}`;

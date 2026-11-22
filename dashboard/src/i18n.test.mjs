@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { es } from './locales/es.ts';
 import { en } from './locales/en.ts';
-import { apiErrorText, formatMoney, plural, resolveInitialLanguage, translate, translateError } from './i18n.ts';
+import { apiErrorText, formatMoney, formatNumber, plural, resolveInitialLanguage, translate, translateError } from './i18n.ts';
 
 test('los diccionarios tienen las mismas claves', () => {
   assert.deepEqual(Object.keys(en).sort(), Object.keys(es).sort());
@@ -26,6 +26,14 @@ test('las formas plurales siguen el idioma', () => {
 test('los montos usan el separador del idioma', () => {
   assert.equal(formatMoney('en', 1234.5), 'US$ 1,234.50000000');
   assert.equal(formatMoney('es', 1234.5), 'US$ 1.234,50000000');
+});
+
+test('los números decimales respetan el locale sin perder precisión', () => {
+  assert.equal(formatNumber('en', 1234.5), '1,234.5');
+  assert.equal(formatNumber('es', 1234.5), '1.234,5');
+  assert.equal(formatNumber('en', 0.1875, { maximumFractionDigits: 20 }), '0.1875');
+  assert.equal(formatNumber('es', 0.1875, { maximumFractionDigits: 20 }), '0,1875');
+  assert.equal(formatNumber('es', 1.2, { minimumFractionDigits: 2, maximumFractionDigits: 2 }), '1,20');
 });
 
 test('todos los códigos de error de API tienen traducción', () => {

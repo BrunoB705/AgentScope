@@ -1,4 +1,4 @@
-import { formatDate, type Language, type Translate, type TranslationKey } from './i18n.ts';
+import { formatNumber, type Language, type Translate, type TranslationKey } from './i18n.ts';
 
 export type TraceSpan = {
   id: string;
@@ -127,15 +127,22 @@ const MISSING_REASON_KEY: Partial<Record<string, TranslationKey>> = {
   model_unknown: 'trace.quota.missing.model_unknown',
 };
 
-// La tarifa se muestra con los números crudos que reportó el catálogo: son tasas de
-// auditoría, no montos, y no se reformatean ni se redondean.
-const rateParts = (raw: string | null | undefined, t: Translate): string[] => {
+// Las tarifas se localizan en sus números (separador decimal), sin redondear: son tasas de
+// auditoría y la precisión es parte del dato. El tamaño del tramo se mantiene crudo porque
+// es un umbral entero del catálogo, no un monto.
+const rateParts = (raw: string | null | undefined, t: Translate, language: Language): string[] => {
   if (!raw) return [];
   try {
     const value = JSON.parse(raw) as { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; tier?: { size?: number } | null };
     const { input, output, cacheRead, cacheWrite } = value;
     if (typeof input !== 'number' || typeof output !== 'number' || typeof cacheRead !== 'number' || typeof cacheWrite !== 'number') return [];
-    const parts = [t('trace.quota.rates', { input, output, cacheRead, cacheWrite })];
+    const exact = { maximumFractionDigits: 20 };
+    const parts = [t('trace.quota.rates', {
+      input: formatNumber(language, input, exact),
+      output: formatNumber(language, output, exact),
+      cacheRead: formatNumber(language, cacheRead, exact),
+      cacheWrite: formatNumber(language, cacheWrite, exact),
+    })];
     if (typeof value.tier?.size === 'number') parts.push(t('trace.quota.tier', { size: value.tier.size }));
     return parts;
   } catch {
@@ -148,8 +155,10 @@ const rateParts = (raw: string | null | undefined, t: Translate): string[] => {
 export function describeQuotaProvenance(span: QuotaFields, t: Translate, language: Language): string | null {
   if (span.quotaCostEstimate != null) {
     const parts = [t('trace.quota.estimated')];
-    if (span.quotaCatalogFetchedAt) parts.push(t('trace.quota.catalog', { at: formatDate(language, span.quotaCatalogFetchedAt) }));
-    parts.push(...rateParts(span.quotaRateSnapshot, t));
+    // La fecha del catálogo se muestra tal cual llegó: es evidencia de auditoría y
+    // localizarla perdería zona y subsegundos del valor original.
+    if (span.quotaCatalogFetchedAt) parts.push(t('trace.quota.catalog', { at: span.quotaCatalogFetchedAt }));
+    parts.push(...rateParts(span.quotaRateSnapshot, t, language));
     return parts.join(' · ');
   }
   if (span.quotaMissingReason) {

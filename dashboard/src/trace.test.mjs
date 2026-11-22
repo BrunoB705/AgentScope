@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatDate, translate } from './i18n.ts';
+import { translate } from './i18n.ts';
 import { buildWaterfall, describeQuotaProvenance, findSpanForEvent, isErrorStatus, spanIdForEvent } from './trace.ts';
 
 const es = translate.bind(null, 'es');
@@ -87,23 +87,21 @@ test('reconoce error y failed como estados de error', () => {
 });
 
 test('describe la procedencia de una cuota estimada con catálogo y tarifas', () => {
-  const fetchedAt = '2026-11-17T10:22:00.000Z';
   const text = describeQuotaProvenance({
     quotaCostEstimate: 0.004325,
-    quotaCatalogFetchedAt: fetchedAt,
+    quotaCatalogFetchedAt: '2026-11-17T10:22:00.000Z',
     quotaRateSnapshot: '{"input":0.15,"output":0.6,"cacheRead":0.015,"cacheWrite":0.1875,"tier":null}',
   }, es, 'es');
-  assert.equal(text, `estimada · catálogo ${formatDate('es', fetchedAt)} · US$/M entrada 0.15 · salida 0.6 · caché 0.015/0.1875`);
+  assert.equal(text, 'estimada · catálogo 2026-11-17T10:22:00.000Z · US$/M entrada 0,15 · salida 0,6 · caché 0,015/0,1875');
 });
 
 test('la procedencia de la cuota se traduce y respeta el idioma pedido', () => {
-  const fetchedAt = '2026-11-17T10:22:00.000Z';
   const text = describeQuotaProvenance({
     quotaCostEstimate: 0.004325,
-    quotaCatalogFetchedAt: fetchedAt,
+    quotaCatalogFetchedAt: '2026-11-17T10:22:00.000Z',
     quotaRateSnapshot: '{"input":0.15,"output":0.6,"cacheRead":0.015,"cacheWrite":0.1875,"tier":{"size":200000}}',
   }, en, 'en');
-  assert.equal(text, `estimated · catalog ${formatDate('en', fetchedAt)} · US$/M input 0.15 · output 0.6 · cache 0.015/0.1875 · tier 200000`);
+  assert.equal(text, 'estimated · catalog 2026-11-17T10:22:00.000Z · US$/M input 0.15 · output 0.6 · cache 0.015/0.1875 · tier 200000');
 });
 
 test('explica por qué falta la cuota en lugar de dejarla vacía', () => {

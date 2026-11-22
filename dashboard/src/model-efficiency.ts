@@ -1,4 +1,4 @@
-import type { Translate } from './i18n.ts';
+import { formatNumber, type Language, type Translate } from './i18n.ts';
 
 export type CostAxisMetric = 'quotaPerCall' | 'quotaPer1M' | 'tokensPerCall';
 export type ValueAxisMetric = 'speed' | 'latency' | 'cache' | 'benchmarkPass' | 'benchmarkJudge';
@@ -88,15 +88,16 @@ export function filterModelsByMinCalls(models: ReadonlyArray<ModelBreakdownItem>
 }
 
 /** Calcula ganadores objetivos por dimensión separada; exige al menos dos modelos comparables. */
-export function computeModelHighlights(models: ReadonlyArray<ModelBreakdownItem>, t: Translate): EfficiencyHighlight[] {
+export function computeModelHighlights(models: ReadonlyArray<ModelBreakdownItem>, t: Translate, language: Language): EfficiencyHighlight[] {
+  const fixed = (digits: number): Intl.NumberFormatOptions => ({ minimumFractionDigits: digits, maximumFractionDigits: digits });
   const candidates = [
-    pickHighlight(models, 'fastest', t('models.highlight.fastest'), 'min', m => m.averageDurationMs, v => t('models.highlight.metric.perStep', { value: (v / 1000).toFixed(2) }), t, true),
-    pickHighlight(models, 'throughput', t('models.highlight.throughput'), 'max', m => m.outputTokensPerSec, v => t('models.highlight.metric.throughput', { value: v.toFixed(1) }), t, true),
-    pickHighlight(models, 'cache', t('models.highlight.cache'), 'max', m => m.cacheEfficiency, v => t('models.highlight.metric.percent', { value: (v * 100).toFixed(1) }), t),
-    pickHighlight(models, 'cheapestQuota', t('models.highlight.cheapestQuota'), 'min', m => m.quotaPerCall, v => t('models.highlight.metric.approxUsd', { value: v.toFixed(6) }), t, true),
-    pickHighlight(models, 'cheapestQuota1M', t('models.highlight.cheapestQuota1M'), 'min', m => m.quotaPer1MTokens, v => t('models.highlight.metric.approxUsd', { value: v.toFixed(2) }), t, true),
-    pickHighlight(models, 'cheapestCost', t('models.highlight.cheapestCost'), 'min', m => m.reportedCostPerCall, v => t('models.highlight.metric.usd', { value: v.toFixed(6) }), t, true),
-    pickHighlight(models, 'benchmarkPass', t('models.highlight.benchmarkPass'), 'max', m => m.benchmarkPassRate, v => t('models.highlight.metric.percent', { value: (v * 100).toFixed(0) }), t),
+    pickHighlight(models, 'fastest', t('models.highlight.fastest'), 'min', m => m.averageDurationMs, v => t('models.highlight.metric.perStep', { value: formatNumber(language, v / 1000, fixed(2)) }), t, true),
+    pickHighlight(models, 'throughput', t('models.highlight.throughput'), 'max', m => m.outputTokensPerSec, v => t('models.highlight.metric.throughput', { value: formatNumber(language, v, fixed(1)) }), t, true),
+    pickHighlight(models, 'cache', t('models.highlight.cache'), 'max', m => m.cacheEfficiency, v => t('models.highlight.metric.percent', { value: formatNumber(language, v * 100, fixed(1)) }), t),
+    pickHighlight(models, 'cheapestQuota', t('models.highlight.cheapestQuota'), 'min', m => m.quotaPerCall, v => t('models.highlight.metric.approxUsd', { value: formatNumber(language, v, fixed(6)) }), t, true),
+    pickHighlight(models, 'cheapestQuota1M', t('models.highlight.cheapestQuota1M'), 'min', m => m.quotaPer1MTokens, v => t('models.highlight.metric.approxUsd', { value: formatNumber(language, v, fixed(2)) }), t, true),
+    pickHighlight(models, 'cheapestCost', t('models.highlight.cheapestCost'), 'min', m => m.reportedCostPerCall, v => t('models.highlight.metric.usd', { value: formatNumber(language, v, fixed(6)) }), t, true),
+    pickHighlight(models, 'benchmarkPass', t('models.highlight.benchmarkPass'), 'max', m => m.benchmarkPassRate, v => t('models.highlight.metric.percent', { value: formatNumber(language, v * 100, fixed(0)) }), t),
   ];
   return candidates.filter((item): item is EfficiencyHighlight => item !== null);
 }

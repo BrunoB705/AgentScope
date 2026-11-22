@@ -120,6 +120,15 @@ export function formatCompact(language: Language, value: number): string {
   return new Intl.NumberFormat(locales[language], { notation: 'compact', maximumFractionDigits: 1 }).format(value);
 }
 
+/**
+ * Número decimal localizado con los decimales que pida el llamador. Sin opciones usa el
+ * valor por defecto de `Intl`, así que quien necesite exactitud (tasas, montos acotados)
+ * debe fijar `minimumFractionDigits` y `maximumFractionDigits`.
+ */
+export function formatNumber(language: Language, value: number, options: Intl.NumberFormatOptions = {}): string {
+  return new Intl.NumberFormat(locales[language], options).format(value);
+}
+
 /** Fecha y hora localizadas; para sólo la hora está `formatClock`. */
 export function formatDate(language: Language, value: string | Date): string {
   return new Date(value).toLocaleString(locales[language]);

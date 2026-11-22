@@ -5,7 +5,7 @@ import { buildWaterfall, describeQuotaProvenance, findSpanForEvent, isErrorStatu
 import { BenchmarksPage } from './benchmarks-page';
 import { budgetAmountText, budgetMetricLabel, budgetPanelSummary } from './budgets';
 import { buildScatterPlot, computeModelHighlights, filterModelsByMinCalls, layoutScatterLabels, type CostAxisMetric, type ModelBreakdownItem, type ValueAxisMetric } from './model-efficiency';
-import { classifySessionHierarchy, summarizeDelegation, type ModelRoleItem, type ParentSessionSummary, type RoleBreakdownItem, type SubagentSummary } from './orchestration';
+import { classifySessionHierarchy, flattenSessionTree, summarizeDelegation, type ModelRoleItem, type ParentSessionSummary, type RoleBreakdownItem, type SubagentSummary } from './orchestration';
 import { formatClock, formatCompact, formatDate, formatMoney, formatNumber, LanguageProvider, statusLabel, translateError, translateSignal, useLanguage, type Language, type Translate, type TranslationKey } from './i18n';
 import './style.css';
 
@@ -365,6 +365,12 @@ function App() {
   const [projectFilter, setProjectFilter] = React.useState('');
   const [toolFilter, setToolFilter] = React.useState('');
   const [agentFilter, setAgentFilter] = React.useState('');
+  const [treeMode, setTreeMode] = React.useState(true);
+  const [expandedSessions, setExpandedSessions] = React.useState<Set<string>>(() => new Set());
+  const [childrenByParent, setChildrenByParent] = React.useState<Record<string, Session[]>>({});
+  const [loadingChildren, setLoadingChildren] = React.useState<Record<string, boolean>>({});
+  const expandedRef = React.useRef(expandedSessions);
+  expandedRef.current = expandedSessions;
   const [from, setFrom] = React.useState('');
   const [to, setTo] = React.useState('');
   const [errorsOnly, setErrorsOnly] = React.useState(false);
@@ -425,6 +431,25 @@ function App() {
   const spanRefs = React.useRef(new Map<string, HTMLButtonElement>());
   const focusNonce = React.useRef(0);
 
+  const loadChildren = React.useCallback(async (parentId: string) => {
+    setLoadingChildren(prev => ({ ...prev, [parentId]: true }));
+    try {
+      const response = await fetch(`/api/v1/sessions?parentSessionId=${encodeURIComponent(parentId)}&pageSize=100`);
+      if (!response.ok) return;
+      const data = await response.json() as Listing;
+      setChildrenByParent(prev => ({ ...prev, [parentId]: data.items }));
+    } catch { /* Se reintentará en el próximo refresco. */ }
+    finally { setLoadingChildren(prev => ({ ...prev, [parentId]: false })); }
+  }, []);
+  const toggleTreeNode = React.useCallback((sessionId: string) => {
+    setExpandedSessions(prev => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else { next.add(sessionId); void loadChildren(sessionId); }
+      return next;
+    });
+  }, [loadChildren]);
+
   const load = React.useCallback(async () => {
     const params = new URLSearchParams({ page: String(page), pageSize: '100' });
     if (status) params.set('status', status);
@@ -432,6 +457,7 @@ function App() {
     if (projectFilter.trim()) params.set('project', projectFilter.trim());
     if (toolFilter.trim()) params.set('tool', toolFilter.trim());
     if (agentFilter.trim()) params.set('agent', agentFilter.trim());
+    else if (treeMode) params.set('rootOnly', 'true');
     if (errorsOnly) params.set('error', 'true');
     if (from) params.set('from', new Date(`${from}T00:00:00`).toISOString());
     if (to) params.set('to', new Date(`${to}T23:59:59`).toISOString());
@@ -440,8 +466,11 @@ function App() {
       const response = await fetch(`/api/v1/sessions?${params}`);
       if (!response.ok) throw new Error(`API respondió ${response.status}`);
       setListing(await response.json()); setApiError(null);
+      if (treeMode && !agentFilter.trim() && expandedRef.current.size > 0) {
+        for (const parentId of expandedRef.current) void loadChildren(parentId);
+      }
     } catch { setApiError({ key: 'sessions.loadFailed' }); }
-  }, [status, model, projectFilter, toolFilter, agentFilter, from, to, errorsOnly, page, scope]);
+  }, [status, model, projectFilter, toolFilter, agentFilter, treeMode, from, to, errorsOnly, page, scope, loadChildren]);
   loadRef.current = load;
   selectedRef.current = selected;
   const loadDetail = React.useCallback(async (sessionId: string) => {
@@ -603,7 +632,7 @@ function App() {
     const timeout = window.setTimeout(() => setHighlightedSpanId(null), 1400);
     return () => window.clearTimeout(timeout);
   }, [reveal]);
-  React.useEffect(() => { setPage(1); }, [status, model, projectFilter, toolFilter, agentFilter, from, to, errorsOnly, scope]);
+  React.useEffect(() => { setPage(1); }, [status, model, projectFilter, toolFilter, agentFilter, treeMode, from, to, errorsOnly, scope]);
 
   const sessions = listing.items;
   const spans: Span[] = detail?.spans ?? [];
@@ -762,9 +791,9 @@ function App() {
     {apiError && <div className="api-error" role="status">{errorText(t, apiError)}</div>}
     <section className="stats"><article><span>{t('sessions.stat.total')}</span><b>{formatNumber(language, listing.total)}</b></article><article><span>{t('sessions.stat.pageErrors')}</span><b>{formatNumber(language, sessions.reduce((a, s) => a + s.errorCount, 0))}</b></article><article><span>{t('sessions.stat.duration')}</span><b>{duration(durationTotal, t, language)}</b></article><article><span>{t('sessions.stat.spans')}</span><b>{formatNumber(language, sessions.reduce((a, s) => a + s.spanCount, 0))}</b></article><article><span>{t('sessions.stat.tokens')}</span><b>{tokenText(tokenTotal, t, language)}</b></article></section>
     <details className="budgets-panel"><summary>{t('budgets.form.title')} <span>{budgetPanelSummary(budgets, t)}</span></summary><div className="budgets-content"><form className="budget-form" onSubmit={saveBudget}><label>{t('budgets.form.project')}<input list="known-projects" value={budgetProject} onChange={e => setBudgetProject(e.target.value)} placeholder={t('budgets.form.projectPlaceholder')} required maxLength={120}/><datalist id="known-projects">{[...new Set(sessions.map(s => s.project).filter(Boolean))].map(project => <option key={project} value={project}/>)}</datalist></label><label>{t('budgets.form.limit')}<input type="number" min="0.01" max="1000000" step="0.01" value={budgetLimit} onChange={e => setBudgetLimit(e.target.value)} placeholder="25.00" required/></label><label>{t('budgets.form.metric')}<select value={budgetMetric} onChange={e => setBudgetMetric(e.target.value as 'cost' | 'quota')}><option value="cost">{budgetMetricLabel('cost', t)}</option><option value="quota">{budgetMetricLabel('quota', t)}</option></select></label><button disabled={budgetSaving}>{budgetSaving ? t('common.saving') : t('budgets.form.save')}</button></form>{budgetMessage && <p className="form-message" role="status">{t(budgetMessage.key, budgetMessage.params)}</p>}{budgets.length > 0 && <div className="budget-list">{budgets.map(budget => <article className={`budget-item ${(budget.percentage ?? 0) >= 100 ? 'over-budget' : (budget.percentage ?? 0) >= 80 ? 'near-budget' : ''}`} key={budget.project}><div className="budget-heading"><div><b>{budget.project}</b><small>{[budgetMetricLabel(budget.metric, t), t('budgets.item.currentMonth'), budget.totalSpans ? `${t('budgets.item.measured', { measured: formatNumber(language, budget.measuredSpans ?? 0), total: formatNumber(language, budget.totalSpans) })}${budget.isPartial ? ` (${t('budgets.item.partial')})` : ''}` : ''].filter(Boolean).join(t('common.listSeparator'))}</small></div><button className="text-button" onClick={() => void deleteBudget(budget.project)}>{t('common.delete')}</button></div><div className="budget-amount">{budgetAmountText(budget, value => formatMoney(language, value), t)}</div><div className="budget-track"><i style={{ width: `${Math.min(100, budget.percentage ?? 0)}%` }}/></div><small>{budget.percentage == null ? t('budgets.item.usagePending') : [t('budgets.item.usage', { percent: formatNumber(language, budget.percentage, { maximumFractionDigits: 0 }) }), budget.percentage >= 100 ? t('budgets.item.over') : budget.percentage >= 80 ? t('budgets.item.near') : ''].filter(Boolean).join(t('common.listSeparator'))}</small></article>)}</div>}<p className="budget-footnote">{t('budgets.footnote')}</p></div></details>
-    <section className="layout"><div className="panel"><div className="panel-head"><div><h2>{t('sessions.panel.title')}</h2><small>{t('sessions.panel.subtitle')}</small></div><span className="result-count">{t('sessions.panel.count', { count: listing.total, value: formatNumber(language, listing.total) })}</span></div>
+    <section className="layout"><div className="panel"><div className="panel-head"><div><h2>{t('sessions.panel.title')}</h2><small>{t('sessions.panel.subtitle')}</small></div><div className="panel-head-actions"><div className="subview-switch compact-switch" role="group" aria-label={t('sessions.filter.modeAria')}><button type="button" className={treeMode ? 'active' : ''} title={t('sessions.filter.treeModeTitle')} aria-pressed={treeMode} onClick={() => setTreeMode(true)}>{t('sessions.filter.treeMode')}</button><button type="button" className={!treeMode ? 'active' : ''} title={t('sessions.filter.flatModeTitle')} aria-pressed={!treeMode} onClick={() => setTreeMode(false)}>{t('sessions.filter.flatMode')}</button></div><span className="result-count">{t('sessions.panel.count', { count: listing.total, value: formatNumber(language, listing.total) })}</span></div></div>
       <div className="filters"><label>{t('sessions.filter.status')}<select value={status} onChange={e => setStatus(e.target.value)}><option value="">{t('sessions.filter.allStatuses')}</option><option value="active">{t('status.active')}</option><option value="completed">{t('status.completed')}</option><option value="interrupted">{t('status.interrupted')}</option><option value="error">{t('status.error')}</option></select></label><label>{t('sessions.filter.model')}<input placeholder={t('sessions.filter.anyModel')} value={model} onChange={e => setModel(e.target.value)} /></label><label>{t('sessions.filter.project')}<input list="known-projects" placeholder={t('sessions.filter.anyProject')} value={projectFilter} onChange={e => setProjectFilter(e.target.value)} /></label><label>{t('sessions.filter.tool')}<input placeholder={t('sessions.filter.toolPlaceholder')} value={toolFilter} onChange={e => setToolFilter(e.target.value)} /></label><label>{t('sessions.filter.agent')}<input placeholder={t('sessions.filter.agentPlaceholder')} value={agentFilter} onChange={e => setAgentFilter(e.target.value)} /></label><label>{t('sessions.filter.from')}<input type="date" value={from} onChange={e => setFrom(e.target.value)} /></label><label>{t('sessions.filter.to')}<input type="date" value={to} onChange={e => setTo(e.target.value)} /></label><label className="check-filter"><input type="checkbox" checked={errorsOnly} onChange={e => setErrorsOnly(e.target.checked)} />{t('sessions.filter.errorsOnly')}</label></div>
-      {apiError ? <div className="empty"><div className="empty-icon">!</div><b>{t('sessions.empty.apiTitle')}</b><p>{t('sessions.empty.apiBody')}</p><button onClick={() => void load()}>{t('common.retry')}</button></div> : sessions.length === 0 ? <div className="empty"><div className="empty-icon">⌁</div><b>{t('sessions.empty.title')}</b><p>{t('sessions.empty.body')}</p></div> : <><div className="table-wrap sessions-table" role="region" aria-label={t('sessions.table.label')} tabIndex={0}><table><thead><tr><th>{t('sessions.table.session')}</th><th>{t('sessions.table.status')}</th><th>{t('sessions.table.model')}</th><th>{t('sessions.table.spans')}</th><th>{t('sessions.table.started')}</th></tr></thead><tbody>{sessions.map(s => { const hierarchy = classifySessionHierarchy(s); return <tr onClick={() => openSession(s.id)} className={selected === s.id ? 'selected' : ''} key={s.id}><td><b title={s.title || t('common.untitledSession')}>{s.title || t('common.untitledSession')}</b>{(s.agent || hierarchy !== 'standalone') && <span className="session-role-row">{s.agent && <span className="role-chip">{s.agent}</span>}{hierarchy === 'orchestrator' && <span className="role-chip orchestrator">{t('sessions.badge.subagents', { count: s.subagentCount ?? 0, value: formatNumber(language, s.subagentCount ?? 0) })}</span>}{hierarchy === 'subagent' && <span className="role-chip subagent">{t('sessions.badge.subagent')}</span>}</span>}</td><td><span className={`badge ${s.status}`}>{statusLabel(t, s.status)}</span>{s.errorCount > 0 && (
+      {apiError ? <div className="empty"><div className="empty-icon">!</div><b>{t('sessions.empty.apiTitle')}</b><p>{t('sessions.empty.apiBody')}</p><button onClick={() => void load()}>{t('common.retry')}</button></div> : sessions.length === 0 ? <div className="empty"><div className="empty-icon">⌁</div><b>{t('sessions.empty.title')}</b><p>{t('sessions.empty.body')}</p></div> : <><div className="table-wrap sessions-table" role="region" aria-label={t('sessions.table.label')} tabIndex={0}><table><thead><tr><th>{t('sessions.table.session')}</th><th>{t('sessions.table.status')}</th><th>{t('sessions.table.model')}</th><th>{t('sessions.table.spans')}</th><th>{t('sessions.table.started')}</th></tr></thead><tbody>{(treeMode && !agentFilter.trim() ? flattenSessionTree(sessions, childrenByParent, expandedSessions) : sessions.map(session => ({ session, depth: 0, expandable: false, expanded: false }))).map(row => { const s = row.session; const hierarchy = classifySessionHierarchy(s); return <React.Fragment key={s.id}><tr onClick={() => openSession(s.id)} className={[selected === s.id ? 'selected' : '', row.depth > 0 ? 'subagent-row' : ''].filter(Boolean).join(' ')}><td style={row.depth > 0 ? { paddingLeft: `${12 + row.depth * 20}px` } : undefined}><div className="session-title-cell">{row.expandable && <button type="button" className="tree-toggle" aria-expanded={row.expanded} aria-label={row.expanded ? t('sessions.tree.collapse') : t('sessions.tree.expand')} onClick={e => { e.stopPropagation(); toggleTreeNode(s.id); }}>{row.expanded ? '▾' : '▸'}</button>}<div className="session-title-body"><b title={s.title || t('common.untitledSession')}>{s.title || t('common.untitledSession')}</b>{(s.agent || hierarchy !== 'standalone') && <span className="session-role-row">{s.agent && <span className="role-chip">{s.agent}</span>}{hierarchy === 'orchestrator' && <span className="role-chip orchestrator">{t('sessions.badge.subagents', { count: s.subagentCount ?? 0, value: formatNumber(language, s.subagentCount ?? 0) })}</span>}{hierarchy === 'subagent' && <span className="role-chip subagent">{t('sessions.badge.subagent')}</span>}</span>}</div></div></td><td><span className={`badge ${s.status}`}>{statusLabel(t, s.status)}</span>{s.errorCount > 0 && (
   <button
     type="button"
     className="error-count"
@@ -774,7 +803,7 @@ function App() {
   >
     {t('common.errors', { count: s.errorCount, value: formatNumber(language, s.errorCount) })}
   </button>
-)}</td><td>{s.model || '—'}</td><td>{formatNumber(language, s.spanCount)}</td><td>{time(s.startedAt, language)}</td></tr>; })}</tbody></table></div><div className="pagination"><span>{t('sessions.pagination.page', { page: formatNumber(language, listing.page), total: formatNumber(language, Math.max(1, Math.ceil(listing.total / listing.pageSize))) })}</span><div><button disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>{t('sessions.pagination.previous')}</button><button disabled={page * listing.pageSize >= listing.total} onClick={() => setPage(p => p + 1)}>{t('sessions.pagination.next')}</button></div></div></>}
+)}</td><td>{s.model || '—'}</td><td>{formatNumber(language, s.spanCount)}</td><td>{time(s.startedAt, language)}</td></tr>{row.expanded && loadingChildren[s.id] && !childrenByParent[s.id] && <tr className="subagent-loading-row"><td colSpan={5} style={{ paddingLeft: `${32 + row.depth * 20}px` }}>{t('sessions.tree.loading')}</td></tr>}</React.Fragment>; })}</tbody></table></div><div className="pagination"><span>{t('sessions.pagination.page', { page: formatNumber(language, listing.page), total: formatNumber(language, Math.max(1, Math.ceil(listing.total / listing.pageSize))) })}</span><div><button disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>{t('sessions.pagination.previous')}</button><button disabled={page * listing.pageSize >= listing.total} onClick={() => setPage(p => p + 1)}>{t('sessions.pagination.next')}</button></div></div></>}
     </div><div className="panel detail"><div className="panel-head"><div><h2>{detail?.session?.title || (detail ? t('common.untitledSession') : t('detail.panel.trace'))}</h2><small>{detail ? t('detail.panel.trace') : t('detail.panel.select')}</small></div><div className="detail-actions"><button onClick={() => { void load(); if (selected) void loadDetail(selected); }}>{t('common.refresh')}</button>{detail && <button type="button" className="danger-button" disabled={deletingSession} onClick={() => void deleteSession(detail.session.id)}>{deletingSession ? t('detail.deleting') : t('common.delete')}</button>}</div></div>{detail ? <>
       {detail.parentSession && <button type="button" className="parent-session-link" onClick={() => openSession(detail.parentSession!.id)}>{t('detail.parentLink', { title: detail.parentSession.title || t('common.untitledSession') })}{detail.parentSession.agent ? ` · ${detail.parentSession.agent}` : ''}</button>}
       <div className="session-meta"><span className={`badge ${detail.session.status}`}>{statusLabel(t, detail.session.status)}</span>{detail.session.agent && <span className="role-chip">{detail.session.agent}</span>}<span>{detail.session.source}</span><span>{detail.session.model || t('detail.unknownModel')}</span>{detail.quality && <span className={`badge ${detail.quality.status === 'complete' ? 'completed' : 'interrupted'}`} title={detail.quality.status === 'complete' ? t('detail.quality.completeTitle') : qualitySummary(detail.quality, t, language)}>{detail.quality.status === 'complete' ? t('detail.quality.complete') : t('detail.quality.partial', { summary: qualitySummary(detail.quality, t, language) })}</span>}</div>

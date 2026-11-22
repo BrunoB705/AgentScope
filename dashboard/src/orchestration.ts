@@ -49,6 +49,37 @@ export type ModelRoleItem = {
   errorCount: number;
 };
 
+export type SessionTreeRow<T extends { id: string; parentSessionId?: string | null; subagentCount?: number }> = {
+  session: T;
+  depth: number;
+  expandable: boolean;
+  expanded: boolean;
+};
+
+/** Aplana sesiones raíz y subagentes expandidos respetando profundidad máxima y evitando ciclos. */
+export function flattenSessionTree<T extends { id: string; parentSessionId?: string | null; subagentCount?: number }>(
+  roots: ReadonlyArray<T>,
+  childrenByParent: Readonly<Record<string, ReadonlyArray<T>>>,
+  expandedIds: ReadonlySet<string>,
+  maxDepth = 4,
+): SessionTreeRow<T>[] {
+  const rows: SessionTreeRow<T>[] = [];
+  const visited = new Set<string>();
+  const visit = (items: ReadonlyArray<T>, depth: number) => {
+    for (const session of items) {
+      if (visited.has(session.id)) continue;
+      visited.add(session.id);
+      const loadedChildren = childrenByParent[session.id] ?? [];
+      const expandable = depth < maxDepth && ((session.subagentCount ?? 0) > 0 || loadedChildren.length > 0);
+      const expanded = expandable && expandedIds.has(session.id);
+      rows.push({ session, depth, expandable, expanded });
+      if (expanded && loadedChildren.length > 0) visit(loadedChildren, depth + 1);
+    }
+  };
+  visit(roots, 0);
+  return rows;
+}
+
 /** Clasifica si una sesión actuó como orquestador (tiene hijos), subagente (tiene padre) o sesión aislada. */
 export function classifySessionHierarchy(session: { parentSessionId?: string | null; subagentCount?: number }): SessionHierarchyKind {
   if ((session.subagentCount ?? 0) > 0) return 'orchestrator';

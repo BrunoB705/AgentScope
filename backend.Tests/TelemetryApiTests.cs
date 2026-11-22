@@ -1006,6 +1006,20 @@ public sealed class TelemetryApiTests : IDisposable
             Assert.Equal("sess-sub-rev", items[0].GetProperty("id").GetString());
         }
 
+        using (var rootsDoc = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions?rootOnly=true")))
+        {
+            var ids = rootsDoc.RootElement.GetProperty("items").EnumerateArray().Select(x => x.GetProperty("id").GetString()).ToArray();
+            Assert.Contains("sess-orch", ids);
+            Assert.DoesNotContain("sess-sub-rev", ids);
+        }
+
+        using (var childrenDoc = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions?parentSessionId=sess-orch")))
+        {
+            var items = childrenDoc.RootElement.GetProperty("items").EnumerateArray().ToArray();
+            Assert.Single(items);
+            Assert.Equal("sess-sub-rev", items[0].GetProperty("id").GetString());
+        }
+
         using (var orchDoc = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/sess-orch")))
         {
             Assert.Equal(JsonValueKind.Null, orchDoc.RootElement.GetProperty("parentSession").ValueKind);

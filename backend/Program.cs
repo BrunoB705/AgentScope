@@ -539,7 +539,7 @@ app.MapPost("/api/v1/telemetry/events", async (HttpRequest request, TelemetryEve
     await hub.Clients.All.SendAsync("telemetry.updated", new { sessionId = dto.SessionId, eventId = dto.EventId, type = dto.Type });
     return Results.Ok(new { accepted = true, duplicate = false });
 });
-app.MapGet("/api/v1/sessions", async (TelemetryDb db, string? status, string? model, string? project, string? tool, string? agent, string? parentSessionId, string? search, bool? error, DateTimeOffset? from, DateTimeOffset? to, int? page, int? pageSize, string? scope) => {
+app.MapGet("/api/v1/sessions", async (TelemetryDb db, string? status, string? model, string? project, string? tool, string? agent, string? parentSessionId, bool? rootOnly, string? search, bool? error, DateTimeOffset? from, DateTimeOffset? to, int? page, int? pageSize, string? scope) => {
     var q = ApplyScope(db.Sessions.AsNoTracking(), scope);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(s => s.Status == status);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(s => s.Model != null && s.Model.Contains(model));
@@ -547,6 +547,7 @@ app.MapGet("/api/v1/sessions", async (TelemetryDb db, string? status, string? mo
     if (!string.IsNullOrWhiteSpace(tool)) { var tFilter = tool.Trim(); q = q.Where(s => db.Spans.Any(x => x.SessionId == s.Id && x.Kind == "execute_tool" && x.Name.Contains(tFilter))); }
     if (!string.IsNullOrWhiteSpace(agent)) { var aFilter = agent.Trim(); q = q.Where(s => (s.Agent != null && s.Agent.Contains(aFilter)) || db.Spans.Any(x => x.SessionId == s.Id && x.Agent != null && x.Agent.Contains(aFilter))); }
     if (!string.IsNullOrWhiteSpace(parentSessionId)) { var parentFilter = parentSessionId.Trim(); q = q.Where(s => s.ParentSessionId == parentFilter); }
+    else if (rootOnly == true) q = q.Where(s => s.ParentSessionId == null);
     if (!string.IsNullOrWhiteSpace(search)) { var term = search.Trim(); q = q.Where(s => (s.Title != null && s.Title.Contains(term)) || (s.Project != null && s.Project.Contains(term))); }
     if (error == true) q = q.Where(s => s.Status == "error" || db.Events.Any(x => x.SessionId == s.Id && (x.Status == "error" || x.Status == "failed")) || db.Spans.Any(x => x.SessionId == s.Id && (x.Status == "error" || x.Status == "failed")));
     var fromUtc = from?.UtcDateTime; var toUtc = to?.UtcDateTime;

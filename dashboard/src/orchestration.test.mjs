@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifySessionHierarchy, summarizeDelegation } from './orchestration.ts';
+import { classifySessionHierarchy, flattenSessionTree, summarizeDelegation } from './orchestration.ts';
 
 test('classifySessionHierarchy distingue orquestador, subagente y sesión aislada', () => {
   assert.equal(classifySessionHierarchy({ subagentCount: 2 }), 'orchestrator');
@@ -23,4 +23,28 @@ test('summarizeDelegation agrega roles distintos, cuota y tokens sin inventar ce
   const empty = summarizeDelegation([]);
   assert.equal(empty.totalQuota, null);
   assert.equal(empty.totalTokens, null);
+});
+
+test('flattenSessionTree intercala subagentes expandidos por profundidad y corta ciclos', () => {
+  const roots = [
+    { id: 'orch', subagentCount: 1 },
+    { id: 'solo', subagentCount: 0 },
+  ];
+  const children = {
+    orch: [{ id: 'sub-1', parentSessionId: 'orch', subagentCount: 1 }],
+    'sub-1': [{ id: 'sub-2', parentSessionId: 'sub-1', subagentCount: 0 }, { id: 'orch', parentSessionId: 'sub-1', subagentCount: 1 }],
+  };
+  const collapsed = flattenSessionTree(roots, children, new Set());
+  assert.deepEqual(collapsed.map(r => [r.session.id, r.depth, r.expandable, r.expanded]), [
+    ['orch', 0, true, false],
+    ['solo', 0, false, false],
+  ]);
+
+  const expanded = flattenSessionTree(roots, children, new Set(['orch', 'sub-1']));
+  assert.deepEqual(expanded.map(r => [r.session.id, r.depth]), [
+    ['orch', 0],
+    ['sub-1', 1],
+    ['sub-2', 2],
+    ['solo', 0],
+  ]);
 });

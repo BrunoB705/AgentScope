@@ -6,7 +6,8 @@ public sealed class JudgeTests
         var prompt = JudgePrompt.Build(
             "Corregí el bug.",
             new[] { "Claridad", "Correctitud" },
-            "diff de prueba");
+            "diff de prueba",
+            "es");
         Assert.Contains("Corregí el bug.", prompt);
         Assert.Contains("Claridad", prompt);
         Assert.Contains("Correctitud", prompt);
@@ -16,10 +17,17 @@ public sealed class JudgeTests
     [Fact]
     public void Build_AsksForStrictJson()
     {
-        var prompt = JudgePrompt.Build("x", new[] { "y" }, "z");
+        var prompt = JudgePrompt.Build("x", new[] { "y" }, "z", "es");
         Assert.Contains("\"score\"", prompt);
         Assert.Contains("\"rationale\"", prompt);
         Assert.Contains("sólo", prompt, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Build_AsksForRationaleInRunLanguage()
+    {
+        Assert.Contains("Escribí la justificación en inglés.", JudgePrompt.Build("x", new[] { "y" }, "z", "en"));
+        Assert.Contains("Escribí la justificación en español.", JudgePrompt.Build("x", new[] { "y" }, "z", "es"));
     }
 
     [Fact]

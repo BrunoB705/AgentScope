@@ -35,10 +35,20 @@ public sealed class VerdictTests
     {
         var prompt = VerdictPrompt.Build(
             new BenchmarkRunEntity { Id = "r", Suite = "csharp-dotnet", JudgeModel = "juez" },
-            Array.Empty<BenchmarkResultEntity>());
+            Array.Empty<BenchmarkResultEntity>(),
+            "es");
 
         Assert.Contains("---RECOMENDACION---", prompt);
         Assert.Contains("---FIN---", prompt);
         Assert.Contains("No narres", prompt, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Build_AsksForRecommendationInRunLanguage()
+    {
+        var run = new BenchmarkRunEntity { Id = "r", Suite = "csharp-dotnet", JudgeModel = "juez" };
+
+        Assert.Contains("Escribí la recomendación en inglés.", VerdictPrompt.Build(run, Array.Empty<BenchmarkResultEntity>(), "en"));
+        Assert.Contains("Escribí la recomendación en español.", VerdictPrompt.Build(run, Array.Empty<BenchmarkResultEntity>(), "es"));
     }
 }

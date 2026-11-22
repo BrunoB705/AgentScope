@@ -2,14 +2,18 @@ using System.Text.Json;
 
 public static class JudgePrompt
 {
-    public static string Build(string testPrompt, string[] rubric, string artifact)
+    public static string Build(string testPrompt, string[] rubric, string artifact, string language)
     {
         var criteria = rubric.Select((criterion, index) => $"{index + 1}. {criterion}");
+        var languageLine = language == "en"
+            ? "Escribí la justificación en inglés."
+            : "Escribí la justificación en español.";
         return "ENUNCIADO\n" + testPrompt
             + "\n\nRÚBRICA\n" + string.Join('\n', criteria)
             + "\n\nARTEFACTO\n" + artifact
             + "\n\nRespondé sólo con un objeto JSON con la forma {\"score\": <entero de 1 a 5>, \"rationale\": \"<justificación breve>\"}."
-            + "\nNo agregues texto fuera del JSON.";
+            + "\nNo agregues texto fuera del JSON."
+            + "\n" + languageLine;
     }
 }
 

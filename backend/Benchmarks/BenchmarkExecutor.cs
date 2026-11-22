@@ -314,7 +314,7 @@ internal sealed class BenchmarkExecutor
                 var artifact = test.Type == "code" ? cappedText + "\n\nDIFF\n" + diff : cappedText;
                 var rubric = test.Rubric.Length > 0 ? test.Rubric : new[] { "Corrección funcional", "Claridad del cambio" };
                 var judgePath = Path.Combine(promptDir, $"{result.Id}-judge.md");
-                await File.WriteAllTextAsync(judgePath, JudgePrompt.Build(test.Prompt, rubric, artifact), cancellationToken);
+                await File.WriteAllTextAsync(judgePath, JudgePrompt.Build(test.Prompt, rubric, artifact, run.OutputLanguage ?? "es"), cancellationToken);
 
                 ResetDirectory(runRoot, judgeDir);
                 var judgeCommand = ShellCommand.OpenCode(
@@ -402,7 +402,7 @@ internal sealed class BenchmarkExecutor
             ResetDirectory(runRoot, judgeDir);
 
             var promptPath = Path.Combine(promptDir, "verdict.md");
-            await File.WriteAllTextAsync(promptPath, VerdictPrompt.Build(run, results), cancellationToken);
+            await File.WriteAllTextAsync(promptPath, VerdictPrompt.Build(run, results, run.OutputLanguage ?? "es"), cancellationToken);
 
             var command = ShellCommand.OpenCode(
                 _options.Value.OpenCodeCommand,

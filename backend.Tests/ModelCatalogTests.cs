@@ -24,6 +24,16 @@ public sealed class ModelCatalogTests
     }
 
     [Fact]
+    public async Task ListAsync_ReturnsExceptionMessageWithoutCodeWhenRunnerThrows()
+    {
+        var fake = new FakeProcessRunner { Handler = _ => throw new InvalidOperationException("opencode not found") };
+        var result = await new ModelCatalog(fake).ListAsync();
+        Assert.Empty(result.Models);
+        Assert.Equal("opencode not found", result.Error);
+        Assert.Null(result.Code);
+    }
+
+    [Fact]
     public async Task ListAsync_ReturnsExitCodeWhenProcessFailsWithoutStderr()
     {
         var fake = new FakeProcessRunner();

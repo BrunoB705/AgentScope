@@ -112,6 +112,30 @@ public sealed class BenchmarkApiTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateRun_Returns409WithTimeoutCodeWhenCatalogTimesOut()
+    {
+        _factory.Fake.Handler = _ => new ProcessResult(-1, "", "", true, 15000);
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody());
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("opencode models timed out.", document.RootElement.GetProperty("error").GetString());
+        Assert.Equal("model_catalog_timeout", document.RootElement.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task CreateRun_Returns409WithExitCodeWhenCatalogExitsWithoutStderr()
+    {
+        _factory.Fake.Handler = _ => new ProcessResult(1, "", "", false, 10);
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody());
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("opencode models exited with code 1.", document.RootElement.GetProperty("error").GetString());
+        Assert.Equal("model_catalog_exit", document.RootElement.GetProperty("code").GetString());
+    }
+
+    [Fact]
     public async Task CreateRun_RejectsUnknownModel()
     {
         using var client = Client();

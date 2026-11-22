@@ -161,7 +161,11 @@ public sealed class SchemaMigratorTests : IDisposable
 
         // 0 = la columna existe y acepta NULL; -1 = no existe.
         Assert.Equal(0, ColumnNotNull("BenchmarkRuns", "OutputLanguage"));
-        Assert.Equal(4, SchemaMigrator.LatestVersion);
+        Assert.Equal(0, ColumnNotNull("Sessions", "ParentSessionId"));
+        Assert.Equal(0, ColumnNotNull("Sessions", "Agent"));
+        Assert.Equal(0, ColumnNotNull("Sessions", "AgentAt"));
+        Assert.Equal(0, ColumnNotNull("Spans", "Agent"));
+        Assert.Equal(5, SchemaMigrator.LatestVersion);
         Assert.Equal(SchemaMigrator.LatestVersion, await SchemaMigrator.CurrentVersionAsync(db));
 
         // La corrida previa sigue ahí y sin idioma guardado: el valor por defecto
@@ -193,5 +197,6 @@ public sealed class SchemaMigratorTests : IDisposable
         Assert.Contains(("index", "IX_Spans_Kind_StartedAt"), objects);
         Assert.Contains(("index", "IX_Sessions_StartedAt"), objects);
         Assert.Contains(("index", "IX_Sessions_UpdatedAt"), objects);
+        Assert.Contains(("index", "IX_Sessions_ParentSessionId"), objects);
     }
 }

@@ -308,3 +308,33 @@ test('shutdown intenta drenar la cola y persiste los pendientes si vence el time
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('session.created y session.forked propagan parentSessionId y agent de subagentes', () => {
+  const [created] = mapOpenCodeEvent({
+    id: 'e-sub', created: 4000, type: 'session.created',
+    data: { sessionID: 'sub-1', parentID: 'orch-1', agent: 'reviewer' },
+  });
+  assert.equal(created.parentSessionId, 'orch-1');
+  assert.equal(created.agent, 'reviewer');
+
+  const [selected] = mapOpenCodeEvent({
+    id: 'e-ag', created: 4100, type: 'session.agent.selected',
+    data: { sessionID: 'orch-1', agent: 'orchestrator' },
+  });
+  assert.equal(selected.type, 'session.agent.selected');
+  assert.equal(selected.agent, 'orchestrator');
+});
+
+test('model.completed y tool.completed conservan el rol/agent del paso', () => {
+  const [step] = mapOpenCodeEvent({
+    id: 'e-m', created: 5000, type: 'session.step.ended',
+    data: { sessionID: 'sub-1', assistantMessageID: 'm1', finish: 'stop', tokens: { input: 10, output: 5 } },
+  }, 'opencode', { model: 'opencode-go/m1', started: 4000, agent: 'reviewer' });
+  assert.equal(step.agent, 'reviewer');
+
+  const [tool] = mapOpenCodeEvent({
+    id: 'e-t', created: 5500, type: 'session.tool.success',
+    data: { sessionID: 'sub-1', id: 't1', assistantMessageID: 'm1', name: 'read' },
+  }, 'opencode', { started: 5200, agent: 'reviewer' });
+  assert.equal(tool.agent, 'reviewer');
+});

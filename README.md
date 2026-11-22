@@ -35,7 +35,7 @@ Trabajar con un agente de código suele ser una caja negra: cuesta saber en qué
 ### Vistas del dashboard
 
 - **Inicio:** resumen del período con sesiones por estado, tasa de éxito, duración promedio, tokens, costos, herramientas/modelos más usados y últimas sesiones.
-- **Observabilidad:** listado filtrable de sesiones y detalle del trace con waterfall proporcional, inspección de spans, herramientas, tokens, errores (con salto al span) y evaluación manual.
+- **Observabilidad:** listado filtrable de sesiones (estado, modelo, proyecto, herramienta, rol/agente, errores y fechas) y detalle del trace con waterfall proporcional, inspección de spans, orquestación de subagentes y consumo por rol, herramientas, tokens, errores (con salto al span) y evaluación manual.
 - **Herramientas:** uso, duración promedio y tasa de fallo por herramienta.
 - **Comportamiento:** detector de sesiones que requieren atención (bucles de herramientas, ráfagas de errores, sesiones largas o interrumpidas).
 - **Modelos:** consumo de tokens, eficiencia de caché, costo reportado por OpenCode y cuota Go estimada por origen y modelo, más subvista de **Eficiencia y valor** (latencia, tok/s, dispersión costo vs rendimiento, filtro por muestra mínima y cruce con **Pruebas**).

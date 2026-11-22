@@ -8,7 +8,7 @@ using Microsoft.EntityFrameworkCore;
 /// </summary>
 internal static class SchemaMigrator
 {
-    internal const int LatestVersion = 4;
+    internal const int LatestVersion = 5;
 
     internal static async Task ApplyAsync(TelemetryDb db)
     {
@@ -32,17 +32,22 @@ internal static class SchemaMigrator
         await EnsureLegacyColumnsAsync(db);
         var currentVersion = await CurrentVersionAsync(db);
         if (currentVersion < 2) await UpgradeToNullableTokensAsync(db);
-        if (currentVersion < 3)
-        {
-            await EnsureBenchmarkTablesAsync(db);
-            await EnsureIndexesAsync(db);
-        }
+        if (currentVersion < 3) await EnsureBenchmarkTablesAsync(db);
         // v4: el idioma de salida del juez viaja con la corrida. La columna es nullable
         // y las filas anteriores se leen como `es` sin reescribirlas.
         if (currentVersion < 4)
         {
             await AddColumnIfMissingAsync(db, "BenchmarkRuns", "OutputLanguage", "TEXT NULL");
         }
+        // v5: rastreo de orquestación (sesión padre de subagentes) y rol/agente por sesión y span.
+        if (currentVersion < 5)
+        {
+            await AddColumnIfMissingAsync(db, "Sessions", "ParentSessionId", "TEXT NULL");
+            await AddColumnIfMissingAsync(db, "Sessions", "Agent", "TEXT NULL");
+            await AddColumnIfMissingAsync(db, "Sessions", "AgentAt", "TEXT NULL");
+            await AddColumnIfMissingAsync(db, "Spans", "Agent", "TEXT NULL");
+        }
+        if (currentVersion < LatestVersion) await EnsureIndexesAsync(db);
         await RecordAsync(db, LatestVersion);
     }
 
@@ -214,6 +219,7 @@ internal static class SchemaMigrator
         await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS \"IX_Spans_Kind_StartedAt\" ON \"Spans\" (\"Kind\", \"StartedAt\")");
         await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS \"IX_Sessions_StartedAt\" ON \"Sessions\" (\"StartedAt\")");
         await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS \"IX_Sessions_UpdatedAt\" ON \"Sessions\" (\"UpdatedAt\")");
+        await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS \"IX_Sessions_ParentSessionId\" ON \"Sessions\" (\"ParentSessionId\")");
     }
 
     private static async Task RecordAsync(DbContext db, int version)
@@ -250,6 +256,7 @@ internal static class SchemaMigrator
         "QuotaCatalogFetchedAt", "QuotaRateSnapshot", "QuotaMissingReason",
         "Title", "Rating", "ReviewNote", "ReviewTask", "TitleAt", "ModelAt",
         "RequestVerdict", "Verdict", "OutputLanguage",
+        "ParentSessionId", "Agent", "AgentAt",
     };
 
 #pragma warning disable EF1002 // identificadores validados contra KnownTables/KnownColumns

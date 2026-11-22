@@ -314,7 +314,7 @@ export class TitleLookupPolicy {
 }
 
 /** Maps only scalar metadata from OpenCode v2 events; message, tool input/output are never copied. */
-export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', step?: { model?: string; started?: number; modelInfo?: Record<string, unknown>; toolName?: string; catalogFetchedAt?: string }): Telemetry[] {
+export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', step?: { model?: string; started?: number; modelInfo?: Record<string, unknown>; toolName?: string; catalogFetchedAt?: string; agent?: string }): Telemetry[] {
   const sid = session(event);
   if (!sid) return [];
   const data = event.data ?? {};
@@ -325,7 +325,20 @@ export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', ste
     ...common, type, status: 'ok', attributes: { opencode_event: event.type }, ...extras,
   });
   switch (event.type) {
-    case 'session.created': return [payload(event.type, { status: 'active' })];
+    case 'session.created':
+    case 'session.forked': {
+      const parentSessionId = str(get(data, 'parentID'));
+      const agent = str(get(data, 'agent'));
+      return [payload(event.type, {
+        status: 'active',
+        ...(parentSessionId ? { parentSessionId } : {}),
+        ...(agent ? { agent } : {}),
+      })];
+    }
+    case 'session.agent.selected': {
+      const agent = str(get(data, 'agent'));
+      return agent ? [payload('session.agent.selected', { agent })] : [];
+    }
     case 'session.renamed': {
       const title = str(get(data, 'title'));
       return title ? [payload('session.title.updated', { title })] : [];
@@ -342,10 +355,12 @@ export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', ste
     case 'session.model.selected':
     case 'session.step.started': {
       const model = modelLabel(data);
-      if (!model) return [];
+      const agent = str(get(data, 'agent'));
+      if (!model) return agent ? [payload('session.agent.selected', { agent })] : [];
       return [payload('session.model.selected', {
         eventId: `model-selection:${event.id ?? `${sid}:${event.created ?? Date.now()}`}`,
         model,
+        ...(agent ? { agent } : {}),
       })];
     }
     case 'session.step.ended': {
@@ -353,11 +368,13 @@ export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', ste
       const finish = str(get(data, 'finish'));
       const directModel = modelLabel(data);
       const resolvedModel = directModel ?? step?.model;
+      const resolvedAgent = str(get(data, 'agent')) ?? step?.agent;
       const resolution = directModel ? 'event' : step?.model ? 'step' : 'unknown';
       const quota = estimateGoAllowance(resolvedModel, tokens, step?.modelInfo);
       return [payload('model.completed', {
         eventId: `model:${str(get(data, 'assistantMessageID')) ?? event.id ?? sid}`,
         name: resolvedModel ?? 'model', model: resolvedModel,
+        ...(resolvedAgent ? { agent: resolvedAgent } : {}),
         status: finish === 'error' ? 'error' : 'ok',
         timestamp: date(step?.started ?? event.created),
         durationMs: typeof step?.started === 'number' && typeof event.created === 'number' ? Math.max(0, event.created - step.started) : undefined,
@@ -388,6 +405,7 @@ export function mapOpenCodeEvent(event: Event, fallbackProject = 'opencode', ste
       return [payload('tool.completed', {
         eventId: `tool:${str(get(data, 'id')) ?? event.id ?? sid}`,
         ...(assistantMessageId ? { parentId: `model:${assistantMessageId}` } : {}),
+        ...(step?.agent ? { agent: step.agent } : {}),
         name, status: event.type.endsWith('.failed') ? 'error' : 'ok',
         timestamp: date(step?.started ?? event.created),
         durationMs: typeof step?.started === 'number' && typeof event.created === 'number' ? Math.max(0, event.created - step.started) : undefined,
@@ -405,8 +423,9 @@ export default Plugin.define({
     const apiKey = (await resolveApiKey()) ?? '';
     if (!apiKey) { console.warn('Agent Observability: configura OPENCODE_OBSERVABILITY_KEY para habilitar la ingesta.'); return; }
     const fallbackProject = process.env.OPENCODE_OBSERVABILITY_PROJECT ?? basename(ctx.location.directory) ?? 'opencode';
-    const stepByMessage = new Map<string, { model: string; started: number; modelInfo?: Record<string, unknown>; catalogFetchedAt?: string }>();
+    const stepByMessage = new Map<string, { model: string; started: number; modelInfo?: Record<string, unknown>; catalogFetchedAt?: string; agent?: string }>();
     const modelBySession = new Map<string, string>();
+    const agentBySession = new Map<string, string>();
     const modelInfoById = new Map<string, Record<string, unknown>>();
     const titleLookup = new TitleLookupPolicy();
     const titleBySession = new Map<string, string>();
@@ -500,12 +519,27 @@ export default Plugin.define({
           if (sid && !titleBySession.has(sid) && titleLookup.tryAcquire(sid)) {
             try {
               const sessionInfo = await (ctx.session as unknown as { get: (input: { sessionID: string }) => Promise<unknown> }).get({ sessionID: sid });
-              // OpenCode's v2 session endpoint wraps its payload in `data`.
-              const title = str(get(get(sessionInfo, 'data'), 'title')) ?? str(get(sessionInfo, 'title'));
+              const infoObj = get(sessionInfo, 'data') ?? sessionInfo;
+              const title = str(get(infoObj, 'title'));
+              const parentSessionId = str(get(infoObj, 'parentID'));
+              const sessionAgent = str(get(infoObj, 'agent'));
+              if (sessionAgent) agentBySession.set(sid, sessionAgent);
               if (title) {
                 titleBySession.set(sid, title);
                 titleLookup.markKnown(sid);
-                queue.enqueue({ eventId: `session-title:${sid}`, source: 'opencode', sessionId: sid, timestamp: date(), type: 'session.title.updated', title, project: basename(current.location?.directory) ?? fallbackProject, protocolVersion: TELEMETRY_PROTOCOL_VERSION });
+                queue.enqueue({
+                  eventId: `session-title:${sid}`, source: 'opencode', sessionId: sid, timestamp: date(), type: 'session.title.updated', title,
+                  ...(parentSessionId ? { parentSessionId } : {}),
+                  ...(sessionAgent ? { agent: sessionAgent } : {}),
+                  project: basename(current.location?.directory) ?? fallbackProject, protocolVersion: TELEMETRY_PROTOCOL_VERSION,
+                });
+              } else if (parentSessionId || sessionAgent) {
+                queue.enqueue({
+                  eventId: `session-meta:${sid}`, source: 'opencode', sessionId: sid, timestamp: date(), type: 'session.agent.selected',
+                  ...(parentSessionId ? { parentSessionId } : {}),
+                  ...(sessionAgent ? { agent: sessionAgent } : {}),
+                  project: basename(current.location?.directory) ?? fallbackProject, protocolVersion: TELEMETRY_PROTOCOL_VERSION,
+                });
               }
             } catch { /* Session metadata lookup is optional; live events continue. */ }
           }
@@ -523,6 +557,8 @@ export default Plugin.define({
             toolNameById.delete(`${sid}:${toolId}`);
             toolStartedAtById.delete(`${sid}:${toolId}`);
           }
+          const eventAgent = str(get(current.data, 'agent'));
+          if (sid && eventAgent) agentBySession.set(sid, eventAgent);
           const step = current.type === 'session.step.ended' ? (messageId ? stepByMessage.get(messageId) : undefined) : undefined;
           const directModel = current.type === 'session.step.ended' ? modelLabel(current.data ?? {}) : undefined;
           const stepModel = directModel ?? step?.model;
@@ -533,6 +569,7 @@ export default Plugin.define({
             modelInfo: stepModelInfo,
             toolName,
             catalogFetchedAt: step?.catalogFetchedAt ?? catalogFetchedAt,
+            agent: step?.agent ?? (sid ? agentBySession.get(sid) : undefined),
           })) queue.enqueue(mapped);
           if (sid && directModel) modelBySession.set(sid, directModel);
           if (sid && (current.type === 'session.model.selected' || current.type === 'session.step.started')) {
@@ -547,6 +584,7 @@ export default Plugin.define({
                   started: started ?? current.created ?? Date.now(),
                   modelInfo: modelInfoById.get(baseModelId(startedModel)!),
                   catalogFetchedAt,
+                  agent: eventAgent ?? agentBySession.get(sid),
                 });
               }
             }

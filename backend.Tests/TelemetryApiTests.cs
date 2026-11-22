@@ -979,6 +979,65 @@ public sealed class TelemetryApiTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task OrchestratorSubagentTreeAndRoleBreakdownAreExposedInSessionDetailAndList()
+    {
+        var now = DateTimeOffset.UtcNow;
+        await Post(Fixture("orch-c", "sess-orch", "session.created", now) with { Title = "Plan principal", Agent = "orchestrator" });
+        await Post(Fixture("orch-m", "sess-orch", "model.completed", now.AddSeconds(1)) with { Name = "opencode-go/m1", Agent = "orchestrator", DurationMs = 1500, InputTokens = 400, OutputTokens = 100, QuotaCostEstimate = 0.01 });
+
+        await Post(Fixture("sub-c", "sess-sub-rev", "session.created", now.AddSeconds(2)) with { Title = "Revisar PR", ParentSessionId = "sess-orch", Agent = "reviewer" });
+        await Post(Fixture("sub-m", "sess-sub-rev", "model.completed", now.AddSeconds(3)) with { Name = "opencode-go/m2", Agent = "reviewer", DurationMs = 2000, InputTokens = 200, OutputTokens = 80, QuotaCostEstimate = 0.02 });
+        await Post(Fixture("sub-e", "sess-sub-rev", "session.execution.succeeded", now.AddSeconds(5)));
+
+        using (var listDoc = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions")))
+        {
+            var items = listDoc.RootElement.GetProperty("items").EnumerateArray().ToDictionary(x => x.GetProperty("id").GetString()!);
+            Assert.Equal(1, items["sess-orch"].GetProperty("subagentCount").GetInt32());
+            Assert.Equal("orchestrator", items["sess-orch"].GetProperty("agent").GetString());
+            Assert.Equal("sess-orch", items["sess-sub-rev"].GetProperty("parentSessionId").GetString());
+            Assert.Equal("reviewer", items["sess-sub-rev"].GetProperty("agent").GetString());
+        }
+
+        using (var filteredDoc = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions?agent=reviewer")))
+        {
+            var items = filteredDoc.RootElement.GetProperty("items").EnumerateArray().ToArray();
+            Assert.Single(items);
+            Assert.Equal("sess-sub-rev", items[0].GetProperty("id").GetString());
+        }
+
+        using (var orchDoc = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/sess-orch")))
+        {
+            Assert.Equal(JsonValueKind.Null, orchDoc.RootElement.GetProperty("parentSession").ValueKind);
+            var subagents = orchDoc.RootElement.GetProperty("subagents").EnumerateArray().ToArray();
+            Assert.Single(subagents);
+            Assert.Equal("sess-sub-rev", subagents[0].GetProperty("id").GetString());
+            Assert.Equal("reviewer", subagents[0].GetProperty("agent").GetString());
+            Assert.Equal(0.02, subagents[0].GetProperty("quotaCostEstimate").GetDouble(), 6);
+
+            var roles = orchDoc.RootElement.GetProperty("roleBreakdown").EnumerateArray().ToDictionary(r => r.GetProperty("role").GetString()!);
+            Assert.Equal(2, roles.Count);
+            Assert.Equal(500, roles["orchestrator"].GetProperty("tokens").GetInt64());
+            Assert.Equal(280, roles["reviewer"].GetProperty("tokens").GetInt64());
+        }
+
+        using (var subDoc = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/sessions/sess-sub-rev")))
+        {
+            var parent = subDoc.RootElement.GetProperty("parentSession");
+            Assert.Equal("sess-orch", parent.GetProperty("id").GetString());
+            Assert.Equal("orchestrator", parent.GetProperty("agent").GetString());
+            Assert.Equal("reviewer", subDoc.RootElement.GetProperty("spans")[0].GetProperty("agent").GetString());
+        }
+
+        using (var modelsDoc = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/analytics/models")))
+        {
+            var roles = modelsDoc.RootElement.GetProperty("roles").EnumerateArray().ToDictionary(r => r.GetProperty("role").GetString()!);
+            Assert.True(roles.ContainsKey("orchestrator"));
+            Assert.True(roles.ContainsKey("reviewer"));
+            Assert.Equal(1, roles["reviewer"].GetProperty("calls").GetInt32());
+        }
+    }
+
     private async Task<HttpResponseMessage> Post(TestTelemetryEventDto dto)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/telemetry/events") { Content = JsonContent.Create(dto) };
@@ -1034,7 +1093,7 @@ public sealed record TestTelemetryEventDto(
     Dictionary<string, string>? Attributes = null, double? Cost = null, int? ReasoningTokens = null,
     int? CacheReadTokens = null, int? CacheWriteTokens = null, double? QuotaCostEstimate = null,
     string? QuotaCatalogFetchedAt = null, string? QuotaRateSnapshot = null, string? QuotaMissingReason = null,
-    string? Title = null, int? ProtocolVersion = null);
+    string? Title = null, int? ProtocolVersion = null, string? ParentSessionId = null, string? Agent = null);
 
 internal static class TestCredentials
 {

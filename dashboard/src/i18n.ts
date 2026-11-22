@@ -116,6 +116,15 @@ export function translateError(t: Translate, code: string | undefined, fallback:
   return key === undefined ? fallback : t(key);
 }
 
+/**
+ * Etiqueta visible de un estado de la API. Un estado que el diccionario no conoce se
+ * muestra crudo: un backend más nuevo no deja la vista sin texto.
+ */
+export function statusLabel(t: Translate, value: string): string {
+  const key = `status.${value}` as TranslationKey;
+  return key in es ? t(key) : value;
+}
+
 export type BehaviorSignalText = { kind: string; title: string; explanation: string; evidence: Record<string, unknown> };
 
 /**

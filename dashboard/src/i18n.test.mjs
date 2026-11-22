@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { es } from './locales/es.ts';
 import { en } from './locales/en.ts';
-import { apiErrorText, formatMoney, formatNumber, hasSignal, plural, resolveInitialLanguage, translate, translateError, translateSignal } from './i18n.ts';
+import { apiErrorText, formatMoney, formatNumber, hasSignal, plural, resolveInitialLanguage, statusLabel, translate, translateError, translateSignal } from './i18n.ts';
 
 test('los diccionarios tienen las mismas claves', () => {
   assert.deepEqual(Object.keys(en).sort(), Object.keys(es).sort());
@@ -20,7 +20,7 @@ test('las formas plurales siguen el idioma', () => {
   assert.equal(plural('en', 1, { one: 'a', other: 'b' }), 'a');
   assert.equal(plural('en', 2, { one: 'a', other: 'b' }), 'b');
   assert.equal(plural('es', 0, { one: 'a', other: 'b' }), 'b');
-  assert.equal(translate('es', 'common.errors', { count: 3 }), '3 errores');
+  assert.equal(translate('es', 'common.errors', { count: 3, value: '3' }), '3 errores');
 });
 
 test('los montos usan el separador del idioma', () => {
@@ -81,4 +81,19 @@ test('el plural usa count y el número mostrado conserva el separador', () => {
   assert.equal(text, '9.999 llamadas de modelo');
   const one = translate('en', 'models.totals.calls', { count: 1, value: formatNumber('en', 1) });
   assert.equal(one, '1 model call');
+});
+
+test('un estado conocido se traduce y uno desconocido se muestra crudo', () => {
+  assert.equal(statusLabel(translate.bind(null, 'es'), 'completed'), 'Completada');
+  assert.equal(statusLabel(translate.bind(null, 'es'), 'timedout'), 'Tiempo agotado');
+  assert.equal(statusLabel(translate.bind(null, 'en'), 'queued'), 'Queued');
+  assert.equal(statusLabel(translate.bind(null, 'es'), 'future_state'), 'future_state');
+  assert.equal(statusLabel(translate.bind(null, 'en'), 'otro_estado'), 'otro_estado');
+});
+
+test('el conteo de errores conserva el separador y la forma plural', () => {
+  assert.equal(translate('es', 'common.errors', { count: 1200, value: formatNumber('es', 1200) }), '1.200 errores');
+  assert.equal(translate('en', 'common.errors', { count: 1200, value: formatNumber('en', 1200) }), '1,200 errors');
+  assert.equal(translate('es', 'common.errors', { count: 1, value: formatNumber('es', 1) }), '1 error');
+  assert.equal(translate('en', 'common.errors', { count: 1, value: formatNumber('en', 1) }), '1 error');
 });

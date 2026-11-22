@@ -5,7 +5,7 @@ import { buildWaterfall, describeQuotaProvenance, findSpanForEvent, isErrorStatu
 import { BenchmarksPage } from './benchmarks-page';
 import { budgetAmountText, budgetMetricLabel, budgetPanelSummary } from './budgets';
 import { buildScatterPlot, computeModelHighlights, filterModelsByMinCalls, layoutScatterLabels, type CostAxisMetric, type ModelBreakdownItem, type ValueAxisMetric } from './model-efficiency';
-import { formatClock, formatCompact, formatDate, formatMoney, formatNumber, LanguageProvider, translateError, translateSignal, useLanguage, type Language, type Translate } from './i18n';
+import { formatClock, formatCompact, formatDate, formatMoney, formatNumber, LanguageProvider, statusLabel, translateError, translateSignal, useLanguage, type Language, type Translate, type TranslationKey } from './i18n';
 import './style.css';
 
 type Session = { id: string; source: string; project?: string; title?: string; status: string; model?: string; startedAt: string; endedAt?: string; spanCount: number; errorCount: number; inputTokens: number | null; outputTokens: number | null };
@@ -36,8 +36,12 @@ type OverviewSession = { id: string; title?: string; project?: string; model?: s
 type OverviewReport = { windowDays?: number | null; totals: OverviewTotals; topTools: OverviewTool[]; topModels: OverviewModel[]; recentSessions: OverviewSession[] };
 type Listing = { items: Session[]; total: number; page: number; pageSize: number };
 type InstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }> };
-/** Error de una carga: el mensaje propio del cliente y el `code` estable de la API cuando vino. */
-type RequestError = { message: string; code?: string };
+/** Error de una carga: la clave que lo explica en el idioma activo y el `code` estable de la API cuando vino. */
+type RequestError = { key: TranslationKey; code?: string };
+/** Mensaje transitorio de una acción: la clave y sus parámetros, resueltos al renderizar para seguir el idioma. */
+type Message = { key: TranslationKey; params?: Record<string, string | number> };
+/** El `code` de la API manda; sin code conocido se muestra la clave local, siempre en el idioma activo. */
+const errorText = (t: Translate, error: RequestError) => translateError(t, error.code, t(error.key));
 const time = (value: string | undefined, language: Language) => value ? formatDate(language, value) : '—';
 const duration = (milliseconds: number, t: Translate, language: Language) => milliseconds < 60_000
   ? t('duration.seconds', { value: formatNumber(language, milliseconds / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })
@@ -54,14 +58,15 @@ const kindLabel = (kind: string, t: Translate) => kind === 'inference' ? t('kind
 const tokenText = (value: number | null | undefined, t: Translate, language: Language) => value == null ? t('common.noData') : formatNumber(language, value);
 const tokenCompact = (value: number | null | undefined, t: Translate, language: Language) => value == null ? t('common.noData') : compactNumber(value, language);
 const tokenSum = (...values: Array<number | null | undefined>) => values.every(value => value == null) ? null : values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
-const qualitySummary = (quality: TraceQuality, t: Translate) => {
+const qualitySummary = (quality: TraceQuality, t: Translate, language: Language) => {
   const gaps: string[] = [];
+  const count = (value: number) => ({ count: value, value: formatNumber(language, value) });
   if (!quality.hasSessionCreated) gaps.push(t('quality.missingStart'));
-  if (quality.orphanToolSpans > 0) gaps.push(t('quality.orphanTools', { count: quality.orphanToolSpans }));
-  if (quality.missingDurationSpans > 0) gaps.push(t('quality.missingDuration', { count: quality.missingDurationSpans }));
-  if (quality.missingTokenSpans > 0) gaps.push(t('quality.missingTokens', { count: quality.missingTokenSpans }));
-  if (quality.unknownModelSpans > 0) gaps.push(t('quality.unknownModel', { count: quality.unknownModelSpans }));
-  if ((quality.sourceConflictEvents ?? 0) > 0) gaps.push(t('quality.sourceConflicts', { count: quality.sourceConflictEvents ?? 0 }));
+  if (quality.orphanToolSpans > 0) gaps.push(t('quality.orphanTools', count(quality.orphanToolSpans)));
+  if (quality.missingDurationSpans > 0) gaps.push(t('quality.missingDuration', count(quality.missingDurationSpans)));
+  if (quality.missingTokenSpans > 0) gaps.push(t('quality.missingTokens', count(quality.missingTokenSpans)));
+  if (quality.unknownModelSpans > 0) gaps.push(t('quality.unknownModel', count(quality.unknownModelSpans)));
+  if ((quality.sourceConflictEvents ?? 0) > 0) gaps.push(t('quality.sourceConflicts', count(quality.sourceConflictEvents ?? 0)));
   return gaps.join(t('common.listSeparator'));
 };
 
@@ -129,7 +134,7 @@ function ModelAnalyticsPage(props: {
     <SectionHeader icon="models" eyebrow={t('models.eyebrow')} title={t('models.title')} description={t('models.description')} actions={<><div className="subview-switch" role="tablist" aria-label={t('models.subview.label')}><button type="button" role="tab" aria-selected={subView === 'consumption'} className={subView === 'consumption' ? 'active' : ''} onClick={() => setSubView('consumption')}>{t('models.subview.consumption')}</button><button type="button" role="tab" aria-selected={subView === 'efficiency'} className={subView === 'efficiency' ? 'active' : ''} onClick={() => setSubView('efficiency')}>{t('models.subview.efficiency')}</button></div><button className="rates-label" title={t('models.rates.title')}>{t('models.rates.label')}</button></>} />
     <div className="model-filter-bar"><div className="bucket-control"><span>{t('models.filter.group')}</span>{(['day', 'week', 'month'] as const).map(value => <button key={value} className={bucket === value ? 'active' : ''} onClick={() => setBucket(value)}>{t(value === 'day' ? 'models.bucket.day' : value === 'week' ? 'models.bucket.week' : 'models.bucket.month')}</button>)}</div><label className="date-control">{t('models.filter.from')}<input type="date" value={from} onChange={event => setFrom(event.target.value)} /></label><label className="date-control">{t('models.filter.to')}<input type="date" value={to} onChange={event => setTo(event.target.value)} /></label><ScopeSelect scope={scope} setScope={setScope} /><button className="refresh-analytics" onClick={onRefresh}>{t('common.refresh')}</button></div>
     {data && <><div className="chip-filter-row"><span>{t('models.filter.sources')}</span><button className={!source ? 'selected' : ''} onClick={() => setSource('')}>{t('common.all')}</button>{data.availableSources.map((item, index) => <button className={source === item ? 'selected' : ''} key={item} onClick={() => toggle(source, item, setSource)}>{item}<i style={{ background: agentColors[index % agentColors.length] }} /></button>)}</div><div className="chip-filter-row models-filter"><span>{t('models.filter.models')}</span><button className={!model ? 'selected' : ''} onClick={() => setModel('')}>{t('common.all')}</button>{data.availableModels.map(item => <button className={model === item ? 'selected' : ''} key={item} title={item} onClick={() => toggle(model, item, setModel)}>{item}</button>)}</div></>}
-    {error && <div className="api-error">{translateError(t, error.code, error.message)}</div>}
+    {error && <div className="api-error">{errorText(t, error)}</div>}
     {!data ? <div className="empty comparison-empty">{t('models.loading')}</div> : subView === 'consumption' ? <>
       <div className="analytics-section-label">{t('models.totals.label')}</div><div className="model-total-grid"><article className="model-total-card total-primary"><span>{t('models.totals.tokens')}</span><b>{tokenText(data.totals.totalTokens, t, language)}</b><small>{t('models.totals.calls', { count: data.totals.calls, value: formatNumber(language, data.totals.calls) })}</small></article><article className="model-total-card"><span>{t('models.totals.input')}</span><b>{tokenCompact(data.totals.inputTokens, t, language)}</b><small>{data.totals.totalTokens && data.totals.inputTokens != null ? t('models.totals.inputNote', { percent: decimals(data.totals.inputTokens / data.totals.totalTokens * 100, 1) }) : t('models.totals.inputEmpty')}</small></article><article className="model-total-card total-output"><span>{t('models.totals.output')}</span><b>{tokenCompact(data.totals.outputTokens, t, language)}</b><small>{data.totals.totalTokens && data.totals.outputTokens != null ? t('models.totals.outputNote', { percent: decimals(data.totals.outputTokens / data.totals.totalTokens * 100, 1), reasoning: tokenText(data.totals.reasoningTokens, t, language) }) : t('models.totals.outputNoteNoPercent', { reasoning: tokenText(data.totals.reasoningTokens, t, language) })}</small></article><article className="model-total-card total-cache"><span>{t('models.totals.cache')}</span><b>{data.totals.cacheEfficiency == null ? t('common.noData') : t('models.metric.percent', { value: decimals(data.totals.cacheEfficiency * 100, 1) })}</b><small>{t('models.totals.cacheNote', { read: tokenCompact(data.totals.cacheReadTokens, t, language), write: tokenCompact(data.totals.cacheWriteTokens, t, language) })}</small></article></div>
       <div className="model-cost-row"><span>{t('models.totals.reportedCost')} <b>{money(data.totals.reportedCost, t, language)}</b></span><span>{t('models.totals.quota')} <b>{money(data.totals.quotaEstimate, t, language)}</b></span><span>{t('models.totals.errors')} <b>{formatNumber(language, data.totals.errorCount)}</b></span></div>
@@ -194,7 +199,7 @@ function ModelAnalyticsPage(props: {
               return <div className={`scatter-tooltip ${pt.xNorm > 0.62 ? 'flip-x' : ''} ${pt.yNorm > 0.72 ? 'flip-y' : ''}`} style={{ left: `${leftPct}%`, top: `${topPct}%` }} role="status">
                 <div className="scatter-tooltip-title"><i style={{ background: color }} /><b>{pt.name}</b></div>
                 <div><span>{formatXValue(pt.x)}</span> · <span>{formatYValue(pt.y)}</span></div>
-                <small>{t('models.scatter.calls', { count: pt.calls, value: formatNumber(language, pt.calls) })}{pt.errorCount ? `${t('common.listSeparator')}${t('common.errors', { count: pt.errorCount })}` : ''}</small>
+                <small>{t('models.scatter.calls', { count: pt.calls, value: formatNumber(language, pt.calls) })}{pt.errorCount ? `${t('common.listSeparator')}${t('common.errors', { count: pt.errorCount, value: formatNumber(language, pt.errorCount) })}` : ''}</small>
               </div>;
             })()}
           </div>
@@ -217,33 +222,34 @@ function BehaviorPage(props: {
   const { language, t } = useLanguage();
   return <section className="comparison-page behavior-page">
     <SectionHeader icon="behavior" eyebrow={t('behavior.eyebrow')} title={t('behavior.title')} description={t('behavior.description')} actions={<div className="analytics-actions"><ScopeSelect scope={scope} setScope={setScope} /><select aria-label={t('behavior.period.label')} value={period} onChange={event => setPeriod(event.target.value)}><option value="1">{t('behavior.period.lastDay')}</option><option value="7">{t('behavior.period.last7')}</option><option value="30">{t('behavior.period.last30')}</option><option value="90">{t('behavior.period.last90')}</option><option value="all">{t('behavior.period.all')}</option></select><button onClick={onRefresh}>{t('common.refresh')}</button></div>} />
-    {error && <div className="api-error">{translateError(t, error.code, error.message)}</div>}
+    {error && <div className="api-error">{errorText(t, error)}</div>}
     {!data ? <div className="empty comparison-empty">{t('behavior.loading')}</div> : <>
       <div className="analytics-summary"><article><span>{t('behavior.totals.sessions')}</span><b>{formatNumber(language, data.totals.sessions)}</b></article><article><span>{t('behavior.totals.flagged')}</span><b>{formatNumber(language, data.totals.flaggedSessions)}</b></article><article><span>{t('behavior.totals.signals')}</span><b>{formatNumber(language, data.totals.signals)}</b></article></div>
-      {data.sessions.length === 0 ? <div className="empty comparison-empty"><div className="empty-icon">✓</div><b>{t('behavior.empty.title')}</b><p>{t('behavior.empty.body')}</p></div> : <div className="tool-analytics-list">{data.sessions.map(session => <article className="tool-analytics-card" key={session.id}><div className="tool-analytics-heading"><div><h3>{session.title || t('common.untitledSession')}</h3><p>{[session.project, session.model].filter(Boolean).join(t('common.listSeparator')) || t('behavior.session.metaEmpty')}</p></div><span className={`badge ${session.status}`}>{session.status}</span></div><div className="signal-list">{session.signals.map((signal, index) => { const text = translateSignal(t, signal); return <div className={`signal ${signal.severity}`} key={`${signal.kind}-${index}`}><b>{text.title}</b><span>{text.explanation}</span></div>; })}</div><div className="behavior-actions"><button className="text-button" onClick={() => onOpenSession(session.id)}>{t('common.openSession')}</button></div></article>)}</div>}
+      {data.sessions.length === 0 ? <div className="empty comparison-empty"><div className="empty-icon">✓</div><b>{t('behavior.empty.title')}</b><p>{t('behavior.empty.body')}</p></div> : <div className="tool-analytics-list">{data.sessions.map(session => <article className="tool-analytics-card" key={session.id}><div className="tool-analytics-heading"><div><h3>{session.title || t('common.untitledSession')}</h3><p>{[session.project, session.model].filter(Boolean).join(t('common.listSeparator')) || t('behavior.session.metaEmpty')}</p></div><span className={`badge ${session.status}`}>{statusLabel(t, session.status)}</span></div><div className="signal-list">{session.signals.map((signal, index) => { const text = translateSignal(t, signal); return <div className={`signal ${signal.severity}`} key={`${signal.kind}-${index}`}><b>{text.title}</b><span>{text.explanation}</span></div>; })}</div><div className="behavior-actions"><button className="text-button" onClick={() => onOpenSession(session.id)}>{t('common.openSession')}</button></div></article>)}</div>}
     </>}
   </section>;
 }
 
 function OverviewPage(props: {
-  data: OverviewReport | null; error: string; period: string; setPeriod: (value: string) => void;
+  data: OverviewReport | null; error: RequestError | null; period: string; setPeriod: (value: string) => void;
   scope: ScopeFilter; setScope: (value: ScopeFilter) => void;
   onRefresh: () => void; onOpenSession: (id: string) => void;
 }) {
   const { data, error, period, setPeriod, scope, setScope, onRefresh, onOpenSession } = props;
   const { language, t } = useLanguage();
-  const percent = (value?: number | null) => value == null ? 'Sin dato' : `${(value * 100).toFixed(1)}%`;
+  const number = (value: number) => formatNumber(language, value);
+  const percent = (value?: number | null) => value == null ? t('common.noData') : t('common.percent', { value: formatNumber(language, value * 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) });
   return <section className="comparison-page overview-page">
-    <SectionHeader icon="overview" eyebrow="MONITOREO" title="Inicio" description="Estado general de la actividad" actions={<div className="analytics-actions"><ScopeSelect scope={scope} setScope={setScope} /><select aria-label="Período del resumen" value={period} onChange={event => setPeriod(event.target.value)}><option value="1">Último día</option><option value="7">Últimos 7 días</option><option value="30">Últimos 30 días</option><option value="90">Últimos 90 días</option><option value="all">Todo el historial</option></select><button onClick={onRefresh}>Actualizar</button></div>} />
-    {error && <div className="api-error">{error}</div>}
-    {!data ? <div className="empty comparison-empty">Cargando resumen…</div> : <>
-      <div className="overview-kpis"><article><span>Sesiones</span><b>{data.totals.sessions.toLocaleString()}</b></article><article><span>Activas</span><b>{data.totals.active.toLocaleString()}</b></article><article><span>Completadas</span><b>{data.totals.completed.toLocaleString()}</b></article><article><span>Con error</span><b>{data.totals.error.toLocaleString()}</b></article><article><span>Interrumpidas</span><b>{data.totals.interrupted.toLocaleString()}</b></article></div>
-      <div className="overview-kpis"><article><span>Tasa de éxito</span><b>{percent(data.totals.successRate)}</b></article><article><span>Duración promedio</span><b>{data.totals.averageDurationMs == null ? 'Sin dato' : duration(data.totals.averageDurationMs, t, language)}</b></article><article><span>Tokens totales</span><b>{tokenText(data.totals.totalTokens, t, language)}</b></article><article><span>Costo reportado</span><b>{money(data.totals.reportedCost, t, language)}</b></article><article><span>Cuota Go estimada</span><b>{money(data.totals.quotaEstimate, t, language)}</b></article></div>
+    <SectionHeader icon="overview" eyebrow={t('overview.eyebrow')} title={t('overview.title')} description={t('overview.description')} actions={<div className="analytics-actions"><ScopeSelect scope={scope} setScope={setScope} /><select aria-label={t('common.period.label')} value={period} onChange={event => setPeriod(event.target.value)}><option value="1">{t('common.period.lastDay')}</option><option value="7">{t('common.period.last7')}</option><option value="30">{t('common.period.last30')}</option><option value="90">{t('common.period.last90')}</option><option value="all">{t('common.period.all')}</option></select><button onClick={onRefresh}>{t('common.refresh')}</button></div>} />
+    {error && <div className="api-error">{errorText(t, error)}</div>}
+    {!data ? <div className="empty comparison-empty">{t('overview.loading')}</div> : <>
+      <div className="overview-kpis"><article><span>{t('overview.kpi.sessions')}</span><b>{number(data.totals.sessions)}</b></article><article><span>{t('overview.kpi.active')}</span><b>{number(data.totals.active)}</b></article><article><span>{t('overview.kpi.completed')}</span><b>{number(data.totals.completed)}</b></article><article><span>{t('overview.kpi.error')}</span><b>{number(data.totals.error)}</b></article><article><span>{t('overview.kpi.interrupted')}</span><b>{number(data.totals.interrupted)}</b></article></div>
+      <div className="overview-kpis"><article><span>{t('overview.kpi.successRate')}</span><b>{percent(data.totals.successRate)}</b></article><article><span>{t('overview.kpi.averageDuration')}</span><b>{data.totals.averageDurationMs == null ? t('common.noData') : duration(data.totals.averageDurationMs, t, language)}</b></article><article><span>{t('overview.kpi.totalTokens')}</span><b>{tokenText(data.totals.totalTokens, t, language)}</b></article><article><span>{t('overview.kpi.reportedCost')}</span><b>{money(data.totals.reportedCost, t, language)}</b></article><article><span>{t('overview.kpi.quota')}</span><b>{money(data.totals.quotaEstimate, t, language)}</b></article></div>
       <div className="overview-grid">
-        <article className="overview-card"><h3>Herramientas más usadas</h3>{data.topTools.length === 0 ? <div className="empty compact">Sin herramientas en este período.</div> : <div className="table-wrap"><table><thead><tr><th>HERRAMIENTA</th><th>LLAMADAS</th><th>TASA DE ERROR</th><th>SESIONES</th></tr></thead><tbody>{data.topTools.map(tool => <tr key={tool.name}><td><b>{tool.name}</b></td><td>{tool.calls.toLocaleString()}</td><td>{percent(tool.errorRate)}<small>{tool.errors.toLocaleString()} errores</small></td><td>{tool.sessions.toLocaleString()}</td></tr>)}</tbody></table></div>}</article>
-        <article className="overview-card"><h3>Modelos con más tokens</h3>{data.topModels.length === 0 ? <div className="empty compact">Sin llamadas de modelo en este período.</div> : <div className="table-wrap"><table><thead><tr><th>MODELO</th><th>LLAMADAS</th><th>TOKENS</th><th>COSTO REPORTADO</th><th>CUOTA GO</th></tr></thead><tbody>{data.topModels.map(model => <tr key={model.name}><td><b>{model.name}</b></td><td>{model.calls.toLocaleString()}</td><td>{tokenText(model.totalTokens, t, language)}</td><td>{money(model.reportedCost, t, language)}</td><td>{money(model.quotaEstimate, t, language)}</td></tr>)}</tbody></table></div>}</article>
+        <article className="overview-card"><h3>{t('overview.tools.title')}</h3>{data.topTools.length === 0 ? <div className="empty compact">{t('overview.tools.empty')}</div> : <div className="table-wrap"><table><thead><tr><th>{t('overview.tools.name')}</th><th>{t('overview.tools.calls')}</th><th>{t('overview.tools.errorRate')}</th><th>{t('overview.tools.sessions')}</th></tr></thead><tbody>{data.topTools.map(tool => <tr key={tool.name}><td><b>{tool.name}</b></td><td>{number(tool.calls)}</td><td>{percent(tool.errorRate)}<small>{t('common.errors', { count: tool.errors, value: number(tool.errors) })}</small></td><td>{number(tool.sessions)}</td></tr>)}</tbody></table></div>}</article>
+        <article className="overview-card"><h3>{t('overview.models.title')}</h3>{data.topModels.length === 0 ? <div className="empty compact">{t('overview.models.empty')}</div> : <div className="table-wrap"><table><thead><tr><th>{t('overview.models.name')}</th><th>{t('overview.models.calls')}</th><th>{t('overview.models.tokens')}</th><th>{t('overview.models.reportedCost')}</th><th>{t('overview.models.quota')}</th></tr></thead><tbody>{data.topModels.map(model => <tr key={model.name}><td><b>{model.name}</b></td><td>{number(model.calls)}</td><td>{tokenText(model.totalTokens, t, language)}</td><td>{money(model.reportedCost, t, language)}</td><td>{money(model.quotaEstimate, t, language)}</td></tr>)}</tbody></table></div>}</article>
       </div>
-      <article className="overview-card overview-list"><h3>Últimas sesiones</h3>{data.recentSessions.length === 0 ? <div className="empty compact">Sin sesiones en este período.</div> : <div className="table-wrap"><table><thead><tr><th>SESIÓN</th><th>PROYECTO</th><th>MODELO</th><th>ESTADO</th><th>ACTUALIZADA</th><th></th></tr></thead><tbody>{data.recentSessions.map(session => <tr key={session.id} onClick={() => onOpenSession(session.id)}><td><b title={session.title || 'Sesión sin título'}>{session.title || 'Sesión sin título'}</b></td><td>{session.project || '—'}</td><td>{session.model || '—'}</td><td><span className={`badge ${session.status}`}>{session.status}</span></td><td>{time(session.updatedAt, language)}</td><td><button className="text-button overview-open" onClick={event => { event.stopPropagation(); onOpenSession(session.id); }}>Ver sesión</button></td></tr>)}</tbody></table></div>}</article>
+      <article className="overview-card overview-list"><h3>{t('overview.sessions.title')}</h3>{data.recentSessions.length === 0 ? <div className="empty compact">{t('overview.sessions.empty')}</div> : <div className="table-wrap"><table><thead><tr><th>{t('overview.sessions.session')}</th><th>{t('overview.sessions.project')}</th><th>{t('overview.sessions.model')}</th><th>{t('overview.sessions.status')}</th><th>{t('overview.sessions.updated')}</th><th></th></tr></thead><tbody>{data.recentSessions.map(session => <tr key={session.id} onClick={() => onOpenSession(session.id)}><td><b title={session.title || t('common.untitledSession')}>{session.title || t('common.untitledSession')}</b></td><td>{session.project || '—'}</td><td>{session.model || '—'}</td><td><span className={`badge ${session.status}`}>{statusLabel(t, session.status)}</span></td><td>{time(session.updatedAt, language)}</td><td><button className="text-button overview-open" onClick={event => { event.stopPropagation(); onOpenSession(session.id); }}>{t('common.openSession')}</button></td></tr>)}</tbody></table></div>}</article>
     </>}
   </section>;
 }
@@ -259,20 +265,22 @@ function TraceWaterfall(props: {
   const { language, t } = useLanguage();
   return <>
     <div className="waterfall-axis">
-      <span>SPAN</span>
+      <span>{t('trace.column.span')}</span>
       <span className="waterfall-scale" aria-hidden="true"><span>0</span><span>{duration(waterfall.totalMs / 2, t, language)}</span><span>{duration(waterfall.totalMs, t, language)}</span></span>
-      <span>DURACIÓN</span>
+      <span>{t('trace.column.duration')}</span>
     </div>
-    {!waterfall.hasAnyDuration && <p className="waterfall-note">Ningún span reporta duración; las barras marcan el inicio de cada span.</p>}
-    {waterfall.rows.map((row) => (
+    {!waterfall.hasAnyDuration && <p className="waterfall-note">{t('trace.noDurations')}</p>}
+    {waterfall.rows.map((row) => {
+      const rowDuration = row.hasDuration ? spanDuration(row.span.durationMs, t, language) : t('trace.noDuration');
+      return (
       <button
         type="button"
         key={row.span.id}
         className={['waterfall-row', selectedId === row.span.id ? 'selected' : '', highlightedId === row.span.id ? 'revealed' : ''].filter(Boolean).join(' ')}
         aria-pressed={selectedId === row.span.id}
-        aria-label={`${row.span.name}, ${kindLabel(row.span.kind, t)}, ${row.span.status}, ${row.hasDuration ? spanDuration(row.span.durationMs, t, language) : 'sin duración'}`}
+        aria-label={t('trace.rowAria', { name: row.span.name, kind: kindLabel(row.span.kind, t), status: statusLabel(t, row.span.status), duration: rowDuration })}
         data-span-id={row.span.id}
-        title={`${row.span.name} · ${row.hasDuration ? spanDuration(row.span.durationMs, t, language) : 'Sin duración'}`}
+        title={t('trace.rowTitle', { name: row.span.name, duration: rowDuration })}
         ref={(element) => { registerRow(row.span.id, element); }}
         onClick={() => onSelect(row.span.id)}
       >
@@ -289,55 +297,56 @@ function TraceWaterfall(props: {
             style={{ left: `${row.startPercent}%`, width: `${row.widthPercent}%` }}
           />
         </span>
-        <span className="waterfall-duration">{row.hasDuration ? spanDuration(row.span.durationMs, t, language) : 'Sin dato'}</span>
+        <span className="waterfall-duration">{rowDuration}</span>
       </button>
-    ))}
+      );
+    })}
   </>;
 }
 
 function SpanInspector({ span, parent }: { span: Span | null; parent: Span | null }) {
   const { language, t } = useLanguage();
   if (!span) {
-    return <aside className="span-inspector"><p className="muted">Selecciona un span del waterfall para ver su detalle.</p></aside>;
+    return <aside className="span-inspector"><p className="muted">{t('trace.inspector.empty')}</p></aside>;
   }
   const attributes = safeAttributes(span.attributesJson);
   const errorCode = attributes.find(([key]) => key === 'error_code')?.[1];
-  const model = span.kind === 'inference' ? span.name : parent?.kind === 'inference' ? parent.name : 'Sin dato';
+  const model = span.kind === 'inference' ? span.name : parent?.kind === 'inference' ? parent.name : t('common.noData');
   const start = Date.parse(span.startedAt);
-  const end = span.durationMs != null && Number.isFinite(start) ? time(new Date(start + span.durationMs).toISOString(), language) : 'Sin dato';
+  const end = span.durationMs != null && Number.isFinite(start) ? time(new Date(start + span.durationMs).toISOString(), language) : t('common.noData');
   const hasTokens = span.kind === 'inference' || [span.inputTokens, span.outputTokens, span.reasoningTokens, span.cacheReadTokens, span.cacheWriteTokens].some(value => value != null);
   const quotaProvenance = describeQuotaProvenance(span, t, language);
   const totalTokens = tokenSum(span.inputTokens, span.outputTokens, span.cacheReadTokens, span.cacheWriteTokens);
   return <aside className="span-inspector">
     <div className="span-inspector-head">
       <div><span className="eyebrow">{kindLabel(span.kind, t)}</span><h4>{span.name}</h4></div>
-      <span className={`badge ${span.status}`}>{span.status}</span>
+      <span className={`badge ${span.status}`}>{statusLabel(t, span.status)}</span>
     </div>
-    {errorCode && <p className="span-error">Código de error: {errorCode}</p>}
+    {errorCode && <p className="span-error">{t('trace.inspector.errorCode', { code: errorCode })}</p>}
     <dl className="span-facts">
-      <div><dt>Tipo</dt><dd>{kindLabel(span.kind, t)}</dd></div>
-      <div><dt>Modelo</dt><dd>{model}</dd></div>
-      <div><dt>Inicio</dt><dd>{time(span.startedAt, language)}</dd></div>
-      <div><dt>Fin</dt><dd>{end}</dd></div>
-      <div><dt>Duración</dt><dd>{spanDuration(span.durationMs, t, language)}</dd></div>
-      <div><dt>Costo reportado</dt><dd>{money(span.cost, t, language)}</dd></div>
-      <div><dt>Cuota Go estimada</dt><dd>{money(span.quotaCostEstimate, t, language)}</dd></div>
-      <div><dt>Procedencia de la cuota</dt><dd>{quotaProvenance ?? 'Sin dato'}</dd></div>
+      <div><dt>{t('trace.fact.kind')}</dt><dd>{kindLabel(span.kind, t)}</dd></div>
+      <div><dt>{t('trace.fact.model')}</dt><dd>{model}</dd></div>
+      <div><dt>{t('trace.fact.start')}</dt><dd>{time(span.startedAt, language)}</dd></div>
+      <div><dt>{t('trace.fact.end')}</dt><dd>{end}</dd></div>
+      <div><dt>{t('trace.fact.duration')}</dt><dd>{spanDuration(span.durationMs, t, language)}</dd></div>
+      <div><dt>{t('trace.fact.reportedCost')}</dt><dd>{money(span.cost, t, language)}</dd></div>
+      <div><dt>{t('trace.fact.quota')}</dt><dd>{money(span.quotaCostEstimate, t, language)}</dd></div>
+      <div><dt>{t('trace.fact.quotaProvenance')}</dt><dd>{quotaProvenance ?? t('common.noData')}</dd></div>
     </dl>
     {hasTokens ? <div className="span-tokens">
-      <span className="eyebrow">TOKENS</span>
+      <span className="eyebrow">{t('trace.tokens.label')}</span>
       <div className="span-token-grid">
-        <div><span>Entrada</span><b>{tokenText(span.inputTokens, t, language)}</b></div>
-        <div><span>Salida</span><b>{tokenText(span.outputTokens, t, language)}</b></div>
-        <div><span>Razonamiento</span><b>{tokenText(span.reasoningTokens, t, language)}</b></div>
-        <div><span>Caché leída</span><b>{tokenText(span.cacheReadTokens, t, language)}</b></div>
-        <div><span>Caché escrita</span><b>{tokenText(span.cacheWriteTokens, t, language)}</b></div>
-        <div><span>Total</span><b>{tokenText(totalTokens, t, language)}</b></div>
+        <div><span>{t('trace.tokens.input')}</span><b>{tokenText(span.inputTokens, t, language)}</b></div>
+        <div><span>{t('trace.tokens.output')}</span><b>{tokenText(span.outputTokens, t, language)}</b></div>
+        <div><span>{t('trace.tokens.reasoning')}</span><b>{tokenText(span.reasoningTokens, t, language)}</b></div>
+        <div><span>{t('trace.tokens.cacheRead')}</span><b>{tokenText(span.cacheReadTokens, t, language)}</b></div>
+        <div><span>{t('trace.tokens.cacheWrite')}</span><b>{tokenText(span.cacheWriteTokens, t, language)}</b></div>
+        <div><span>{t('trace.tokens.total')}</span><b>{tokenText(totalTokens, t, language)}</b></div>
       </div>
-      <p className="span-note">El razonamiento ya está incluido en salida.</p>
-    </div> : <p className="muted">Sin tokens reportados para este span.</p>}
+      <p className="span-note">{t('trace.tokens.note')}</p>
+    </div> : <p className="muted">{t('trace.tokens.empty')}</p>}
     {attributes.length > 0 && <div className="span-attributes">
-      <span className="eyebrow">ATRIBUTOS</span>
+      <span className="eyebrow">{t('trace.attributes.label')}</span>
       {attributes.map(([key, value]) => <div key={key}><span>{key}</span><b>{value}</b></div>)}
     </div>}
   </aside>;
@@ -357,29 +366,29 @@ function App() {
   const [errorsOnly, setErrorsOnly] = React.useState(false);
   const [page, setPage] = React.useState(1);
   const [online, setOnline] = React.useState(false);
-  const [apiError, setApiError] = React.useState('');
+  const [apiError, setApiError] = React.useState<RequestError | null>(null);
   const [installPrompt, setInstallPrompt] = React.useState<InstallPromptEvent | null>(null);
   const [installed, setInstalled] = React.useState(false);
   const [installHelpVisible, setInstallHelpVisible] = React.useState(false);
   const [reviewRating, setReviewRating] = React.useState<number | null>(null);
   const [reviewNote, setReviewNote] = React.useState('');
-  const [reviewMessage, setReviewMessage] = React.useState('');
+  const [reviewMessage, setReviewMessage] = React.useState<Message | null>(null);
   const [reviewSaving, setReviewSaving] = React.useState(false);
   const [budgets, setBudgets] = React.useState<Budget[]>([]);
   const [budgetProject, setBudgetProject] = React.useState('');
   const [budgetLimit, setBudgetLimit] = React.useState('');
   const [budgetMetric, setBudgetMetric] = React.useState<'cost' | 'quota'>('cost');
-  const [budgetMessage, setBudgetMessage] = React.useState('');
+  const [budgetMessage, setBudgetMessage] = React.useState<Message | null>(null);
   const [budgetSaving, setBudgetSaving] = React.useState(false);
   const [view, setView] = React.useState<'overview' | 'sessions' | 'compare' | 'tools' | 'models' | 'behavior' | 'benchmarks'>('overview');
   const [benchmarkVersion, setBenchmarkVersion] = React.useState(0);
   const [taskLabel, setTaskLabel] = React.useState('');
   const [comparisonGroups, setComparisonGroups] = React.useState<ComparisonGroup[]>([]);
   const [comparisonTask, setComparisonTask] = React.useState('');
-  const [comparisonError, setComparisonError] = React.useState('');
+  const [comparisonError, setComparisonError] = React.useState<RequestError | null>(null);
   const [toolAnalytics, setToolAnalytics] = React.useState<ToolAnalytics | null>(null);
   const [toolWindow, setToolWindow] = React.useState('30');
-  const [toolError, setToolError] = React.useState('');
+  const [toolError, setToolError] = React.useState<RequestError | null>(null);
   const [modelAnalytics, setModelAnalytics] = React.useState<ModelAnalytics | null>(null);
   const [modelError, setModelError] = React.useState<RequestError | null>(null);
   const [modelBucket, setModelBucket] = React.useState<'day' | 'week' | 'month'>('day');
@@ -392,7 +401,7 @@ function App() {
   const [behaviorError, setBehaviorError] = React.useState<RequestError | null>(null);
   const [overview, setOverview] = React.useState<OverviewReport | null>(null);
   const [overviewPeriod, setOverviewPeriod] = React.useState('30');
-  const [overviewError, setOverviewError] = React.useState('');
+  const [overviewError, setOverviewError] = React.useState<RequestError | null>(null);
   const [scope, setScope] = React.useState<ScopeFilter>('all');
   const [exporting, setExporting] = React.useState(false);
   const [deletingSession, setDeletingSession] = React.useState(false);
@@ -425,8 +434,8 @@ function App() {
     try {
       const response = await fetch(`/api/v1/sessions?${params}`);
       if (!response.ok) throw new Error(`API respondió ${response.status}`);
-      setListing(await response.json()); setApiError('');
-    } catch { setApiError('No se pudo conectar con la API. Inicia la plataforma con start.ps1.'); }
+      setListing(await response.json()); setApiError(null);
+    } catch { setApiError({ key: 'sessions.loadFailed' }); }
   }, [status, model, projectFilter, toolFilter, from, to, errorsOnly, page, scope]);
   loadRef.current = load;
   selectedRef.current = selected;
@@ -464,9 +473,9 @@ function App() {
   const loadComparisons = React.useCallback(async () => {
     try {
       const response = await fetch('/api/v1/comparisons');
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      setComparisonGroups(await response.json()); setComparisonError('');
-    } catch { setComparisonError('No se pudieron cargar las comparaciones. Comprueba que la API esté actualizada.'); }
+      if (!response.ok) { setComparisonError({ key: 'compare.loadFailed', code: await responseErrorCode(response) }); return; }
+      setComparisonGroups(await response.json()); setComparisonError(null);
+    } catch { setComparisonError({ key: 'compare.loadFailed' }); }
   }, []);
   const loadToolAnalytics = React.useCallback(async () => {
     try {
@@ -474,9 +483,9 @@ function App() {
       if (toolWindow !== 'all') params.set('days', toolWindow);
       if (scope !== 'all') params.set('scope', scope);
       const response = await fetch(`/api/v1/analytics/tools?${params}`);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      setToolAnalytics(await response.json()); setToolError('');
-    } catch { setToolError('No se pudo cargar la analítica de herramientas. Comprueba que la API esté actualizada.'); }
+      if (!response.ok) { setToolError({ key: 'tools.loadFailed', code: await responseErrorCode(response) }); return; }
+      setToolAnalytics(await response.json()); setToolError(null);
+    } catch { setToolError({ key: 'tools.loadFailed' }); }
   }, [toolWindow, scope]);
   const loadModelAnalytics = React.useCallback(async () => {
     try {
@@ -487,9 +496,9 @@ function App() {
       if (modelName) params.set('model', modelName);
       if (scope !== 'all') params.set('scope', scope);
       const response = await fetch(`/api/v1/analytics/models?${params}`);
-      if (!response.ok) { setModelError({ message: 'No se pudo cargar la analítica de modelos. Comprueba que la API esté actualizada.', code: await responseErrorCode(response) }); return; }
+      if (!response.ok) { setModelError({ key: 'models.loadFailed', code: await responseErrorCode(response) }); return; }
       setModelAnalytics(await response.json()); setModelError(null);
-    } catch { setModelError({ message: 'No se pudo cargar la analítica de modelos. Comprueba que la API esté actualizada.' }); }
+    } catch { setModelError({ key: 'models.loadFailed' }); }
   }, [modelBucket, modelFrom, modelTo, modelSource, modelName, scope]);
   const loadBehavior = React.useCallback(async () => {
     try {
@@ -497,9 +506,9 @@ function App() {
       if (behaviorPeriod !== 'all') params.set('days', behaviorPeriod);
       if (scope !== 'all') params.set('scope', scope);
       const response = await fetch(`/api/v1/behavior?${params}`);
-      if (!response.ok) { setBehaviorError({ message: 'No se pudo cargar el comportamiento. Comprueba que la API esté actualizada.', code: await responseErrorCode(response) }); return; }
+      if (!response.ok) { setBehaviorError({ key: 'behavior.loadFailed', code: await responseErrorCode(response) }); return; }
       setBehavior(await response.json()); setBehaviorError(null);
-    } catch { setBehaviorError({ message: 'No se pudo cargar el comportamiento. Comprueba que la API esté actualizada.' }); }
+    } catch { setBehaviorError({ key: 'behavior.loadFailed' }); }
   }, [behaviorPeriod, scope]);
   const loadOverview = React.useCallback(async () => {
     try {
@@ -508,9 +517,9 @@ function App() {
       if (scope !== 'all') params.set('scope', scope);
       const qs = params.toString();
       const response = await fetch(`/api/v1/overview${qs ? `?${qs}` : ''}`);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      setOverview(await response.json()); setOverviewError('');
-    } catch { setOverviewError('No se pudo cargar el resumen. Comprueba que la API esté actualizada.'); }
+      if (!response.ok) { setOverviewError({ key: 'overview.loadFailed', code: await responseErrorCode(response) }); return; }
+      setOverview(await response.json()); setOverviewError(null);
+    } catch { setOverviewError({ key: 'overview.loadFailed' }); }
   }, [overviewPeriod, scope]);
   toolLoadRef.current = loadToolAnalytics;
   modelLoadRef.current = loadModelAnalytics;
@@ -613,32 +622,32 @@ function App() {
   };
   const saveReview = async () => {
     if (!selected) return;
-    setReviewSaving(true); setReviewMessage('');
+    setReviewSaving(true); setReviewMessage(null);
     try {
       const response = await fetch(`/api/v1/sessions/${encodeURIComponent(selected)}/review`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rating: reviewRating, note: reviewNote, taskLabel }) });
       if (!response.ok) {
-        if (response.status === 404 || response.status === 405) throw new Error('La API activa no tiene la función de evaluación. En PowerShell ejecuta .\\stop.ps1 y luego .\\start.ps1.');
-        if (response.status >= 500) throw new Error(`La API devolvió un error ${response.status}. Reinicia AgentScope con .\\stop.ps1 y .\\start.ps1; si persiste, revisa api-error.log.`);
-        throw new Error(`La API rechazó la evaluación (HTTP ${response.status}).`);
+        if (response.status === 404 || response.status === 405) { setReviewMessage({ key: 'detail.review.endpointMissing' }); return; }
+        if (response.status >= 500) { setReviewMessage({ key: 'detail.review.serverError', params: { status: response.status } }); return; }
+        setReviewMessage({ key: 'detail.review.rejected', params: { status: response.status } }); return;
       }
-      setReviewMessage('Evaluación guardada.'); await loadDetail(selected); await loadComparisons();
-    } catch (error) { setReviewMessage(error instanceof TypeError ? 'No se pudo conectar con la API. Confirma que AgentScope esté iniciado.' : error instanceof Error ? error.message : 'No se pudo guardar la evaluación.'); }
+      setReviewMessage({ key: 'detail.review.saved' }); await loadDetail(selected); await loadComparisons();
+    } catch (error) { setReviewMessage({ key: error instanceof TypeError ? 'detail.review.offline' : 'detail.review.saveFailed' }); }
     finally { setReviewSaving(false); }
   };
   const saveBudget = async (event: React.FormEvent) => {
-    event.preventDefault(); setBudgetSaving(true); setBudgetMessage('');
+    event.preventDefault(); setBudgetSaving(true); setBudgetMessage(null);
     try {
       const response = await fetch('/api/v1/budgets', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project: budgetProject, monthlyLimit: Number(budgetLimit), metric: budgetMetric }) });
       if (!response.ok) throw new Error();
-      setBudgetMessage('Presupuesto guardado.'); setBudgetLimit(''); await loadBudgets();
-    } catch { setBudgetMessage('No se pudo guardar. Revisa el proyecto y el límite mensual.'); }
+      setBudgetMessage({ key: 'budgets.form.saved' }); setBudgetLimit(''); await loadBudgets();
+    } catch { setBudgetMessage({ key: 'budgets.form.saveFailed' }); }
     finally { setBudgetSaving(false); }
   };
   const deleteBudget = async (project: string) => {
     try {
       const response = await fetch(`/api/v1/budgets?project=${encodeURIComponent(project)}`, { method: 'DELETE' });
       if (response.ok || response.status === 204) await loadBudgets();
-    } catch { setBudgetMessage('No se pudo eliminar el presupuesto.'); }
+    } catch { setBudgetMessage({ key: 'budgets.form.deleteFailed' }); }
   };
   const exportSessions = async () => {
     setExporting(true);
@@ -659,13 +668,13 @@ function App() {
       link.remove();
       URL.revokeObjectURL(url);
     } catch {
-      setApiError('No se pudo exportar el historial. Comprueba que la API esté activa.');
+      setApiError({ key: 'sessions.exportFailed' });
     } finally {
       setExporting(false);
     }
   };
   const deleteSession = async (sessionId: string) => {
-    if (!window.confirm('¿Eliminar esta sesión, sus spans y sus eventos locales?')) return;
+    if (!window.confirm(t('detail.deleteConfirm'))) return;
     setDeletingSession(true);
     try {
       const response = await fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
@@ -674,7 +683,7 @@ function App() {
       setDetail(null);
       await Promise.all([load(), loadBudgets()]);
     } catch {
-      setApiError('No se pudo eliminar la sesión.');
+      setApiError({ key: 'sessions.deleteFailed' });
     } finally {
       setDeletingSession(false);
     }
@@ -684,31 +693,91 @@ function App() {
     <header><div><span className="eyebrow">LOCAL AGENT TELEMETRY</span><h1>AgentScope</h1><p>{t('header.tagline')}</p></div><div className="header-actions"><div className="language-switch" role="group" aria-label={t('header.language')}><button type="button" aria-pressed={language === 'es'} className={language === 'es' ? 'active' : ''} onClick={() => setLanguage('es')}>ES</button><button type="button" aria-pressed={language === 'en'} className={language === 'en' ? 'active' : ''} onClick={() => setLanguage('en')}>EN</button></div><button className="install-button" disabled={installed} onClick={() => void installApplication()}>{installed ? t('header.installed') : t('header.install')}</button><span className={`live ${online ? 'connected' : ''}`}><i />{online ? t('header.live') : t('header.reconnecting')}</span>{installHelpVisible && <small className="install-help">{t('header.installHelp')}</small>}</div></header>
     <nav className="main-nav" aria-label={t('nav.label')}><button className={view === 'overview' ? 'active' : ''} onClick={() => setView('overview')}>{t('nav.overview')}</button><button className={view === 'sessions' ? 'active' : ''} onClick={() => setView('sessions')}>{t('nav.sessions')}</button><button className={view === 'tools' ? 'active' : ''} onClick={() => setView('tools')}>{t('nav.tools')}</button><button className={view === 'behavior' ? 'active' : ''} onClick={() => setView('behavior')}>{t('nav.behavior')}</button><button className={view === 'models' ? 'active' : ''} onClick={() => setView('models')}>{t('nav.models')}</button><button className={view === 'compare' ? 'active' : ''} onClick={() => setView('compare')}>{t('nav.compare')}</button><button className={view === 'benchmarks' ? 'active' : ''} onClick={() => setView('benchmarks')}>{t('nav.benchmarks')}</button></nav>
     {systemVersion && systemVersion.protocolVersion !== 1 && <div className="api-error" role="status">{t('header.protocolMismatch', { protocol: systemVersion.protocolVersion })}</div>}
-    {view === 'overview' ? <OverviewPage data={overview} error={overviewError} period={overviewPeriod} setPeriod={setOverviewPeriod} scope={scope} setScope={setScope} onRefresh={() => void loadOverview()} onOpenSession={id => openSession(id)} /> : view === 'behavior' ? <BehaviorPage data={behavior} error={behaviorError} period={behaviorPeriod} setPeriod={setBehaviorPeriod} scope={scope} setScope={setScope} onRefresh={() => void loadBehavior()} onOpenSession={id => openSession(id)} /> : view === 'models' ? <ModelAnalyticsPage data={modelAnalytics} error={modelError} bucket={modelBucket} setBucket={setModelBucket} from={modelFrom} to={modelTo} setFrom={setModelFrom} setTo={setModelTo} source={modelSource} setSource={setModelSource} model={modelName} setModel={setModelName} scope={scope} setScope={setScope} onRefresh={() => void loadModelAnalytics()} /> : view === 'tools' ? <section className="comparison-page"><SectionHeader icon="tools" eyebrow="ANALÍTICA DE EJECUCIÓN" title="Analítica de herramientas" description="Uso, duración y fallos de las herramientas observadas en tus sesiones." actions={<div className="analytics-actions"><ScopeSelect scope={scope} setScope={setScope} /><select aria-label="Período de análisis" value={toolWindow} onChange={event => setToolWindow(event.target.value)}><option value="1">Último día</option><option value="7">Últimos 7 días</option><option value="30">Últimos 30 días</option><option value="90">Últimos 90 días</option><option value="all">Todo el historial</option></select><button onClick={() => void loadToolAnalytics()}>Actualizar</button></div>} />{toolError && <div className="api-error">{toolError}</div>}{toolAnalytics && <><div className="analytics-summary"><article><span>Llamadas a herramientas</span><b>{toolAnalytics.totalCalls.toLocaleString()}</b></article><article><span>Herramientas distintas</span><b>{toolAnalytics.tools.length.toLocaleString()}</b></article><article><span>Llamadas fallidas</span><b>{toolAnalytics.errorCount.toLocaleString()}</b></article></div>{toolAnalytics.tools.length === 0 ? <div className="empty comparison-empty"><div className="empty-icon">⌁</div><b>No hay herramientas en este período</b><p>Cuando OpenCode registre llamadas a herramientas, aparecerán aquí.</p></div> : <div className="tool-analytics-list">{toolAnalytics.tools.map(tool => <article className="tool-analytics-card" key={tool.name}><div className="tool-analytics-heading"><div><h3>{tool.name}</h3><p>{tool.sessionCount} sesiones · {tool.callCount} llamadas</p></div><span className={tool.errorCount ? 'tool-error-rate has-errors' : 'tool-error-rate'}>{tool.errorCount} fallos · {(tool.errorRate * 100).toFixed(1)}%</span></div><div className="tool-analytics-stats"><div><span>Duración promedio</span><b>{tool.averageDurationMs == null ? 'Sin dato' : duration(tool.averageDurationMs, t, language)}</b></div><div><span>Tasa de éxito</span><b>{((1 - tool.errorRate) * 100).toFixed(1)}%</b></div></div>{tool.latestSessions.length > 0 && <div className="tool-session-links"><span>Sesiones recientes</span>{tool.latestSessions.map(session => <button key={session.sessionId} title={session.title || 'Sesión sin título'} onClick={() => openSession(session.sessionId)}><b>{session.title || 'Sesión sin título'}</b><small>{[session.project, session.model].filter(Boolean).join(' · ') || 'Abrir sesión'}</small></button>)}</div>}</article>)}</div>}</>}</section> : view === 'compare' ? <section className="comparison-page"><SectionHeader icon="compare" eyebrow="ANÁLISIS DE RESULTADOS" title="Comparar sesiones" description="Agrupa ejecuciones de la misma tarea para revisar calidad, costo y velocidad por separado." actions={<button onClick={() => void loadComparisons()}>Actualizar</button>} />{comparisonError && <div className="api-error">{comparisonError}</div>}{comparisonGroups.length === 0 ? <div className="empty comparison-empty"><div className="empty-icon">⇄</div><b>Todavía no hay tareas para comparar</b><p>Abre una sesión, asigna una misma etiqueta de tarea a cada ejecución y guarda la evaluación.</p><button onClick={() => setView('sessions')}>Ir a sesiones</button></div> : <><label className="comparison-picker">Tarea<select value={comparisonTask && comparisonGroups.some(group => group.taskLabel === comparisonTask) ? comparisonTask : comparisonGroups[0].taskLabel} onChange={event => setComparisonTask(event.target.value)}>{comparisonGroups.map(group => <option value={group.taskLabel} key={group.taskLabel}>{group.taskLabel} · {group.sessions.length} sesiones</option>)}</select></label>{comparisonGroups.filter(group => group.taskLabel === (comparisonTask && comparisonGroups.some(item => item.taskLabel === comparisonTask) ? comparisonTask : comparisonGroups[0].taskLabel)).map(group => <article className="comparison-group" key={group.taskLabel}><div className="comparison-group-head"><div><h3>{group.taskLabel}</h3><p>{group.sessions.length} ejecuciones con esta etiqueta</p></div></div><div className="table-wrap"><table className="comparison-table"><thead><tr><th>SESIÓN / MODELO</th><th>CALIDAD</th><th>COSTO</th><th>CUOTA GO</th><th>DURACIÓN</th><th>TOKENS</th><th>TOOLS</th></tr></thead><tbody>{group.sessions.map(run => <tr key={run.id}><td><b>{run.title || 'Sesión sin título'}</b><small>{run.model || 'Modelo desconocido'} · {time(run.updatedAt, language)} · {run.status}</small>{run.note && <small className="comparison-note">{run.note}</small>}</td><td>{run.rating == null ? 'Sin puntuar' : <span className="comparison-rating">{'★'.repeat(run.rating)}<small>{run.rating}/5</small></span>}</td><td>{money(run.cost, t, language)}</td><td>{money(run.quotaCostEstimate, t, language)}</td><td>{duration(run.durationMs, t, language)}</td><td>{tokenText(tokenSum(run.inputTokens, run.outputTokens), t, language)}<small>{tokenText(run.inputTokens, t, language)} entrada · {tokenText(run.outputTokens, t, language)} salida</small></td><td>{run.tools.length ? run.tools.join(', ') : '—'}</td></tr>)}</tbody></table></div></article>)}</>}</section> : view === 'benchmarks' ? <BenchmarksPage version={benchmarkVersion} onOpenSession={id => openSession(id)} /> : <><SectionHeader icon="monitoring" eyebrow="MONITOREO" title="Observabilidad" description="Sesiones, modelos y actividad de OpenCode en tiempo real." actions={<div className="section-header-actions"><ScopeSelect scope={scope} setScope={setScope} /><button type="button" className="secondary-button" disabled={exporting} onClick={() => void exportSessions()}>{exporting ? 'Exportando…' : 'Exportar JSONL'}</button></div>} />
-    {apiError && <div className="api-error" role="status">{apiError}</div>}
-    <section className="stats"><article><span>Sesiones encontradas</span><b>{listing.total.toLocaleString()}</b></article><article><span>Errores en esta página</span><b>{sessions.reduce((a, s) => a + s.errorCount, 0)}</b></article><article><span>Duración acumulada</span><b>{duration(durationTotal, t, language)}</b></article><article><span>Spans en esta página</span><b>{sessions.reduce((a, s) => a + s.spanCount, 0)}</b></article><article><span>Tokens reportados</span><b>{tokenText(tokenTotal, t, language)}</b></article></section>
-    <details className="budgets-panel"><summary>Presupuestos locales <span>{budgetPanelSummary(budgets, t)}</span></summary><div className="budgets-content"><form className="budget-form" onSubmit={saveBudget}><label>Proyecto<input list="known-projects" value={budgetProject} onChange={e => setBudgetProject(e.target.value)} placeholder="Nombre del proyecto" required maxLength={120}/><datalist id="known-projects">{[...new Set(sessions.map(s => s.project).filter(Boolean))].map(project => <option key={project} value={project}/>)}</datalist></label><label>Límite mensual (US$)<input type="number" min="0.01" max="1000000" step="0.01" value={budgetLimit} onChange={e => setBudgetLimit(e.target.value)} placeholder="25.00" required/></label><label>Medición<select value={budgetMetric} onChange={e => setBudgetMetric(e.target.value as 'cost' | 'quota')}><option value="cost">Costo reportado</option><option value="quota">Cuota Go estimada</option></select></label><button disabled={budgetSaving}>{budgetSaving ? 'Guardando…' : 'Guardar límite'}</button></form>{budgetMessage && <p className="form-message" role="status">{budgetMessage}</p>}{budgets.length > 0 && <div className="budget-list">{budgets.map(budget => <article className={`budget-item ${(budget.percentage ?? 0) >= 100 ? 'over-budget' : (budget.percentage ?? 0) >= 80 ? 'near-budget' : ''}`} key={budget.project}><div className="budget-heading"><div><b>{budget.project}</b><small>{budgetMetricLabel(budget.metric, t)} · mes actual{budget.totalSpans ? ` · ${budget.measuredSpans ?? 0}/${budget.totalSpans} pasos con dato${budget.isPartial ? ' (parcial)' : ''}` : ''}</small></div><button className="text-button" onClick={() => void deleteBudget(budget.project)}>Eliminar</button></div><div className="budget-amount">{budgetAmountText(budget, value => formatMoney(language, value), t)}</div><div className="budget-track"><i style={{ width: `${Math.min(100, budget.percentage ?? 0)}%` }}/></div><small>{budget.percentage == null ? 'El uso aparecerá cuando haya costos disponibles.' : `${budget.percentage.toFixed(0)}% del límite${budget.percentage >= 100 ? ' · límite superado' : budget.percentage >= 80 ? ' · cerca del límite' : ''}`}</small></article>)}</div>}<p className="budget-footnote">Los límites son avisos locales por mes calendario; no detienen OpenCode ni representan cargos confirmados.</p></div></details>
-    <section className="layout"><div className="panel"><div className="panel-head"><div><h2>Sesiones</h2><small>Actividad reciente</small></div><span className="result-count">{listing.total} resultados</span></div>
-      <div className="filters"><label>Estado<select value={status} onChange={e => setStatus(e.target.value)}><option value="">Todos</option><option value="active">Activa</option><option value="completed">Completada</option><option value="interrupted">Interrumpida</option><option value="error">Error</option></select></label><label>Modelo<input placeholder="Cualquier modelo" value={model} onChange={e => setModel(e.target.value)} /></label><label>Proyecto<input list="known-projects" placeholder="Cualquier proyecto" value={projectFilter} onChange={e => setProjectFilter(e.target.value)} /></label><label>Herramienta<input placeholder="Ej.: bash" value={toolFilter} onChange={e => setToolFilter(e.target.value)} /></label><label>Desde<input type="date" value={from} onChange={e => setFrom(e.target.value)} /></label><label>Hasta<input type="date" value={to} onChange={e => setTo(e.target.value)} /></label><label className="check-filter"><input type="checkbox" checked={errorsOnly} onChange={e => setErrorsOnly(e.target.checked)} />Sólo errores</label></div>
-      {apiError ? <div className="empty"><div className="empty-icon">!</div><b>API no disponible</b><p>La página ya está lista. Inicia el backend y vuelve a actualizar.</p><button onClick={() => void load()}>Reintentar</button></div> : sessions.length === 0 ? <div className="empty"><div className="empty-icon">⌁</div><b>Sin sesiones todavía</b><p>Cuando el plugin de OpenCode envíe telemetría, aparecerá aquí.</p></div> : <><div className="table-wrap sessions-table" role="region" aria-label="Lista de sesiones" tabIndex={0}><table><thead><tr><th>SESIÓN</th><th>ESTADO</th><th>MODELO</th><th>SPANS</th><th>INICIADA</th></tr></thead><tbody>{sessions.map(s => <tr onClick={() => openSession(s.id)} className={selected === s.id ? 'selected' : ''} key={s.id}><td><b title={s.title || 'Sesión sin título'}>{s.title || 'Sesión sin título'}</b></td><td><span className={`badge ${s.status}`}>{s.status}</span>{s.errorCount > 0 && (
+    {view === 'overview' ? <OverviewPage data={overview} error={overviewError} period={overviewPeriod} setPeriod={setOverviewPeriod} scope={scope} setScope={setScope} onRefresh={() => void loadOverview()} onOpenSession={id => openSession(id)} /> : view === 'behavior' ? <BehaviorPage data={behavior} error={behaviorError} period={behaviorPeriod} setPeriod={setBehaviorPeriod} scope={scope} setScope={setScope} onRefresh={() => void loadBehavior()} onOpenSession={id => openSession(id)} /> : view === 'models' ? <ModelAnalyticsPage data={modelAnalytics} error={modelError} bucket={modelBucket} setBucket={setModelBucket} from={modelFrom} to={modelTo} setFrom={setModelFrom} setTo={setModelTo} source={modelSource} setSource={setModelSource} model={modelName} setModel={setModelName} scope={scope} setScope={setScope} onRefresh={() => void loadModelAnalytics()} /> : view === 'tools' ? <section className="comparison-page">
+      <SectionHeader icon="tools" eyebrow={t('tools.eyebrow')} title={t('tools.title')} description={t('tools.description')} actions={<div className="analytics-actions"><ScopeSelect scope={scope} setScope={setScope} /><select aria-label={t('common.period.label')} value={toolWindow} onChange={event => setToolWindow(event.target.value)}><option value="1">{t('common.period.lastDay')}</option><option value="7">{t('common.period.last7')}</option><option value="30">{t('common.period.last30')}</option><option value="90">{t('common.period.last90')}</option><option value="all">{t('common.period.all')}</option></select><button onClick={() => void loadToolAnalytics()}>{t('common.refresh')}</button></div>} />
+      {toolError && <div className="api-error">{errorText(t, toolError)}</div>}
+      {toolAnalytics && <>
+        <div className="analytics-summary"><article><span>{t('tools.totalCalls')}</span><b>{formatNumber(language, toolAnalytics.totalCalls)}</b></article><article><span>{t('tools.distinct')}</span><b>{formatNumber(language, toolAnalytics.tools.length)}</b></article><article><span>{t('tools.failed')}</span><b>{formatNumber(language, toolAnalytics.errorCount)}</b></article></div>
+        {toolAnalytics.tools.length === 0 ? <div className="empty comparison-empty"><div className="empty-icon">⌁</div><b>{t('tools.empty.title')}</b><p>{t('tools.empty.body')}</p></div> : <div className="tool-analytics-list">{toolAnalytics.tools.map(tool => <article className="tool-analytics-card" key={tool.name}>
+          <div className="tool-analytics-heading">
+            <div>
+              <h3>{tool.name}</h3>
+              <p>{[t('tools.card.sessions', { count: tool.sessionCount, value: formatNumber(language, tool.sessionCount) }), t('tools.card.calls', { count: tool.callCount, value: formatNumber(language, tool.callCount) })].join(t('common.listSeparator'))}</p>
+            </div>
+            <span className={tool.errorCount ? 'tool-error-rate has-errors' : 'tool-error-rate'}>{t('tools.card.failures', { count: tool.errorCount, value: formatNumber(language, tool.errorCount), percent: formatNumber(language, tool.errorRate * 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}</span>
+          </div>
+          <div className="tool-analytics-stats">
+            <div><span>{t('tools.card.averageDuration')}</span><b>{tool.averageDurationMs == null ? t('common.noData') : duration(tool.averageDurationMs, t, language)}</b></div>
+            <div><span>{t('tools.card.successRate')}</span><b>{t('common.percent', { value: formatNumber(language, (1 - tool.errorRate) * 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}</b></div>
+          </div>
+          {tool.latestSessions.length > 0 && <div className="tool-session-links"><span>{t('tools.card.recent')}</span>{tool.latestSessions.map(session => <button key={session.sessionId} title={session.title || t('common.untitledSession')} onClick={() => openSession(session.sessionId)}><b>{session.title || t('common.untitledSession')}</b><small>{[session.project, session.model].filter(Boolean).join(t('common.listSeparator')) || t('tools.card.open')}</small></button>)}</div>}
+        </article>)}</div>}
+      </>}
+    </section> : view === 'compare' ? <section className="comparison-page">
+      <SectionHeader icon="compare" eyebrow={t('compare.eyebrow')} title={t('compare.title')} description={t('compare.description')} actions={<button onClick={() => void loadComparisons()}>{t('common.refresh')}</button>} />
+      {comparisonError && <div className="api-error">{errorText(t, comparisonError)}</div>}
+      {comparisonGroups.length === 0 ? <div className="empty comparison-empty"><div className="empty-icon">⇄</div><b>{t('compare.empty.title')}</b><p>{t('compare.empty.body')}</p><button onClick={() => setView('sessions')}>{t('compare.empty.action')}</button></div> : <>
+        <label className="comparison-picker">{t('compare.taskLabel')}<select value={comparisonTask && comparisonGroups.some(group => group.taskLabel === comparisonTask) ? comparisonTask : comparisonGroups[0].taskLabel} onChange={event => setComparisonTask(event.target.value)}>{comparisonGroups.map(group => <option value={group.taskLabel} key={group.taskLabel}>{group.taskLabel}{t('common.listSeparator')}{t('compare.sessions', { count: group.sessions.length, value: formatNumber(language, group.sessions.length) })}</option>)}</select></label>
+        {comparisonGroups.filter(group => group.taskLabel === (comparisonTask && comparisonGroups.some(item => item.taskLabel === comparisonTask) ? comparisonTask : comparisonGroups[0].taskLabel)).map(group => <article className="comparison-group" key={group.taskLabel}>
+          <div className="comparison-group-head">
+            <div>
+              <h3>{group.taskLabel}</h3>
+              <p>{t('compare.group.runs', { count: group.sessions.length, value: formatNumber(language, group.sessions.length) })}</p>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table className="comparison-table">
+              <thead>
+                <tr>
+                  <th>{t('compare.column.session')}</th>
+                  <th>{t('compare.column.quality')}</th>
+                  <th>{t('compare.column.cost')}</th>
+                  <th>{t('compare.column.quota')}</th>
+                  <th>{t('compare.column.duration')}</th>
+                  <th>{t('compare.column.tokens')}</th>
+                  <th>{t('compare.column.tools')}</th>
+                </tr>
+              </thead>
+              <tbody>{group.sessions.map(run => <tr key={run.id}>
+                <td>
+                  <b>{run.title || t('common.untitledSession')}</b>
+                  <small>{[run.model || t('detail.unknownModel'), time(run.updatedAt, language), statusLabel(t, run.status)].join(t('common.listSeparator'))}</small>{run.note && <small className="comparison-note">{run.note}</small>}</td>
+                <td>{run.rating == null ? t('compare.unrated') : <span className="comparison-rating">{'★'.repeat(run.rating)}<small>{run.rating}/5</small></span>}</td>
+                <td>{money(run.cost, t, language)}</td>
+                <td>{money(run.quotaCostEstimate, t, language)}</td>
+                <td>{duration(run.durationMs, t, language)}</td>
+                <td>{tokenText(tokenSum(run.inputTokens, run.outputTokens), t, language)}<small>{t('compare.tokensBreakdown', { input: tokenText(run.inputTokens, t, language), output: tokenText(run.outputTokens, t, language) })}</small>
+                </td>
+                <td>{run.tools.length ? run.tools.join(', ') : '—'}</td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+        </article>)}</>}
+    </section> : view === 'benchmarks' ? <BenchmarksPage version={benchmarkVersion} onOpenSession={id => openSession(id)} /> : <><SectionHeader icon="monitoring" eyebrow={t('sessions.eyebrow')} title={t('sessions.title')} description={t('sessions.description')} actions={<div className="section-header-actions"><ScopeSelect scope={scope} setScope={setScope} /><button type="button" className="secondary-button" disabled={exporting} onClick={() => void exportSessions()}>{exporting ? t('sessions.exporting') : t('sessions.export')}</button></div>} />
+    {apiError && <div className="api-error" role="status">{errorText(t, apiError)}</div>}
+    <section className="stats"><article><span>{t('sessions.stat.total')}</span><b>{formatNumber(language, listing.total)}</b></article><article><span>{t('sessions.stat.pageErrors')}</span><b>{formatNumber(language, sessions.reduce((a, s) => a + s.errorCount, 0))}</b></article><article><span>{t('sessions.stat.duration')}</span><b>{duration(durationTotal, t, language)}</b></article><article><span>{t('sessions.stat.spans')}</span><b>{formatNumber(language, sessions.reduce((a, s) => a + s.spanCount, 0))}</b></article><article><span>{t('sessions.stat.tokens')}</span><b>{tokenText(tokenTotal, t, language)}</b></article></section>
+    <details className="budgets-panel"><summary>{t('budgets.form.title')} <span>{budgetPanelSummary(budgets, t)}</span></summary><div className="budgets-content"><form className="budget-form" onSubmit={saveBudget}><label>{t('budgets.form.project')}<input list="known-projects" value={budgetProject} onChange={e => setBudgetProject(e.target.value)} placeholder={t('budgets.form.projectPlaceholder')} required maxLength={120}/><datalist id="known-projects">{[...new Set(sessions.map(s => s.project).filter(Boolean))].map(project => <option key={project} value={project}/>)}</datalist></label><label>{t('budgets.form.limit')}<input type="number" min="0.01" max="1000000" step="0.01" value={budgetLimit} onChange={e => setBudgetLimit(e.target.value)} placeholder="25.00" required/></label><label>{t('budgets.form.metric')}<select value={budgetMetric} onChange={e => setBudgetMetric(e.target.value as 'cost' | 'quota')}><option value="cost">{budgetMetricLabel('cost', t)}</option><option value="quota">{budgetMetricLabel('quota', t)}</option></select></label><button disabled={budgetSaving}>{budgetSaving ? t('common.saving') : t('budgets.form.save')}</button></form>{budgetMessage && <p className="form-message" role="status">{t(budgetMessage.key, budgetMessage.params)}</p>}{budgets.length > 0 && <div className="budget-list">{budgets.map(budget => <article className={`budget-item ${(budget.percentage ?? 0) >= 100 ? 'over-budget' : (budget.percentage ?? 0) >= 80 ? 'near-budget' : ''}`} key={budget.project}><div className="budget-heading"><div><b>{budget.project}</b><small>{[budgetMetricLabel(budget.metric, t), t('budgets.item.currentMonth'), budget.totalSpans ? `${t('budgets.item.measured', { measured: formatNumber(language, budget.measuredSpans ?? 0), total: formatNumber(language, budget.totalSpans) })}${budget.isPartial ? ` (${t('budgets.item.partial')})` : ''}` : ''].filter(Boolean).join(t('common.listSeparator'))}</small></div><button className="text-button" onClick={() => void deleteBudget(budget.project)}>{t('common.delete')}</button></div><div className="budget-amount">{budgetAmountText(budget, value => formatMoney(language, value), t)}</div><div className="budget-track"><i style={{ width: `${Math.min(100, budget.percentage ?? 0)}%` }}/></div><small>{budget.percentage == null ? t('budgets.item.usagePending') : [t('budgets.item.usage', { percent: formatNumber(language, budget.percentage, { maximumFractionDigits: 0 }) }), budget.percentage >= 100 ? t('budgets.item.over') : budget.percentage >= 80 ? t('budgets.item.near') : ''].filter(Boolean).join(t('common.listSeparator'))}</small></article>)}</div>}<p className="budget-footnote">{t('budgets.footnote')}</p></div></details>
+    <section className="layout"><div className="panel"><div className="panel-head"><div><h2>{t('sessions.panel.title')}</h2><small>{t('sessions.panel.subtitle')}</small></div><span className="result-count">{t('sessions.panel.count', { count: listing.total, value: formatNumber(language, listing.total) })}</span></div>
+      <div className="filters"><label>{t('sessions.filter.status')}<select value={status} onChange={e => setStatus(e.target.value)}><option value="">{t('sessions.filter.allStatuses')}</option><option value="active">{t('status.active')}</option><option value="completed">{t('status.completed')}</option><option value="interrupted">{t('status.interrupted')}</option><option value="error">{t('status.error')}</option></select></label><label>{t('sessions.filter.model')}<input placeholder={t('sessions.filter.anyModel')} value={model} onChange={e => setModel(e.target.value)} /></label><label>{t('sessions.filter.project')}<input list="known-projects" placeholder={t('sessions.filter.anyProject')} value={projectFilter} onChange={e => setProjectFilter(e.target.value)} /></label><label>{t('sessions.filter.tool')}<input placeholder={t('sessions.filter.toolPlaceholder')} value={toolFilter} onChange={e => setToolFilter(e.target.value)} /></label><label>{t('sessions.filter.from')}<input type="date" value={from} onChange={e => setFrom(e.target.value)} /></label><label>{t('sessions.filter.to')}<input type="date" value={to} onChange={e => setTo(e.target.value)} /></label><label className="check-filter"><input type="checkbox" checked={errorsOnly} onChange={e => setErrorsOnly(e.target.checked)} />{t('sessions.filter.errorsOnly')}</label></div>
+      {apiError ? <div className="empty"><div className="empty-icon">!</div><b>{t('sessions.empty.apiTitle')}</b><p>{t('sessions.empty.apiBody')}</p><button onClick={() => void load()}>{t('common.retry')}</button></div> : sessions.length === 0 ? <div className="empty"><div className="empty-icon">⌁</div><b>{t('sessions.empty.title')}</b><p>{t('sessions.empty.body')}</p></div> : <><div className="table-wrap sessions-table" role="region" aria-label={t('sessions.table.label')} tabIndex={0}><table><thead><tr><th>{t('sessions.table.session')}</th><th>{t('sessions.table.status')}</th><th>{t('sessions.table.model')}</th><th>{t('sessions.table.spans')}</th><th>{t('sessions.table.started')}</th></tr></thead><tbody>{sessions.map(s => <tr onClick={() => openSession(s.id)} className={selected === s.id ? 'selected' : ''} key={s.id}><td><b title={s.title || t('common.untitledSession')}>{s.title || t('common.untitledSession')}</b></td><td><span className={`badge ${s.status}`}>{statusLabel(t, s.status)}</span>{s.errorCount > 0 && (
   <button
     type="button"
     className="error-count"
-    title="Abrir la sesión y seleccionar el primer span con error"
-    aria-label={`Ver ${s.errorCount} ${s.errorCount === 1 ? 'error' : 'errores'} en el trace`}
+    title={t('sessions.errorCount.title')}
+    aria-label={t('sessions.errorCount.label', { errors: t('common.errors', { count: s.errorCount, value: formatNumber(language, s.errorCount) }) })}
     onClick={(event) => { event.stopPropagation(); openSession(s.id, true); }}
   >
-    {s.errorCount} {s.errorCount === 1 ? 'error' : 'errores'}
+    {t('common.errors', { count: s.errorCount, value: formatNumber(language, s.errorCount) })}
   </button>
-)}</td><td>{s.model || '—'}</td><td>{s.spanCount}</td><td>{time(s.startedAt, language)}</td></tr>)}</tbody></table></div><div className="pagination"><span>Página {listing.page} de {Math.max(1, Math.ceil(listing.total / listing.pageSize))}</span><div><button disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>Anterior</button><button disabled={page * listing.pageSize >= listing.total} onClick={() => setPage(p => p + 1)}>Siguiente</button></div></div></>}
-    </div><div className="panel detail"><div className="panel-head"><div><h2>{detail?.session?.title || (detail ? 'Sesión sin título' : 'Trace de sesión')}</h2><small>{detail ? 'Trace de sesión' : 'Selecciona una sesión para ver su trace'}</small></div><div className="detail-actions"><button onClick={() => { void load(); if (selected) void loadDetail(selected); }}>Actualizar</button>{detail && <button type="button" className="danger-button" disabled={deletingSession} onClick={() => void deleteSession(detail.session.id)}>{deletingSession ? 'Eliminando…' : 'Eliminar'}</button>}</div></div>{detail ? <>
-      <div className="session-meta"><span className={`badge ${detail.session.status}`}>{detail.session.status}</span><span>{detail.session.source}</span><span>{detail.session.model || 'Modelo desconocido'}</span>{detail.quality && <span className={`badge ${detail.quality.status === 'complete' ? 'completed' : 'interrupted'}`} title={detail.quality.status === 'complete' ? 'Todos los pasos reportan inicio, duración y tokens' : qualitySummary(detail.quality, t)}>{detail.quality.status === 'complete' ? 'Traza completa' : `Traza parcial (${qualitySummary(detail.quality, t)})`}</span>}</div>
-      <section className="review-box"><div><h3>Evaluación de la sesión</h3><p>Califica el resultado. Usa la misma tarea en las sesiones que quieras comparar.</p></div><div className="rating-input" role="group" aria-label="Puntuación de 1 a 5">{[1, 2, 3, 4, 5].map(value => <button type="button" key={value} aria-label={`${value} de 5`} aria-pressed={reviewRating === value} className={reviewRating != null && value <= reviewRating ? 'rated' : ''} onClick={() => setReviewRating(value)}>★</button>)}<button type="button" className="clear-rating" onClick={() => setReviewRating(null)}>Quitar</button></div><label className="review-note-label">Etiqueta de tarea<div className="task-label-row"><input list="known-tasks" maxLength={120} value={taskLabel} onChange={e => setTaskLabel(e.target.value)} placeholder="Ej.: resumir contrato"/>{detail.session.title && <button type="button" className="secondary-button task-title-btn" onClick={() => setTaskLabel(detail.session.title ?? '')}>Usar título</button>}</div><datalist id="known-tasks">{comparisonGroups.map(group => <option key={group.taskLabel} value={group.taskLabel}/>)}</datalist></label><label className="review-note-label">Nota<textarea maxLength={2000} rows={3} value={reviewNote} onChange={e => setReviewNote(e.target.value)} placeholder="¿Qué salió bien o qué mejorarías?"/></label><div className="review-actions"><small>{reviewMessage || 'La evaluación se guarda solo en esta instalación.'}</small><button onClick={() => void saveReview()} disabled={reviewSaving}>{reviewSaving ? 'Guardando…' : 'Guardar evaluación'}</button></div></section>
-      <div className="metrics"><div><span>Duración</span><b>{detail.metrics.durationMs == null ? 'En curso' : `${(detail.metrics.durationMs / 1000).toFixed(1)} s`}</b></div><div><span>Entrada</span><b>{tokenText(detail.metrics.inputTokens, t, language)}</b></div><div><span>Salida</span><b>{tokenText(detail.metrics.outputTokens, t, language)}</b></div><div><span>Razonamiento incluido</span><b>{tokenText(detail.metrics.reasoningTokens, t, language)}</b></div><div><span>Caché leída</span><b>{tokenText(detail.metrics.cacheReadTokens, t, language)}</b></div><div><span>Caché escrita</span><b>{tokenText(detail.metrics.cacheWriteTokens, t, language)}</b></div><div><span>Costo reportado</span><b>{money(detail.metrics.cost, t, language)}</b></div><div><span>Cuota Go estimada</span><b>{detail.metrics.quotaCostEstimate == null ? t('common.rateUnavailable') : money(detail.metrics.quotaCostEstimate, t, language)}</b></div></div>
-      {toolsUsed.length > 0 && <><h3>Tools usadas</h3><div className="tool-list">{toolsUsed.map(tool => <span className="tool-chip" key={tool}>{tool}</span>)}</div></>}
-      <h3>Spans del trace</h3>{spans.length === 0 ? <p className="muted detail-note">Sin spans correlacionados. Hay {detail.events.length} eventos de sesión.</p> : <div className="trace-layout"><div className="timeline waterfall" role="region" aria-label="Spans del trace" tabIndex={0}><TraceWaterfall waterfall={waterfall} selectedId={selectedSpanId} highlightedId={highlightedSpanId} onSelect={(id) => setSelectedSpanId(id)} registerRow={registerRow} /></div><SpanInspector span={selectedSpan} parent={parentSpan} /></div>}
+)}</td><td>{s.model || '—'}</td><td>{formatNumber(language, s.spanCount)}</td><td>{time(s.startedAt, language)}</td></tr>)}</tbody></table></div><div className="pagination"><span>{t('sessions.pagination.page', { page: formatNumber(language, listing.page), total: formatNumber(language, Math.max(1, Math.ceil(listing.total / listing.pageSize))) })}</span><div><button disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>{t('sessions.pagination.previous')}</button><button disabled={page * listing.pageSize >= listing.total} onClick={() => setPage(p => p + 1)}>{t('sessions.pagination.next')}</button></div></div></>}
+    </div><div className="panel detail"><div className="panel-head"><div><h2>{detail?.session?.title || (detail ? t('common.untitledSession') : t('detail.panel.trace'))}</h2><small>{detail ? t('detail.panel.trace') : t('detail.panel.select')}</small></div><div className="detail-actions"><button onClick={() => { void load(); if (selected) void loadDetail(selected); }}>{t('common.refresh')}</button>{detail && <button type="button" className="danger-button" disabled={deletingSession} onClick={() => void deleteSession(detail.session.id)}>{deletingSession ? t('detail.deleting') : t('common.delete')}</button>}</div></div>{detail ? <>
+      <div className="session-meta"><span className={`badge ${detail.session.status}`}>{statusLabel(t, detail.session.status)}</span><span>{detail.session.source}</span><span>{detail.session.model || t('detail.unknownModel')}</span>{detail.quality && <span className={`badge ${detail.quality.status === 'complete' ? 'completed' : 'interrupted'}`} title={detail.quality.status === 'complete' ? t('detail.quality.completeTitle') : qualitySummary(detail.quality, t, language)}>{detail.quality.status === 'complete' ? t('detail.quality.complete') : t('detail.quality.partial', { summary: qualitySummary(detail.quality, t, language) })}</span>}</div>
+      <section className="review-box"><div><h3>{t('detail.review.title')}</h3><p>{t('detail.review.description')}</p></div><div className="rating-input" role="group" aria-label={t('detail.review.ratingLabel')}>{[1, 2, 3, 4, 5].map(value => <button type="button" key={value} aria-label={t('detail.review.ratingValue', { value: formatNumber(language, value) })} aria-pressed={reviewRating === value} className={reviewRating != null && value <= reviewRating ? 'rated' : ''} onClick={() => setReviewRating(value)}>★</button>)}<button type="button" className="clear-rating" onClick={() => setReviewRating(null)}>{t('detail.review.clear')}</button></div><label className="review-note-label">{t('detail.review.taskLabel')}<div className="task-label-row"><input list="known-tasks" maxLength={120} value={taskLabel} onChange={e => setTaskLabel(e.target.value)} placeholder={t('detail.review.taskPlaceholder')}/>{detail.session.title && <button type="button" className="secondary-button task-title-btn" onClick={() => setTaskLabel(detail.session.title ?? '')}>{t('detail.review.useTitle')}</button>}</div><datalist id="known-tasks">{comparisonGroups.map(group => <option key={group.taskLabel} value={group.taskLabel}/>)}</datalist></label><label className="review-note-label">{t('detail.review.note')}<textarea maxLength={2000} rows={3} value={reviewNote} onChange={e => setReviewNote(e.target.value)} placeholder={t('detail.review.notePlaceholder')}/></label><div className="review-actions"><small>{reviewMessage ? t(reviewMessage.key, reviewMessage.params) : t('detail.review.localOnly')}</small><button onClick={() => void saveReview()} disabled={reviewSaving}>{reviewSaving ? t('common.saving') : t('detail.review.save')}</button></div></section>
+      <div className="metrics"><div><span>{t('detail.metric.duration')}</span><b>{detail.metrics.durationMs == null ? t('detail.metric.running') : t('duration.seconds', { value: formatNumber(language, detail.metrics.durationMs / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}</b></div><div><span>{t('detail.metric.input')}</span><b>{tokenText(detail.metrics.inputTokens, t, language)}</b></div><div><span>{t('detail.metric.output')}</span><b>{tokenText(detail.metrics.outputTokens, t, language)}</b></div><div><span>{t('detail.metric.reasoning')}</span><b>{tokenText(detail.metrics.reasoningTokens, t, language)}</b></div><div><span>{t('detail.metric.cacheRead')}</span><b>{tokenText(detail.metrics.cacheReadTokens, t, language)}</b></div><div><span>{t('detail.metric.cacheWrite')}</span><b>{tokenText(detail.metrics.cacheWriteTokens, t, language)}</b></div><div><span>{t('detail.metric.reportedCost')}</span><b>{money(detail.metrics.cost, t, language)}</b></div><div><span>{t('detail.metric.quota')}</span><b>{detail.metrics.quotaCostEstimate == null ? t('common.rateUnavailable') : money(detail.metrics.quotaCostEstimate, t, language)}</b></div></div>
+      {toolsUsed.length > 0 && <><h3>{t('detail.tools.title')}</h3><div className="tool-list">{toolsUsed.map(tool => <span className="tool-chip" key={tool}>{tool}</span>)}</div></>}
+      <h3>{t('detail.spans.title')}</h3>{spans.length === 0 ? <p className="muted detail-note">{t('detail.spans.empty', { count: detail.events.length, value: formatNumber(language, detail.events.length) })}</p> : <div className="trace-layout"><div className="timeline waterfall" role="region" aria-label={t('detail.spans.title')} tabIndex={0}><TraceWaterfall waterfall={waterfall} selectedId={selectedSpanId} highlightedId={highlightedSpanId} onSelect={(id) => setSelectedSpanId(id)} registerRow={registerRow} /></div><SpanInspector span={selectedSpan} parent={parentSpan} /></div>}
       {errorEvents.length > 0 && <>
-        <h3>Eventos con error</h3>
+        <h3>{t('detail.errors.title')}</h3>
         <div className="timeline error-events">
           {errorEvents.map((event) => {
             const linked = findSpanForEvent(spans, event);
@@ -725,19 +794,19 @@ function App() {
                     <button type="button" className="trace-link" onClick={() => {
                       setSelectedSpanId(linked.id);
                       setReveal((current) => ({ spanId: linked.id, nonce: (current?.nonce ?? 0) + 1 }));
-                    }}>Ver en el trace</button>
+                    }}>{t('detail.errors.openTrace')}</button>
                   ) : (
-                    <small className="trace-link-missing">Sin span asociado</small>
+                    <small className="trace-link-missing">{t('detail.errors.noSpan')}</small>
                   )}
                 </div>
-                <span className="badge error">error</span>
+                <span className="badge error">{statusLabel(t, 'error')}</span>
               </div>
             );
           })}
         </div>
       </>}
-      {(detail.unrelatedEvents?.length ?? 0) > 0 && <details className="unrelated-events"><summary>Eventos de sesión no correlacionados ({detail.unrelatedEvents!.length})</summary><div className="timeline">{detail.unrelatedEvents!.map(event => <div className="span" key={event.id}><div className={isErrorStatus(event.status) ? 'dot bad' : 'dot'} /><div><b>{event.type}</b><small>{time(event.timestamp, language)}</small>{safeAttributes(event.attributesJson).map(([key, value]) => <small className="attributes" key={key}>{key}: {value}</small>)}</div><span className={`badge ${event.status ?? 'ok'}`}>{event.status ?? 'ok'}</span></div>)}</div></details>}
-    </> : <div className="empty compact"><div className="empty-icon">◷</div><b>Explora un trace</b><p>Elige una sesión para inspeccionar el timeline, los errores y los atributos seguros.</p></div>}</div></section>
+      {(detail.unrelatedEvents?.length ?? 0) > 0 && <details className="unrelated-events"><summary>{t('detail.errors.unrelated', { value: formatNumber(language, detail.unrelatedEvents!.length) })}</summary><div className="timeline">{detail.unrelatedEvents!.map(event => <div className="span" key={event.id}><div className={isErrorStatus(event.status) ? 'dot bad' : 'dot'} /><div><b>{event.type}</b><small>{time(event.timestamp, language)}</small>{safeAttributes(event.attributesJson).map(([key, value]) => <small className="attributes" key={key}>{key}: {value}</small>)}</div><span className={`badge ${event.status ?? 'ok'}`}>{statusLabel(t, event.status ?? 'ok')}</span></div>)}</div></details>}
+    </> : <div className="empty compact"><div className="empty-icon">◷</div><b>{t('detail.empty.title')}</b><p>{t('detail.empty.body')}</p></div>}</div></section>
     <footer>{t('footer.text')}{systemVersion ? ` · ${t('footer.version', { protocol: systemVersion.protocolVersion, schema: systemVersion.schemaVersion })}` : ''}</footer>
     </>}
   </main>;

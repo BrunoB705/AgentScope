@@ -47,6 +47,21 @@ test('un código desconocido cae al texto de la API', () => {
   assert.equal(translateError(translate.bind(null, 'es'), 'unknown_code', 'Something failed.'), 'Something failed.');
 });
 
+test('un código conocido interpola los parámetros que mandó la API', () => {
+  assert.equal(
+    translateError(translate.bind(null, 'es'), 'suite_not_found', 'The suite "demo" does not exist.', { suite: 'demo' }),
+    'La suite "demo" no existe.',
+  );
+  assert.equal(
+    translateError(translate.bind(null, 'en'), 'suite_not_found', 'texto de la API', { suite: 'demo' }),
+    'The suite "demo" does not exist.',
+  );
+  assert.equal(
+    translateError(translate.bind(null, 'es'), 'baseline_verify_timeout', 'The baseline verify of "code-test" timed out.', { test: 'code-test' }),
+    'La verificación de la línea base de "code-test" agotó el tiempo de espera.',
+  );
+});
+
 test('una clave inexistente devuelve la clave y nunca undefined', () => {
   // @ts-expect-error clave inexistente a propósito
   assert.equal(translate('en', 'signals.unknown.title'), 'signals.unknown.title');

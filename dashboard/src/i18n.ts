@@ -109,11 +109,19 @@ export function translate(language: Language, key: TranslationKey, params?: Reco
   return interpolate(text, params);
 }
 
-/** Traduce un `code` de la API; si el cliente no lo conoce, conserva el texto en inglés. */
-export function translateError(t: Translate, code: string | undefined, fallback: string): string {
+/**
+ * Traduce un `code` de la API; si el cliente no lo conoce, conserva el texto en inglés.
+ * Los `params` que mandó la API se interpolan en la plantilla del código conocido.
+ */
+export function translateError(
+  t: Translate,
+  code: string | undefined,
+  fallback: string,
+  params?: Record<string, string | number>,
+): string {
   if (!code) return fallback;
   const key = (apiErrorText as Record<string, TranslationKey | undefined>)[code];
-  return key === undefined ? fallback : t(key);
+  return key === undefined ? fallback : t(key, params);
 }
 
 /**

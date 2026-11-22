@@ -11,29 +11,52 @@ import {
   type BenchmarkRun,
   type BenchmarkSuite,
 } from './benchmarks';
+import {
+  formatDate,
+  formatMoney,
+  formatNumber,
+  statusLabel,
+  translateError,
+  useLanguage,
+  type Language,
+  type Translate,
+  type TranslationKey,
+} from './i18n';
 
-type CatalogError = { id: string; error: string };
+type CatalogError = { id: string; error: string; code: string };
 type SuiteResponse = { suites: BenchmarkSuite[]; errors: CatalogError[] };
-type ModelsResponse = { models: string[]; error?: string | null };
+type ModelsResponse = { models: string[]; error?: string | null; code?: string | null };
 type RunPage = { items: BenchmarkRun[]; total: number; page: number; pageSize: number };
+/** Error de la página: la clave o el `code` estable se resuelven al renderizar, en el idioma activo. */
+type PageError = { key?: TranslationKey; message?: string; code?: string; params?: Record<string, string | number> };
 
-const formatDuration = (milliseconds?: number | null) => {
-  if (milliseconds == null) return 'Sin dato';
-  return milliseconds < 1000 ? `${Math.round(milliseconds)} ms` : `${(milliseconds / 1000).toFixed(1)} s`;
+const errorText = (t: Translate, error: PageError): string =>
+  translateError(t, error.code, error.key ? t(error.key, error.params) : error.message ?? '', error.params);
+
+const formatDuration = (milliseconds: number | null | undefined, t: Translate, language: Language): string => {
+  if (milliseconds == null) return t('common.noData');
+  return milliseconds < 1000
+    ? t('duration.milliseconds', { value: formatNumber(language, Math.round(milliseconds), { maximumFractionDigits: 0 }) })
+    : t('duration.seconds', { value: formatNumber(language, milliseconds / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) });
 };
 
-const formatMoney = (value?: number | null) => value == null ? 'Sin dato' : `US$ ${value.toFixed(8)}`;
+const money = (value: number | null | undefined, t: Translate, language: Language): string =>
+  value == null ? t('common.noData') : formatMoney(language, value);
 
-const statusLabel = (status: string) => status === 'completed' ? 'completada' : status;
+const languageLabel = (t: Translate, value: string | null | undefined): string => {
+  if (value === 'es' || value === 'en') return t(`benchmarks.language.${value}` as TranslationKey);
+  return value ?? '';
+};
 
 export function BenchmarksPage({ version, onOpenSession }: {
   version: number;
   onOpenSession: (sessionId: string) => void;
 }) {
+  const { language, t } = useLanguage();
   const [suites, setSuites] = React.useState<BenchmarkSuite[]>([]);
   const [catalogErrors, setCatalogErrors] = React.useState<CatalogError[]>([]);
   const [models, setModels] = React.useState<string[]>([]);
-  const [modelError, setModelError] = React.useState('');
+  const [modelError, setModelError] = React.useState<PageError | null>(null);
   const [runs, setRuns] = React.useState<BenchmarkRun[]>([]);
   const [runTotal, setRunTotal] = React.useState(0);
   const [runPage, setRunPage] = React.useState(1);
@@ -45,7 +68,7 @@ export function BenchmarksPage({ version, onOpenSession }: {
   const [manualModels, setManualModels] = React.useState('');
   const [requestVerdict, setRequestVerdict] = React.useState(true);
   const [viewRunId, setViewRunId] = React.useState('');
-  const [error, setError] = React.useState('');
+  const [error, setError] = React.useState<PageError | null>(null);
   const [creating, setCreating] = React.useState(false);
 
   const loadAll = React.useCallback(async () => {
@@ -55,22 +78,31 @@ export function BenchmarksPage({ version, onOpenSession }: {
         fetch('/api/v1/benchmarks/models'),
         fetch('/api/v1/benchmarks/runs?page=1&pageSize=20'),
       ]);
-      if (!suiteResponse.ok) throw new Error(`Suites: HTTP ${suiteResponse.status}`);
-      if (!modelResponse.ok) throw new Error(`Modelos: HTTP ${modelResponse.status}`);
-      if (!runResponse.ok) throw new Error(`Corridas: HTTP ${runResponse.status}`);
+      if (!suiteResponse.ok) {
+        setError({ key: 'benchmarks.load.suites', params: { status: suiteResponse.status } });
+        return;
+      }
+      if (!modelResponse.ok) {
+        setError({ key: 'benchmarks.load.models', params: { status: modelResponse.status } });
+        return;
+      }
+      if (!runResponse.ok) {
+        setError({ key: 'benchmarks.load.runs', params: { status: runResponse.status } });
+        return;
+      }
       const suiteData = await suiteResponse.json() as SuiteResponse;
       const modelData = await modelResponse.json() as ModelsResponse;
       const runData = await runResponse.json() as RunPage;
       setSuites(suiteData.suites);
       setCatalogErrors(suiteData.errors);
       setModels(modelData.models);
-      setModelError(modelData.error ?? '');
+      setModelError(modelData.error ? { message: modelData.error, code: modelData.code ?? undefined } : null);
       setRuns(runData.items);
       setRunTotal(runData.total);
       setRunPage(1);
-      setError('');
-    } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'No se pudieron cargar las pruebas.');
+      setError(null);
+    } catch {
+      setError({ key: 'benchmarks.loadFailed' });
     }
   }, []);
 
@@ -78,13 +110,17 @@ export function BenchmarksPage({ version, onOpenSession }: {
     try {
       const next = runPage + 1;
       const response = await fetch(`/api/v1/benchmarks/runs?page=${next}&pageSize=20`);
-      if (!response.ok) throw new Error(`Corridas: HTTP ${response.status}`);
+      if (!response.ok) {
+        const data = await response.json() as { error?: string; code?: string };
+        setError({ message: data.error, code: data.code });
+        return;
+      }
       const data = await response.json() as RunPage;
       setRuns((current) => [...current, ...data.items.filter((item) => !current.some((existing) => existing.id === item.id))]);
       setRunTotal(data.total);
       setRunPage(next);
-    } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'No se pudo cargar más historial.');
+    } catch {
+      setError({ key: 'benchmarks.loadMoreFailed' });
     }
   };
 
@@ -117,6 +153,7 @@ export function BenchmarksPage({ version, onOpenSession }: {
 
   const activeRun = runs.find((run) => run.status === 'queued' || run.status === 'running') ?? null;
   const viewRun = runs.find((run) => run.id === viewRunId) ?? activeRun ?? runs[0] ?? null;
+  const viewRunLanguage = viewRun ? languageLabel(t, viewRun.language) : '';
 
   React.useEffect(() => {
     if (!activeRun) return;
@@ -151,26 +188,30 @@ export function BenchmarksPage({ version, onOpenSession }: {
 
   const start = async () => {
     if (!suite || chosenModels.length === 0 || !judge) {
-      setError('Elegí una suite, al menos un modelo y un juez.');
+      setError({ key: 'benchmarks.start.missing' });
       return;
     }
-    const verdictNote = requestVerdict ? ' + 1 recomendación final' : '';
-    if (!window.confirm(`Se van a ejecutar ${total} combinaciones${verdictNote}. Esto consume cuota real de los modelos. ¿Continuar?`)) return;
+    const verdictNote = requestVerdict ? t('benchmarks.verdict.note') : '';
+    if (!window.confirm(t('benchmarks.start.confirm', { value: formatNumber(language, total), note: verdictNote }))) return;
     setCreating(true);
-    setError('');
+    setError(null);
     try {
       const response = await fetch('/api/v1/benchmarks/runs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ suite: suite.id, models: chosenModels, judge, requestVerdict }),
+        body: JSON.stringify({ suite: suite.id, models: chosenModels, judge, requestVerdict, language }),
       });
-      const data = await response.json() as BenchmarkRun & { error?: string };
-      if (!response.ok) throw new Error(data.error ?? `HTTP ${response.status}`);
+      if (!response.ok) {
+        const data = await response.json() as { error?: string; code?: string };
+        setError({ message: data.error, code: data.code, params: { suite: suite.id } });
+        return;
+      }
+      const data = await response.json() as BenchmarkRun;
       setRuns((current) => [data, ...current]);
       setRunTotal((current) => current + 1);
       setViewRunId(data.id);
-    } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'No se pudo iniciar la corrida.');
+    } catch {
+      setError({ key: 'benchmarks.startFailed' });
     } finally {
       setCreating(false);
     }
@@ -180,29 +221,31 @@ export function BenchmarksPage({ version, onOpenSession }: {
     try {
       const response = await fetch(`/api/v1/benchmarks/runs/${id}/cancel`, { method: 'POST' });
       if (!response.ok) {
-        const data = await response.json() as { error?: string };
-        throw new Error(data.error ?? `HTTP ${response.status}`);
+        const data = await response.json() as { error?: string; code?: string };
+        setError({ message: data.error, code: data.code });
+        return;
       }
       await refreshRun(id);
-    } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'No se pudo cancelar la corrida.');
+    } catch {
+      setError({ key: 'benchmarks.cancelFailed' });
     }
   };
 
   const deleteRun = async (id: string) => {
-    if (!window.confirm('Se eliminan la corrida y sus sesiones vinculadas. Dejarán de contar como uso real. ¿Continuar?')) return;
+    if (!window.confirm(t('benchmarks.deleteConfirm'))) return;
     try {
       const response = await fetch(`/api/v1/benchmarks/runs/${id}`, { method: 'DELETE' });
       if (!response.ok) {
-        const data = await response.json() as { error?: string };
-        throw new Error(data.error ?? `HTTP ${response.status}`);
+        const data = await response.json() as { error?: string; code?: string };
+        setError({ message: data.error, code: data.code });
+        return;
       }
       setRuns((current) => current.filter((run) => run.id !== id));
       setRunTotal((current) => Math.max(0, current - 1));
       if (viewRunId === id) setViewRunId('');
-      setError('');
-    } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'No se pudo eliminar la corrida.');
+      setError(null);
+    } catch {
+      setError({ key: 'benchmarks.deleteFailed' });
     }
   };
 
@@ -211,130 +254,165 @@ export function BenchmarksPage({ version, onOpenSession }: {
       <div className="analytics-title">
         <span className="analytics-icon" aria-hidden="true">≡</span>
         <div>
-          <span className="eyebrow">PRUEBAS</span>
-          <h2>Pruebas de modelos</h2>
-          <p>La misma suite contra varios modelos, con un juez aparte.</p>
+          <span className="eyebrow">{t('benchmarks.eyebrow')}</span>
+          <h2>{t('benchmarks.title')}</h2>
+          <p>{t('benchmarks.description')}</p>
         </div>
       </div>
-      <div className="section-header-actions"><button onClick={() => void loadAll()}>Actualizar</button></div>
+      <div className="section-header-actions"><button onClick={() => void loadAll()}>{t('common.refresh')}</button></div>
     </div>
 
-    <p className="benchmark-warning">Contención best-effort: las corridas usan tu usuario y <code>--auto</code>. No hay sandbox; no ejecutes pruebas que no confíes.</p>
-    {catalogErrors.map((item) => <p className="benchmark-warning" key={item.id}>Suite <b>{item.id}</b>: {item.error}</p>)}
-    {error && <div className="api-error" role="status">{error}</div>}
+    <p className="benchmark-warning">{t('benchmarks.warning', { flag: '--auto' })}</p>
+    {catalogErrors.map((item) => <p className="benchmark-warning" key={item.id}>
+      {t('benchmarks.catalogError', { suite: item.id, error: translateError(t, item.code, item.error, { suite: item.id }) })}
+    </p>)}
+    {error && <div className="api-error" role="status">{errorText(t, error)}</div>}
 
     <div className="benchmark-layout">
       <article className="benchmark-card">
-        <h3>Nueva corrida</h3>
-        {suites.length === 0 ? <p className="benchmark-empty">No hay suites en <code>benchmarks/</code>.</p> : <>
+        <h3>{t('benchmarks.newRun')}</h3>
+        {suites.length === 0 ? <p className="benchmark-empty">{t('benchmarks.emptySuites', { path: 'benchmarks/' })}</p> : <>
           <div className="benchmark-form">
-            <label>Suite
+            <label>{t('benchmarks.form.suite')}
               <select value={suite?.id ?? ''} onChange={(event) => setSuiteId(event.target.value)}>
                 {suites.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
               </select>
             </label>
-            {suite && <p className="benchmark-meta">{suite.tests.length} pruebas · timeout de modelo {formatDuration(suite.modelTimeoutMs)}</p>}
+            {suite && <p className="benchmark-meta">{t('benchmarks.suiteMeta', {
+              count: suite.tests.length,
+              value: formatNumber(language, suite.tests.length),
+              timeout: formatDuration(suite.modelTimeoutMs, t, language),
+            })}</p>}
 
-            {models.length > 0 ? <div role="group" aria-label="Modelos a comparar">
-              <span className="benchmark-meta">Modelos a comparar</span>
-              <input className="benchmark-search" type="text" value={modelSearch} onChange={(event) => setModelSearch(event.target.value)} placeholder="Buscar modelo por nombre" />
+            {models.length > 0 ? <div role="group" aria-label={t('benchmarks.models.label')}>
+              <span className="benchmark-meta">{t('benchmarks.models.label')}</span>
+              <input className="benchmark-search" type="text" value={modelSearch} onChange={(event) => setModelSearch(event.target.value)} placeholder={t('benchmarks.models.search')} />
               <div className="benchmark-models">
-                {visibleModels.length === 0 && <span className="benchmark-empty">Ningún modelo coincide con la búsqueda.</span>}
+                {visibleModels.length === 0 && <span className="benchmark-empty">{t('benchmarks.models.empty')}</span>}
                 {visibleModels.map((model) => <div className="benchmark-model-row" key={model}>
                   <label>
                     <input type="checkbox" checked={selectedModels.includes(model)} onChange={() => toggleModel(model)} />
                     <span>{model}</span>
                   </label>
-                  {selectedModels.includes(model) && <select className="benchmark-variant" value={variants[model] ?? ''} onChange={(event) => setVariants((current) => ({ ...current, [model]: event.target.value }))} aria-label={`Variante de ${model}`}>
-                    <option value="">Sin variante</option>
+                  {selectedModels.includes(model) && <select className="benchmark-variant" value={variants[model] ?? ''} onChange={(event) => setVariants((current) => ({ ...current, [model]: event.target.value }))} aria-label={t('benchmarks.variant.label', { model })}>
+                    <option value="">{t('benchmarks.variant.none')}</option>
                     {VARIANTS.map((variant) => <option key={variant} value={variant}>{variant}</option>)}
                   </select>}
                 </div>)}
               </div>
-            </div> : <label>Modelos
-              <input type="text" value={manualModels} onChange={(event) => setManualModels(event.target.value)} placeholder="proveedor/modelo, proveedor/otro" />
-              {modelError && <small>{modelError}</small>}
+            </div> : <label>{t('benchmarks.models.manual')}
+              <input type="text" value={manualModels} onChange={(event) => setManualModels(event.target.value)} placeholder={t('benchmarks.models.placeholder')} />
+              {modelError && <small>{errorText(t, modelError)}</small>}
             </label>}
 
-            <label>Juez
+            <label>{t('benchmarks.judge')}
               {judgeOptions.length > 0 ? <select value={judge} onChange={(event) => setJudge(event.target.value)}>
-                <option value="">Elegí un juez</option>
+                <option value="">{t('benchmarks.judge.placeholder')}</option>
                 {judgeOptions.map((model) => <option key={model} value={model}>{model}</option>)}
-              </select> : <input type="text" value={judge} onChange={(event) => setJudge(event.target.value)} placeholder="proveedor/modelo" />}
+              </select> : <input type="text" value={judge} onChange={(event) => setJudge(event.target.value)} placeholder={t('benchmarks.judge.manual')} />}
             </label>
 
-            <label className="benchmark-verdict-toggle" title="Una llamada extra al juez que recomienda el mejor modelo de la corrida">
+            <label className="benchmark-verdict-toggle" title={t('benchmarks.verdict.toggleTitle')}>
               <input type="checkbox" checked={requestVerdict} onChange={(event) => setRequestVerdict(event.target.checked)} />
-              <span>Pedir recomendación final del juez (+1 llamada)</span>
+              <span>{t('benchmarks.verdict.toggle')}</span>
             </label>
 
-            <p className="benchmark-meta">{total} combinaciones{requestVerdict ? ' + 1 recomendación final' : ''}</p>
+            <p className="benchmark-meta">{t('benchmarks.combinations', {
+              count: total,
+              value: formatNumber(language, total),
+              note: requestVerdict ? t('benchmarks.verdict.note') : '',
+            })}</p>
             <div className="benchmark-actions">
-              <button disabled={creating || total === 0 || !judge} onClick={() => void start()}>{creating ? 'Iniciando…' : 'Correr'}</button>
-              {activeRun && <button className="benchmark-secondary" onClick={() => void cancel(activeRun.id)}>Cancelar corrida</button>}
+              <button disabled={creating || total === 0 || !judge} onClick={() => void start()}>{creating ? t('benchmarks.starting') : t('benchmarks.start')}</button>
+              {activeRun && <button className="benchmark-secondary" onClick={() => void cancel(activeRun.id)}>{t('benchmarks.cancel')}</button>}
             </div>
           </div>
         </>}
       </article>
 
       <article className="benchmark-card">
-        <h3>Resultados</h3>
-        {!viewRun ? <p className="benchmark-empty">Todavía no hay corridas.</p> : <>
+        <h3>{t('benchmarks.results')}</h3>
+        {!viewRun ? <p className="benchmark-empty">{t('benchmarks.noRuns')}</p> : <>
           <div className="benchmark-run">
             <div className="benchmark-actions">
-              <span className={`benchmark-status ${viewRun.status}`}>{statusLabel(viewRun.status)}</span>
-              <span className="benchmark-meta">Suite {viewRun.suite} · juez {viewRun.judgeModel} · {viewRun.completed}/{viewRun.total}</span>
-              {viewRun.status !== 'queued' && viewRun.status !== 'running' && <button className="benchmark-secondary benchmark-danger" onClick={() => void deleteRun(viewRun.id)}>Eliminar corrida</button>}
+              <span className={`benchmark-status ${viewRun.status}`}>{statusLabel(t, viewRun.status)}</span>
+              {viewRunLanguage && <span className="benchmark-status">{viewRunLanguage}</span>}
+              <span className="benchmark-meta">{t('benchmarks.runMeta', {
+                suite: viewRun.suite,
+                judge: viewRun.judgeModel,
+                completed: formatNumber(language, viewRun.completed),
+                total: formatNumber(language, viewRun.total),
+              })}</span>
+              {viewRun.status !== 'queued' && viewRun.status !== 'running' && <button className="benchmark-secondary benchmark-danger" onClick={() => void deleteRun(viewRun.id)}>{t('benchmarks.deleteRun')}</button>}
             </div>
             <div className="benchmark-bar"><i style={{ width: `${viewRun.total ? viewRun.completed / viewRun.total * 100 : 0}%` }} /></div>
-            {viewRun.error && <p className="benchmark-warning">{viewRun.error}</p>}
-            {baselineWarnings.length > 0 && <p className="benchmark-warning">Línea base: {baselineWarnings.map((item) => item.test).join(', ')} ya pasa sobre el fixture limpio; la prueba no distingue.</p>}
+            {viewRun.error && <p className="benchmark-warning">{translateError(t, viewRun.errorCode ?? undefined, viewRun.error, viewRun.errorParams ?? undefined)}</p>}
+            {baselineWarnings.length > 0 && <p className="benchmark-warning">{t('benchmarks.baseline', { tests: baselineWarnings.map((item) => item.test).join(', ') })}</p>}
           </div>
 
           {viewRun.verdict && <div className="benchmark-verdict">
-            <h4>Recomendación del juez</h4>
-            <div className="benchmark-verdict-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(viewRun.verdict) }} />
+            <h4>{t('benchmarks.verdict.heading')}</h4>
+            <div className="benchmark-verdict-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(translateError(t, viewRun.verdictCode ?? undefined, viewRun.verdict, viewRun.verdictParams ?? undefined)) }} />
           </div>}
 
           <div className="table-wrap benchmark-table-wrap">
             <table className="benchmark-results">
-              <thead><tr><th>MODELO</th><th>APROBADAS</th><th>NOTA</th><th>DURACIÓN</th><th>TOKENS</th><th>CUOTA GO</th><th>CUOTA/APROBADA</th><th>ERRORES</th></tr></thead>
+              <thead><tr><th>{t('benchmarks.column.model')}</th><th>{t('benchmarks.column.passed')}</th><th>{t('benchmarks.column.score')}</th><th>{t('benchmarks.column.duration')}</th><th>{t('benchmarks.column.tokens')}</th><th>{t('benchmarks.column.quota')}</th><th>{t('benchmarks.column.quotaPerPassed')}</th><th>{t('benchmarks.column.errors')}</th></tr></thead>
               <tbody>{summarizeByModel(viewRun.results).map((summary) => <tr key={summary.model}>
                 <td><b>{summary.model}</b></td>
-                <td>{summary.passed}/{summary.total}</td>
-                <td>{summary.judgeAverage == null ? 'Sin dato' : summary.judgeAverage.toFixed(1)}</td>
-                <td>{formatDuration(summary.durationMs)}</td>
-                <td title={`Entrada ${summary.inputTokens.toLocaleString()} · Salida ${summary.outputTokens.toLocaleString()} · Razonamiento ${summary.reasoningTokens.toLocaleString()} · Caché leída ${summary.cacheReadTokens.toLocaleString()} · Caché escrita ${summary.cacheWriteTokens.toLocaleString()}`}>{summary.totalTokens.toLocaleString()}</td>
-                <td>{formatMoney(summary.quotaCost)}</td>
-                <td>{formatMoney(quotaPerPassed(summary))}</td>
-                <td>{summary.errors}</td>
+                <td>{formatNumber(language, summary.passed)}/{formatNumber(language, summary.total)}</td>
+                <td>{summary.judgeAverage == null ? t('common.noData') : formatNumber(language, summary.judgeAverage, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</td>
+                <td>{formatDuration(summary.durationMs, t, language)}</td>
+                <td title={t('benchmarks.tokens.title', {
+                  input: formatNumber(language, summary.inputTokens),
+                  output: formatNumber(language, summary.outputTokens),
+                  reasoning: formatNumber(language, summary.reasoningTokens),
+                  cacheRead: formatNumber(language, summary.cacheReadTokens),
+                  cacheWrite: formatNumber(language, summary.cacheWriteTokens),
+                })}>{formatNumber(language, summary.totalTokens)}</td>
+                <td>{money(summary.quotaCost, t, language)}</td>
+                <td>{money(quotaPerPassed(summary), t, language)}</td>
+                <td>{formatNumber(language, summary.errors)}</td>
               </tr>)}</tbody>
             </table>
           </div>
 
           <details className="benchmark-details">
-            <summary>Detalle por prueba</summary>
+            <summary>{t('benchmarks.detail')}</summary>
             <div className="benchmark-results-scroll">
               {viewRun.results.map((result) => <div className="benchmark-result-row" key={result.id}>
-                <div><b>{result.testName}</b><small>{result.model}</small><small>Entrada {result.inputTokens.toLocaleString()} · Salida {result.outputTokens.toLocaleString()} · Razonamiento {result.reasoningTokens.toLocaleString()} · Caché leída {result.cacheReadTokens.toLocaleString()} · Caché escrita {result.cacheWriteTokens.toLocaleString()} · Total {tokenTotal(result).toLocaleString()}</small></div>
-                <div><span className={`benchmark-status ${result.status}`}>{result.status}</span>{result.verifyPassed != null && <small>{result.verifyPassed ? 'verify OK' : `verify ${result.verifyExitCode}`}</small>}</div>
-                <div>{result.judgeScore == null ? 'Sin nota' : `Juez ${result.judgeScore}/5`}{result.judgeRationale && <small dangerouslySetInnerHTML={{ __html: renderMarkdown(result.judgeRationale) }} />}</div>
-                <div>{result.sessionId && <button className="text-button overview-open" onClick={() => onOpenSession(result.sessionId!)}>Ver trace</button>}
-                  <small>Cuota Go: {formatMoney(result.quotaCostEstimate)} · Reportado: {formatMoney(result.cost)}</small>
-                  {result.metricsError && <small>{result.metricsError}</small>}
-                  {result.error && <small>{result.error}</small>}
+                <div><b>{result.testName}</b><small>{result.model}</small><small>{t('benchmarks.tokens.detail', {
+                  input: formatNumber(language, result.inputTokens),
+                  output: formatNumber(language, result.outputTokens),
+                  reasoning: formatNumber(language, result.reasoningTokens),
+                  cacheRead: formatNumber(language, result.cacheReadTokens),
+                  cacheWrite: formatNumber(language, result.cacheWriteTokens),
+                  total: formatNumber(language, tokenTotal(result)),
+                })}</small></div>
+                <div><span className={`benchmark-status ${result.status}`}>{statusLabel(t, result.status)}</span>{result.verifyPassed != null && <small>{result.verifyPassed ? t('verify.passed') : t('verify.exit', { code: result.verifyExitCode == null ? t('common.noData') : formatNumber(language, result.verifyExitCode) })}</small>}</div>
+                <div>{result.judgeScore == null ? t('benchmarks.noScore') : t('benchmarks.judgeScore', { score: formatNumber(language, result.judgeScore, { maximumFractionDigits: 1 }) })}{result.judgeRationale && <small dangerouslySetInnerHTML={{ __html: renderMarkdown(result.judgeRationale) }} />}</div>
+                <div>{result.sessionId && <button className="text-button overview-open" onClick={() => onOpenSession(result.sessionId!)}>{t('benchmarks.viewTrace')}</button>}
+                  <small>{t('benchmarks.costs', { quota: money(result.quotaCostEstimate, t, language), cost: money(result.cost, t, language) })}</small>
+                  {result.metricsError && <small>{translateError(t, result.metricsErrorCode ?? undefined, result.metricsError, result.metricsErrorParams ?? undefined)}</small>}
+                  {result.error && <small>{translateError(t, result.errorCode ?? undefined, result.error, result.errorParams ?? undefined)}</small>}
                 </div>
               </div>)}
             </div>
           </details>
 
           <div className="benchmark-history">
-            <h4>Historial</h4>
-            {runs.length === 0 ? <p className="benchmark-empty">Sin corridas.</p> : runs.map((run) => <button key={run.id} className={run.id === viewRun.id ? 'selected' : ''} onClick={() => setViewRunId(run.id)}>
+            <h4>{t('benchmarks.history')}</h4>
+            {runs.length === 0 ? <p className="benchmark-empty">{t('benchmarks.history.empty')}</p> : runs.map((run) => <button key={run.id} className={run.id === viewRun.id ? 'selected' : ''} onClick={() => setViewRunId(run.id)}>
               <b>{run.suite}</b>
-              <small>{new Date(run.createdAt).toLocaleString()} · {run.completed}/{run.total} · {run.status}</small>
+              <small>{t('benchmarks.history.item', {
+                date: formatDate(language, run.createdAt),
+                completed: formatNumber(language, run.completed),
+                total: formatNumber(language, run.total),
+                status: statusLabel(t, run.status),
+                language: languageLabel(t, run.language),
+              })}</small>
             </button>)}
-            {runs.length < runTotal && <button className="benchmark-more" onClick={() => void loadMore()}>Cargar más</button>}
+            {runs.length < runTotal && <button className="benchmark-more" onClick={() => void loadMore()}>{t('benchmarks.loadMore')}</button>}
           </div>
         </>}
       </article>

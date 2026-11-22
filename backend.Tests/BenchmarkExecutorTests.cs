@@ -273,7 +273,7 @@ public sealed class BenchmarkExecutorTests : IDisposable
         await harness.Executor.ExecuteAsync(harness.RunId, CancellationToken.None);
         var run = harness.Db.BenchmarkRuns.Single();
         Assert.Equal("failed", run.Status);
-        Assert.Contains("no existe", run.Error);
+        Assert.Contains("does not exist", run.Error);
     }
 
     [Fact]

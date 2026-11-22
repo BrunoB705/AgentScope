@@ -202,7 +202,7 @@ public sealed class BenchmarkCatalogTests : IDisposable
     public void Load_UnknownId_Throws()
     {
         var error = Assert.Throws<BenchmarkValidationException>(() => Catalog().Load("missing"));
-        Assert.Contains("no existe", error.Message);
+        Assert.Contains("does not exist", error.Message);
     }
 
     [Theory]

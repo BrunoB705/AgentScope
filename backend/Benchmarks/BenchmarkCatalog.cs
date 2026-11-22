@@ -59,7 +59,7 @@ public sealed class BenchmarkCatalog
         var directory = Path.Combine(_rootPath, id);
         var file = Path.Combine(directory, "suite.json");
         if (!Directory.Exists(directory) || !File.Exists(file))
-            throw new BenchmarkValidationException($"La suite '{id}' no existe.");
+            throw new BenchmarkValidationException($"The suite '{id}' does not exist.");
 
         SuiteFile? parsed;
         try

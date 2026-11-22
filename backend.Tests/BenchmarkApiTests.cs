@@ -58,7 +58,10 @@ public sealed class BenchmarkApiTests : IDisposable
         using var client = Client();
         var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(new[] { "provider/model-a" }, "provider/model-a"));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("juez", await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("judge", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("judge_is_model", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -67,6 +70,10 @@ public sealed class BenchmarkApiTests : IDisposable
         using var client = Client();
         var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(judge: null));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("judge", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("judge_missing", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -75,7 +82,10 @@ public sealed class BenchmarkApiTests : IDisposable
         using var client = Client();
         var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", new { suite = "missing", models = new[] { "provider/model-a" }, judge = "provider/model-c" });
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-        Assert.Contains("no existe", await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("does not exist", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("suite_missing", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -85,7 +95,10 @@ public sealed class BenchmarkApiTests : IDisposable
         using var client = Client();
         var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody());
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-        Assert.Contains("boom", await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("boom", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("model_catalog_unavailable", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -94,7 +107,10 @@ public sealed class BenchmarkApiTests : IDisposable
         using var client = Client();
         var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(new[] { "a&calc" }));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("catálogo", await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("catalog", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("model_not_in_catalog", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -103,7 +119,10 @@ public sealed class BenchmarkApiTests : IDisposable
         using var client = Client();
         var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(judge: "provider/model-z"));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("juez", await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("judge", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("judge_not_in_catalog", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -123,7 +142,10 @@ public sealed class BenchmarkApiTests : IDisposable
         using var client = Client();
         var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(new[] { "provider/model-a#a&calc" }));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("variante", await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("variant", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("variant_invalid", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -159,7 +181,10 @@ public sealed class BenchmarkApiTests : IDisposable
         using var client = Client();
         var response = await client.PostAsync("/api/v1/benchmarks/runs/missing/cancel", null);
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-        Assert.Contains("no existe", await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("does not exist", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("run_not_found", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -170,6 +195,10 @@ public sealed class BenchmarkApiTests : IDisposable
         var id = created.RootElement.GetProperty("id").GetString();
         var response = await client.DeleteAsync($"/api/v1/benchmarks/runs/{id}");
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("before deleting", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("cancel_before_delete", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]

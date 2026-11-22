@@ -26,7 +26,7 @@ public static class BenchmarkEndpoints
             CancellationToken cancellationToken) =>
         {
             if (string.IsNullOrWhiteSpace(dto.Suite))
-                return Results.BadRequest(new { error = "Falta la suite." });
+                return Results.BadRequest(new { error = "The suite is missing.", code = "suite_missing" });
 
             BenchmarkSuite suite;
             try
@@ -35,9 +35,9 @@ public static class BenchmarkEndpoints
             }
             catch (BenchmarkValidationException ex)
             {
-                return ex.Message.Contains("no existe", StringComparison.OrdinalIgnoreCase)
-                    ? Results.NotFound(new { error = ex.Message })
-                    : Results.BadRequest(new { error = ex.Message });
+                return ex.Message.Contains("does not exist", StringComparison.OrdinalIgnoreCase)
+                    ? Results.NotFound(new { error = ex.Message, code = "suite_missing" })
+                    : Results.BadRequest(new { error = ex.Message, code = "suite_missing" });
             }
 
             var modelList = (dto.Models ?? Array.Empty<string>())
@@ -46,11 +46,11 @@ public static class BenchmarkEndpoints
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
             if (modelList.Length == 0)
-                return Results.BadRequest(new { error = "Elegí al menos un modelo." });
+                return Results.BadRequest(new { error = "Choose at least one model.", code = "models_missing" });
 
             var judge = dto.Judge?.Trim();
             if (string.IsNullOrWhiteSpace(judge))
-                return Results.BadRequest(new { error = "Elegí un juez." });
+                return Results.BadRequest(new { error = "Choose a judge.", code = "judge_missing" });
 
             var specs = modelList.Select(model =>
             {
@@ -59,18 +59,18 @@ public static class BenchmarkEndpoints
             }).ToArray();
             if (specs.Any(spec => string.IsNullOrWhiteSpace(spec.Base)
                 || (spec.Variant is not null && !Regex.IsMatch(spec.Variant, "^[A-Za-z0-9][A-Za-z0-9-]*$"))))
-                return Results.BadRequest(new { error = "Alguna variante de modelo es inválida." });
+                return Results.BadRequest(new { error = "Some model variant is invalid.", code = "variant_invalid" });
             if (specs.Any(spec => spec.Base == judge))
-                return Results.BadRequest(new { error = "El juez no puede ser uno de los modelos evaluados." });
+                return Results.BadRequest(new { error = "The judge cannot be one of the evaluated models.", code = "judge_is_model" });
 
             var available = await models.ListAsync(cancellationToken);
             if (available.Error is not null)
-                return Results.Json(new { error = available.Error }, statusCode: StatusCodes.Status409Conflict);
+                return Results.Json(new { error = available.Error, code = "model_catalog_unavailable" }, statusCode: StatusCodes.Status409Conflict);
             var catalogModels = new HashSet<string>(available.Models, StringComparer.Ordinal);
             if (!specs.All(spec => catalogModels.Contains(spec.Base)))
-                return Results.BadRequest(new { error = "Uno de los modelos no está en el catálogo de opencode." });
+                return Results.BadRequest(new { error = "One of the models is not in the opencode catalog.", code = "model_not_in_catalog" });
             if (!catalogModels.Contains(judge))
-                return Results.BadRequest(new { error = "El juez no está en el catálogo de opencode." });
+                return Results.BadRequest(new { error = "The judge is not in the opencode catalog.", code = "judge_not_in_catalog" });
 
             var run = new BenchmarkRunEntity
             {
@@ -133,7 +133,7 @@ public static class BenchmarkEndpoints
         app.MapGet("/api/v1/benchmarks/runs/{id}", async (string id, TelemetryDb db, CancellationToken cancellationToken) =>
         {
             var run = await db.BenchmarkRuns.AsNoTracking().FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
-            if (run is null) return Results.NotFound(new { error = "La corrida no existe." });
+            if (run is null) return Results.NotFound(new { error = "The run does not exist.", code = "run_not_found" });
             var results = await db.BenchmarkResults.AsNoTracking().Where(item => item.RunId == id).ToListAsync(cancellationToken);
             return Results.Ok(ToDto(run, results));
         });
@@ -145,9 +145,9 @@ public static class BenchmarkEndpoints
             CancellationToken cancellationToken) =>
         {
             var run = await db.BenchmarkRuns.FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
-            if (run is null) return Results.NotFound(new { error = "La corrida no existe." });
+            if (run is null) return Results.NotFound(new { error = "The run does not exist.", code = "run_not_found" });
             if (run.Status is "completed" or "failed" or "cancelled")
-                return Results.Conflict(new { error = "La corrida ya terminó." });
+                return Results.Conflict(new { error = "The run has already finished.", code = "run_finished" });
 
             run.Status = "cancelled";
             run.CompletedAt = DateTime.UtcNow;
@@ -159,7 +159,7 @@ public static class BenchmarkEndpoints
             }
             catch (DbUpdateConcurrencyException)
             {
-                return Results.Conflict(new { error = "La corrida terminó mientras se cancelaba." });
+                return Results.Conflict(new { error = "The run finished while it was being cancelled.", code = "run_finished_while_cancelling" });
             }
             registry.Cancel(id);
             return Results.Json(new { status = "cancelled" }, statusCode: StatusCodes.Status202Accepted);
@@ -168,9 +168,9 @@ public static class BenchmarkEndpoints
         app.MapDelete("/api/v1/benchmarks/runs/{id}", async (string id, TelemetryDb db, CancellationToken cancellationToken) =>
         {
             var run = await db.BenchmarkRuns.AsNoTracking().FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
-            if (run is null) return Results.NotFound(new { error = "La corrida no existe." });
+            if (run is null) return Results.NotFound(new { error = "The run does not exist.", code = "run_not_found" });
             if (run.Status is "queued" or "running")
-                return Results.Conflict(new { error = "Cancelá la corrida antes de eliminarla." });
+                return Results.Conflict(new { error = "Cancel the run before deleting it.", code = "cancel_before_delete" });
 
             var results = await db.BenchmarkResults.AsNoTracking()
                 .Where(item => item.RunId == id)

@@ -1,19 +1,81 @@
-# Agent Observability Platform
+# AgentScope
 
-Plataforma para observar sesiones de OpenCode. API ASP.NET Core + SQLite + SignalR, dashboard React y plugin de OpenCode. Sólo guarda metadatos seleccionados; el adaptador nunca envía prompts, respuestas, argumentos de herramientas ni salidas.
+**AgentScope** es una plataforma local de observabilidad y evaluación para sesiones de **OpenCode**. Permite ver qué pasó dentro de una sesión de agente —tiempos, spans, herramientas, errores, tokens y costos— y comparar el rendimiento de distintos modelos con evidencia real.
 
-## Iniciar
+---
 
-Requiere .NET 10, Node 22+ y PowerShell 7 para desarrollo. Para contenedores, instala Docker Compose.
+## ¿Qué problema resuelve?
 
-En Windows, inicia ambos servicios y abre el dashboard. El script genera una clave aleatoria una sola vez y la guarda fuera del repositorio, en `%LOCALAPPDATA%\AgentObservabilityPlatform\telemetry.key`. En cada arranque restringe los permisos de ese archivo con `icacls` a la cuenta actual (sin herencia); si no puede, muestra una advertencia.
+Trabajar con un agente de código suele ser una caja negra: cuesta saber en qué paso se fue el tiempo, qué herramienta falló, si un modelo entró en bucle o cuánto consumió realmente una tarea. AgentScope instrumenta esas sesiones de forma local y las muestra en un dashboard en tiempo real, con dos objetivos principales:
+
+1. **Observar y diagnosticar:** reconstruir el trace completo de cada sesión para detectar cuellos de botella, ráfagas de errores o loops de herramientas.
+2. **Elegir modelos con evidencia:** comparar modelos por etiqueta de tarea o ejecutar suites de prueba automatizadas midiendo tiempo, tokens, cuota estimada y corrección.
+
+---
+
+## Alcance y límites
+
+- **Solo metadatos (privacidad por diseño):** el plugin nunca captura ni envía prompts, respuestas, argumentos de herramientas, contenido de archivos ni salidas de comandos. Solo registra nombres, estados, códigos de error, duraciones y conteos de tokens.
+- **Local-first y uso personal:** corre en tu máquina (backend, base SQLite y dashboard en `localhost`). No está diseñado para despliegue multiusuario, cuentas ni acceso remoto.
+- **Fuente actual:** pensado para sesiones de **OpenCode** mediante su API de plugins v2.
+- **Cuota y tiempos sin inventos:** la cuota Go se calcula a partir del catálogo local de tarifas de OpenCode (si falta una tarifa, no se estima) y es una atribución de consumo, no un cargo real. Los spans sin duración se muestran como marcadores sin inferir tiempos.
+- **Benchmarks sin sandbox estricto:** las pruebas de modelos corren en el entorno local del usuario (*best-effort*, quitando las claves internas de la plataforma del subproceso).
+
+---
+
+## Qué incluye el proyecto
+
+| Componente | Tecnología | Rol |
+|---|---|---|
+| `backend/` | ASP.NET Core (.NET 10), SQLite, SignalR | Ingesta de eventos, almacenamiento local de sesiones/traces/spans, analítica y ejecución de benchmarks. |
+| `dashboard/` | React, TypeScript, Vite (PWA) | Interfaz web en tiempo real conectada por REST y SignalR. |
+| `opencode-plugin/` | TypeScript (Plugin API v2) | Adaptador que captura eventos de OpenCode y envía metadatos seleccionados al backend. |
+| `benchmarks/` | Suites multi-lenguaje | Cuatro suites (`refactor-pequeno`, `csharp-dotnet`, `react-typescript`, `python-fastapi`) con pruebas de código (`code`) y abiertas con juez (`open`). |
+
+### Vistas del dashboard
+
+- **Inicio:** resumen del período con sesiones por estado, tasa de éxito, duración promedio, tokens, costos, herramientas/modelos más usados y últimas sesiones.
+- **Observabilidad:** listado filtrable de sesiones y detalle del trace con waterfall proporcional, inspección de spans, herramientas, tokens, errores (con salto al span) y evaluación manual.
+- **Herramientas:** uso, duración promedio y tasa de fallo por herramienta.
+- **Comportamiento:** detector de sesiones que requieren atención (bucles de herramientas, ráfagas de errores, sesiones largas o interrumpidas).
+- **Modelos:** consumo de tokens, eficiencia de caché, costo reportado por OpenCode y cuota Go estimada por origen y modelo.
+- **Comparar:** agrupación de sesiones por etiqueta de tarea para contrastar modelo, calificación, costo, duración, tokens y herramientas.
+- **Pruebas:** ejecución de suites contra varios modelos (con verificación automática o juez ciego independiente), variantes, historial y recomendación final.
+
+---
+
+## Inicio rápido
+
+### Requisitos
+
+- **.NET 10 SDK**
+- **Node.js 22.18+**
+- **PowerShell 7**, **Git** y **OpenCode**
+- *(Opcional)* **Docker Compose** para levantar API + dashboard en contenedores (con el worker de benchmarks desactivado).
+- *(Opcional)* **Python** con `fastapi`, `httpx` y `pytest` si vas a correr la suite `python-fastapi`.
+
+### Levantar en Windows
 
 ```powershell
 .\start.ps1
 opencode
 ```
 
-Detén los servicios con `.\stop.ps1` desde PowerShell o `.\stop.cmd` desde CMD. La base de datos se guarda en `%LOCALAPPDATA%\AgentObservabilityPlatform\telemetry.db`; los registros están en la misma carpeta, dentro de `logs`. Si el backend no puede restaurar NuGet o npm no puede instalar, el script muestra el error en la terminal.
+- Dashboard: `http://127.0.0.1:5173`
+- Healthcheck de la API: `http://127.0.0.1:5080/api/v1/health`
+- Detener servicios: `.\stop.ps1` (PowerShell) o `.\stop.cmd` (CMD).
+
+En el primer arranque, `start.ps1` genera una clave aleatoria y guarda base de datos, clave y logs fuera del repositorio (en `%LOCALAPPDATA%\AgentObservabilityPlatform\`).
+
+### Instalar como aplicación (PWA)
+
+Con `.\start.ps1` corriendo, abrí `http://127.0.0.1:5173` en Microsoft Edge o Chrome y elegí **Instalar aplicación** (o **Aplicaciones → Instalar AgentScope**). El acceso directo de escritorio **AgentScope** inicia los servicios en segundo plano, abre la ventana de la PWA y los detiene al cerrarla.
+
+### Plugin de OpenCode fuera del repositorio
+
+El repositorio ya incluye el puente en `.opencode/plugins/agent-observability.ts`. Para capturar sesiones desde cualquier otro directorio, copiá `opencode-plugin/src/index.ts` a `~/.config/opencode/plugins/agent-observability.ts`.
+
+### Levantar con Docker Compose
 
 ```powershell
 $key = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
@@ -22,79 +84,32 @@ $env:OPENCODE_OBSERVABILITY_KEY = $key
 docker compose up --build
 ```
 
-Abre <http://127.0.0.1:5173>. API: <http://127.0.0.1:5080/api/v1/health>. No hay claves predeterminadas; para ejecutar manualmente configura `Telemetry__ApiKey` y `OPENCODE_OBSERVABILITY_KEY` con el mismo valor.
+### Ejecución manual (desarrollo)
 
-## Instalar como aplicación
-
-AgentScope se puede instalar como una aplicación web progresiva (PWA) desde Microsoft Edge o Chrome en Windows. Primero ejecuta `.\start.ps1`, abre `http://127.0.0.1:5173` y pulsa **Instalar aplicación**. Si el navegador no muestra el diálogo, usa su menú **Aplicaciones → Instalar AgentScope**. La aplicación instalada sigue necesitando que AgentScope esté iniciado localmente para conectarse a la API y recibir telemetría.
-
-El acceso directo **AgentScope** del escritorio inicia `start.ps1` en segundo plano y abre la PWA instalada con su icono. Cuando se cierra la ventana de AgentScope, el lanzador detiene API y dashboard. Si movés la carpeta del proyecto, hay que actualizar el destino del acceso directo. Si no puede identificar la ventana, mantiene los servicios activos y muestra cómo detenerlos manualmente.
-
-Para ejecutar manualmente: `dotnet run --project backend --no-launch-profile --urls http://127.0.0.1:5080` y, en `dashboard`, `npm ci && npm run dev -- --host 127.0.0.1 --port 5173`.
-
-## Pestañas del dashboard
-
-- **Inicio:** es la vista por defecto; resume la actividad del período con sesiones por estado, tasa de éxito, duración promedio, tokens, costos, las herramientas y los modelos más usados, y las últimas sesiones.
-- **Observabilidad:** lista las sesiones con filtros y muestra el detalle del trace con un waterfall proporcional, el panel del span seleccionado, las herramientas, los tokens, los errores y la evaluación manual; desde un error se puede saltar al span que lo produjo.
-- **Herramientas:** resume el uso, la duración promedio y los fallos de cada herramienta en el período elegido.
-- **Comportamiento:** es un detector de sesiones que merecen una mirada: no mide “el comportamiento del agente” en abstracto, sino que marca sesiones guardadas cuando encuentra bucles de herramientas, ráfagas de errores, sesiones largas o interrumpidas, con un enlace al detalle.
-- **Modelos:** muestra el consumo de tokens, la eficiencia de caché, el costo reportado por OpenCode y la cuota Go estimada por origen y modelo.
-- **Comparar:** agrupa sesiones por etiqueta de tarea y compara modelo, calificación, costo, duración, tokens y herramientas usadas.
-- **Pruebas:** corre una suite contra varios modelos, con verificación automática o un juez aparte, y compara tiempo, tokens, costo y corrección.
-
-## Plugin OpenCode
-
-El adaptador usa la API de plugins v2 de OpenCode. El puente de proyecto está en `.opencode/plugins/agent-observability.ts`; para que funcione desde otros directorios, copia `opencode-plugin/src/index.ts` a `~/.config/opencode/plugins/agent-observability.ts`. Al cargarlo en una instancia ya abierta, OpenCode puede recargar el archivo; los eventos anteriores a la carga no se reconstruyen, así que una sesión activa debe generar un evento nuevo para aparecer.
-
-El plugin usa `OPENCODE_OBSERVABILITY_KEY` si está definida; si no, lee la clave local desde `%LOCALAPPDATA%\AgentObservabilityPlatform\telemetry.key`. Así puede capturar sesiones aunque OpenCode se haya iniciado desde otra terminal. Los eventos anteriores a la carga del plugin no se reconstruyen; una sesión ya abierta debe generar actividad nueva para aparecer.
-
-El plugin registra sesiones, el proveedor y modelo informados por OpenCode al iniciar cada paso, y las herramientas completadas o fallidas. Correlaciona herramientas con el paso del modelo y sólo transmite metadatos seleccionados: nombres, estados, códigos de error y tokens. No serializa prompts, respuestas ni contenido/argumentos de herramientas.
-
-El título de la sesión llega por el evento `session.renamed`. Como respaldo, si una sesión todavía no tiene título, el plugin lo consulta a OpenCode hasta cuatro veces con espera creciente (inmediato, 30 s, 2 min y 10 min) y deja de consultar en cuanto lo conoce.
-
-El detalle distingue el costo reportado por OpenCode de la cuota Go estimada. La cuota se calcula por paso con el desglose de entrada, salida y caché y las tarifas del catálogo de modelos que OpenCode sirve localmente; si falta una tarifa, no se inventa una estimación. Es una atribución de consumo, no un cargo real ni el importe de la suscripción.
-
-El waterfall usa las duraciones reportadas por OpenCode; los spans sin duración se muestran como marcadores y no se infieren tiempos.
-
-## Pruebas de modelos
-
-La pestaña **Pruebas** ejecuta una suite definida en `benchmarks/` contra los modelos que elijas. Cada prueba es de dos tipos:
-
-- `code`: copia un fixture a un directorio temporal, pide al modelo que lo modifique y ejecuta `verify` para obtener pass/fail.
-- `open`: no tiene repositorio; un juez aparte evalúa la respuesta con la rúbrica de la prueba.
-
-El juez se elige por separado y no puede ser uno de los modelos evaluados. Corre a ciegas, con `--archived`, y devuelve una nota de 1 a 5 con una justificación breve. Las respuestas de los modelos no se guardan: sólo métricas, pass/fail, nota y justificación.
-
-Las corridas usan la telemetría existente para tokens y costo, y quedan como sesiones normales con proyecto `benchmark` o `benchmark-judge`. El costo de las pruebas se cuenta como uso real y puede separarse con el selector de alcance (`Todo el tráfico`, `Trabajo real`, `Solo pruebas`). La contención es best-effort: el proceso corre con tu usuario y `--auto`, sin sandbox, aunque quita del entorno de los subprocesos las claves de la propia plataforma (`TELEMETRY_API_KEY`, `Telemetry__ApiKey`, `ConnectionStrings__Telemetry`, `OPENCODE_OBSERVABILITY_KEY`, `OPENCODE_OBSERVABILITY_URL`), entrega la de telemetría sólo a los procesos de OpenCode y valida rutas temporales. Las credenciales de otros proveedores que tengas exportadas en la sesión sí llegan al subproceso: no las dejes activas mientras corrés pruebas. Docker desactiva el worker de benchmarks (`Benchmarks__WorkerEnabled=false`) y monta `./benchmarks` en solo lectura.
-
-En la pestaña podés filtrar modelos por nombre y elegir una variante (`low`, `high`, `max`, `thinking` o escribir otra). La tabla usa la cuota Go estimada de cada resultado. El historial se carga de a 20 corridas con “Cargar más”. Si activás la recomendación final, un juicio extra —una llamada más al mismo juez— sugiere qué modelo conviene para la suite. Una corrida terminada se puede eliminar junto con sus sesiones; deja de contar como uso real.
-
-### Suites y prerrequisitos
-
-Hay cuatro suites:
-
-- `refactor-pequeno`: un bug de código en JavaScript y una explicación abierta.
-- `csharp-dotnet`: nulabilidad, LINQ sobre secuencias vacías y revisión de `async`.
-- `react-typescript`: inmutabilidad de estado, uniones discriminadas y estado derivado.
-- `python-fastapi`: validación de campos, códigos de error y diseño de endpoints.
-
-Cada suite combina pruebas `code`, que se ejecutan de verdad contra un fixture, y pruebas `open`, que evalúa un juez con una rúbrica.
-
-El SDK de .NET 10, Node 22.18 o superior, `git` y `opencode` los necesita toda la aplicación, no una suite en particular. Lo único que agrega una suite son tres paquetes de Python —`fastapi`, `httpx` y `pytest`—, que no vienen con la aplicación:
+Configurá `Telemetry__ApiKey` y `OPENCODE_OBSERVABILITY_KEY` con el mismo valor, y ejecutá:
 
 ```powershell
-pip install -r benchmarks/python-fastapi/requirements.txt
+dotnet run --project backend --no-launch-profile --urls http://127.0.0.1:5080
+cd dashboard && npm ci && npm run dev -- --host 127.0.0.1 --port 5173
 ```
 
-Es una instalación única por máquina. Para saber qué falta antes de correr una suite, sin instalar nada:
+---
+
+## Validación y tests
+
+Antes de correr suites de benchmarks podés verificar qué prerrequisitos faltan en tu máquina con:
 
 ```powershell
 powershell -File benchmarks/check-prerequisites.ps1
 ```
 
-El script informa cada prerrequisito y sale con código distinto de cero si falta alguno.
+Para instalar las dependencias de la suite de Python (una sola vez por máquina):
 
-## Validación
+```powershell
+pip install -r benchmarks/python-fastapi/requirements.txt
+```
+
+Para correr las pruebas unitarias e integración de cada componente:
 
 ```sh
 dotnet test backend.Tests/AgentObservability.Api.Tests.csproj
@@ -102,30 +117,8 @@ cd opencode-plugin && npm ci && npm run typecheck && npm test
 cd dashboard && npm ci && npm test && npm run build
 ```
 
-## API
+---
 
-Todas las rutas exigen la cabecera `X-Telemetry-Key`, salvo `GET /api/v1/health`. El proxy del dashboard la inyecta desde `TELEMETRY_API_KEY` o desde `telemetry.key`, así que el navegador nunca la recibe.
+## Referencia técnica
 
-- `GET /api/v1/health` (público: verifica conectividad con SQLite, versión de esquema y estado del worker) y `GET /api/v1/version` (autenticado: versión de API, protocolo y esquema)
-- `POST /api/v1/telemetry/events` (valida `X-Telemetry-Protocol` / `protocolVersion` y responde `426` ante desfase)
-- `GET /api/v1/overview?days=1|7|30|90&scope=all|real|benchmarks` (sin `days`, consulta todo el historial)
-- `GET /api/v1/sessions?status=&model=&project=&tool=&search=&error=&from=&to=&page=&pageSize=&scope=all|real|benchmarks`
-- `GET /api/v1/sessions/{id}`, `DELETE /api/v1/sessions/{id}` y `GET /api/v1/traces/{id}`
-- `PUT /api/v1/sessions/{id}/review` (cuerpo `{ "rating": 1..5, "note": "texto", "taskLabel": "etiqueta" }`; normaliza la etiqueta de tarea y emite `telemetry.updated`)
-- `GET /api/v1/comparisons` (sesiones con etiqueta de tarea, agrupadas por etiqueta)
-- `GET /api/v1/budgets`, `PUT /api/v1/budgets` (cuerpo `{ "project": "…", "monthlyLimit": número, "metric": "cost"|"quota" }`) y `DELETE /api/v1/budgets?project=`
-- `GET /api/v1/analytics/tools?days=1|7|30|90&scope=all|real|benchmarks` (sin `days`, consulta todo el historial)
-- `GET /api/v1/analytics/models?from=&to=&source=&model=&bucket=day|week|month&scope=all|real|benchmarks`
-- `GET /api/v1/behavior?days=1|7|30|90&scope=all|real|benchmarks`
-- `GET /api/v1/export?from=&to=&scope=all|real|benchmarks` (exporta sesiones, spans y eventos filtrados en JSON Lines)
-- `DELETE /api/v1/data?before=<ISO>&dryRun=true|false` (purga sesiones anteriores a `before`; también configurable al arranque mediante `Telemetry:RetentionDays`)
-- `GET /api/v1/benchmarks/suites` y `GET /api/v1/benchmarks/models`
-- `POST /api/v1/benchmarks/runs`, `GET /api/v1/benchmarks/runs?suite=&page=&pageSize=` y `GET /api/v1/benchmarks/runs/{id}`
-- `POST /api/v1/benchmarks/runs/{id}/cancel` y `DELETE /api/v1/benchmarks/runs/{id}`
-- SignalR `/hubs/telemetry`, eventos `telemetry.updated` y `benchmark.updated`
-
-La deduplicación usa `source + eventId`. Las vistas permiten inspeccionar spans de modelo/herramienta, filtrar entre trabajo real y pruebas (`scope`) y exportar o eliminar sesiones locales.
-
-La política de atributos libres (`backend/AttributePolicy.cs`) separa cada clave en tokens (puntuación, camelCase y cambios letra/dígito) y la descarta si algún token coincide exactamente con un término sensible (`prompt`, `response`, `content`, `output`, `args`, `command`, `file`, `filename`, `path`, `body`, `secret`, `token`, `key`, `apikey`, `password`, `authorization`, `cookie`, entre otros). Así se bloquean `filePath` o `api_key`, pero no `profile` ni `compassion`. Se guardan como máximo 32 claves; si se recorta, el evento conserva `attributes_truncated: "true"` y `attributes_dropped` con la cantidad descartada.
-
-Una sesión conserva el `source` de su primer evento. Si llega un evento de otro origen con el mismo `sessionId`, se guarda con su propio origen, se registra una advertencia en el log y el detalle informa `quality.sourceConflictEvents` (la traza pasa a parcial).
+Los endpoints de la API, eventos de SignalR, política de filtrado de atributos sensibles y detalles internos del plugin y benchmarks están documentados en [docs/referencia-tecnica.md](docs/referencia-tecnica.md).

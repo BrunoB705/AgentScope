@@ -4,6 +4,7 @@ import { HubConnectionBuilder } from '@microsoft/signalr';
 import { buildWaterfall, describeQuotaProvenance, findSpanForEvent, isErrorStatus, type Waterfall } from './trace';
 import { BenchmarksPage } from './benchmarks-page';
 import { budgetAmountText, budgetMetricLabel, budgetPanelSummary } from './budgets';
+import { buildScatterPlot, computeModelHighlights, filterModelsByMinCalls, layoutScatterLabels, type CostAxisMetric, type ModelBreakdownItem, type ValueAxisMetric } from './model-efficiency';
 import './style.css';
 
 type Session = { id: string; source: string; project?: string; title?: string; status: string; model?: string; startedAt: string; endedAt?: string; spanCount: number; errorCount: number; inputTokens: number | null; outputTokens: number | null };
@@ -22,7 +23,7 @@ type ComparisonGroup = { taskLabel: string; sessions: ComparisonRun[] };
 type ToolSession = { sessionId: string; title?: string; project?: string; model?: string };
 type ToolMetric = { name: string; callCount: number; errorCount: number; errorRate: number; sessionCount: number; averageDurationMs?: number | null; latestSessions: ToolSession[] };
 type ToolAnalytics = { windowDays?: number | null; totalCalls: number; errorCount: number; tools: ToolMetric[] };
-type ModelAnalytics = { bucket: 'day' | 'week' | 'month'; availableSources: string[]; availableModels: string[]; totals: { calls: number; totalTokens: number | null; inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null; reasoningTokens: number | null; cacheEfficiency?: number | null; reportedCost?: number | null; quotaEstimate?: number | null; errorCount: number }; trend: Array<{ period: string; inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null; totalTokens: number | null }>; agents: Array<{ name: string; calls: number; tokens: number | null; share: number | null }>; models: Array<{ name: string; calls: number; inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null; tokens: number | null; share: number | null; reportedCost?: number | null; quotaEstimate?: number | null; errorCount: number }> };
+type ModelAnalytics = { bucket: 'day' | 'week' | 'month'; availableSources: string[]; availableModels: string[]; totals: { calls: number; totalTokens: number | null; inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null; reasoningTokens: number | null; cacheEfficiency?: number | null; reportedCost?: number | null; quotaEstimate?: number | null; errorCount: number }; trend: Array<{ period: string; inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null; totalTokens: number | null }>; agents: Array<{ name: string; calls: number; tokens: number | null; share: number | null }>; models: ModelBreakdownItem[] };
 type BehaviorSignal = { kind: string; severity: 'alert' | 'warning'; title: string; explanation: string; evidence: Record<string, unknown> };
 type BehaviorSession = { id: string; title?: string; project?: string; model?: string; status: string; startedAt: string; updatedAt: string; signals: BehaviorSignal[] };
 type BehaviorReport = { windowDays?: number | null; totals: { sessions: number; flaggedSessions: number; signals: number }; sessions: BehaviorSession[] };
@@ -72,6 +73,14 @@ function ModelAnalyticsPage(props: {
   scope: ScopeFilter; setScope: (value: ScopeFilter) => void; onRefresh: () => void;
 }) {
   const { data, error, bucket, setBucket, from, to, setFrom, setTo, source, setSource, model, setModel, scope, setScope, onRefresh } = props;
+  const [subView, setSubView] = React.useState<'consumption' | 'efficiency'>('consumption');
+  const [costAxis, setCostAxis] = React.useState<CostAxisMetric>('quotaPerCall');
+  const [valueAxis, setValueAxis] = React.useState<ValueAxisMetric>('speed');
+  const [minCalls, setMinCalls] = React.useState<number>(10);
+  const [hoveredModel, setHoveredModel] = React.useState<string | null>(null);
+  const scatterColors = ['#72a7ff', '#66d3a4', '#f0b65c', '#bd8cff', '#ff7e82', '#4fd1c5', '#f6ad55', '#fc8181', '#a3bffa', '#9ae6b4'];
+  const pct = (value?: number | null) => value == null ? 'Sin dato' : `${(value * 100).toFixed(1)}%`;
+  const speedText = (value?: number | null) => value == null ? 'Sin dato' : `${value.toFixed(1)} tok/s`;
   const max = Math.max(1, ...(data?.trend.map(point => point.totalTokens ?? 0) ?? []));
   const points = (select: (point: ModelAnalytics['trend'][number]) => number | null) => (data?.trend ?? []).map((point, index) => {
     const x = 42 + index * (716 / Math.max(1, (data?.trend.length ?? 1) - 1));
@@ -86,18 +95,97 @@ function ModelAnalyticsPage(props: {
   });
   const donutStyle = { background: slices.length ? `conic-gradient(${slices.join(', ')})` : '#252b33' };
   const toggle = (current: string, next: string, set: (value: string) => void) => set(current === next ? '' : next);
+  const efficiencyModels = React.useMemo(() => filterModelsByMinCalls(data?.models ?? [], minCalls), [data, minCalls]);
+  const hiddenByMinCalls = (data?.models.length ?? 0) - efficiencyModels.length;
+  const highlights = React.useMemo(() => computeModelHighlights(efficiencyModels), [efficiencyModels]);
+  const scatter = React.useMemo(() => buildScatterPlot(efficiencyModels, costAxis, valueAxis), [efficiencyModels, costAxis, valueAxis]);
+  const scatterLabels = React.useMemo(() => layoutScatterLabels(scatter.points), [scatter]);
+  const formatXValue = (value: number) => costAxis === 'tokensPerCall' ? `${Math.round(value).toLocaleString()} tok` : costAxis === 'quotaPer1M' ? `US$ ${value.toFixed(2)}` : `US$ ${value.toFixed(4)}`;
+  const formatYValue = (value: number) => valueAxis === 'speed' ? `${value.toFixed(1)} tok/s` : valueAxis === 'latency' ? `${value.toFixed(1)} s` : valueAxis === 'benchmarkJudge' ? `${value.toFixed(1)}/5` : `${value.toFixed(0)}%`;
   return <section className="model-analytics-page">
-    <SectionHeader icon="models" eyebrow="ANALÍTICA" title="Modelos y contexto" description="Análisis de tokens, consumo y eficiencia de caché." actions={<button className="rates-label" title="Se muestran costos devueltos por OpenCode y estimaciones de cuota cuando están disponibles">$ Costos observados</button>} />
+    <SectionHeader icon="models" eyebrow="ANALÍTICA" title="Modelos y contexto" description="Análisis de tokens, velocidad, eficiencia y costo observado." actions={<><div className="subview-switch" role="tablist" aria-label="Vista de modelos"><button type="button" role="tab" aria-selected={subView === 'consumption'} className={subView === 'consumption' ? 'active' : ''} onClick={() => setSubView('consumption')}>Consumo y contexto</button><button type="button" role="tab" aria-selected={subView === 'efficiency'} className={subView === 'efficiency' ? 'active' : ''} onClick={() => setSubView('efficiency')}>Eficiencia y valor</button></div><button className="rates-label" title="Se muestran costos devueltos por OpenCode y estimaciones de cuota cuando están disponibles">$ Costos observados</button></>} />
     <div className="model-filter-bar"><div className="bucket-control"><span>AGRUPAR</span>{(['day', 'week', 'month'] as const).map(value => <button key={value} className={bucket === value ? 'active' : ''} onClick={() => setBucket(value)}>{value === 'day' ? 'Día' : value === 'week' ? 'Semana' : 'Mes'}</button>)}</div><label className="date-control">Desde<input type="date" value={from} onChange={event => setFrom(event.target.value)} /></label><label className="date-control">Hasta<input type="date" value={to} onChange={event => setTo(event.target.value)} /></label><ScopeSelect scope={scope} setScope={setScope} /><button className="refresh-analytics" onClick={onRefresh}>Actualizar</button></div>
     {data && <><div className="chip-filter-row"><span>ORÍGENES</span><button className={!source ? 'selected' : ''} onClick={() => setSource('')}>Todos</button>{data.availableSources.map((item, index) => <button className={source === item ? 'selected' : ''} key={item} onClick={() => toggle(source, item, setSource)}>{item}<i style={{ background: agentColors[index % agentColors.length] }} /></button>)}</div><div className="chip-filter-row models-filter"><span>MODELOS</span><button className={!model ? 'selected' : ''} onClick={() => setModel('')}>Todos</button>{data.availableModels.map(item => <button className={model === item ? 'selected' : ''} key={item} title={item} onClick={() => toggle(model, item, setModel)}>{item}</button>)}</div></>}
     {error && <div className="api-error">{error}</div>}
-    {!data ? <div className="empty comparison-empty">Cargando analítica de modelos…</div> : <>
+    {!data ? <div className="empty comparison-empty">Cargando analítica de modelos…</div> : subView === 'consumption' ? <>
       <div className="analytics-section-label">TOTALES</div><div className="model-total-grid"><article className="model-total-card total-primary"><span>TOKENS TOTALES</span><b>{tokenText(data.totals.totalTokens)}</b><small>{data.totals.calls.toLocaleString()} llamadas de modelo</small></article><article className="model-total-card"><span>ENTRADA</span><b>{tokenCompact(data.totals.inputTokens)}</b><small>{data.totals.totalTokens && data.totals.inputTokens != null ? `${(data.totals.inputTokens / data.totals.totalTokens * 100).toFixed(1)}% del total · tokens sin caché` : 'Sin datos de entrada'}</small></article><article className="model-total-card total-output"><span>SALIDA</span><b>{tokenCompact(data.totals.outputTokens)}</b><small>{data.totals.totalTokens && data.totals.outputTokens != null ? `${(data.totals.outputTokens / data.totals.totalTokens * 100).toFixed(1)}% del total · ` : ''}{tokenText(data.totals.reasoningTokens)} de razonamiento incluido</small></article><article className="model-total-card total-cache"><span>EFICIENCIA DE CACHÉ</span><b>{data.totals.cacheEfficiency == null ? 'Sin dato' : `${(data.totals.cacheEfficiency * 100).toFixed(1)}%`}</b><small>{tokenCompact(data.totals.cacheReadTokens)} leídos · {tokenCompact(data.totals.cacheWriteTokens)} escritos</small></article></div>
       <div className="model-cost-row"><span>Costo reportado por OpenCode <b>{money(data.totals.reportedCost)}</b></span><span>Cuota Go estimada <b>{money(data.totals.quotaEstimate, 'Sin dato')}</b></span><span>Errores <b>{data.totals.errorCount.toLocaleString()}</b></span></div>
       <div className="model-analytics-grid"><article className="model-chart-card"><div className="model-card-heading"><div><h3>Consumo de tokens ({bucket === 'day' ? 'diario' : bucket === 'week' ? 'semanal' : 'mensual'})</h3><p>{tokenCompact(data.totals.totalTokens)} tokens en el período</p></div><div className="chart-legend"><span><i className="legend-total"/>Total</span><span><i className="legend-input"/>Entrada</span><span><i className="legend-output"/>Salida</span></div></div>{data.trend.length ? <div className="model-chart-wrap"><svg viewBox="0 0 780 230" role="img" aria-label="Tendencia de tokens en el período"><line x1="42" y1="30" x2="758" y2="30"/><line x1="42" y1="84" x2="758" y2="84"/><line x1="42" y1="139" x2="758" y2="139"/><line x1="42" y1="194" x2="758" y2="194"/><text x="4" y="34">{compactNumber(max)}</text><text x="4" y="88">{compactNumber(max * .67)}</text><text x="4" y="143">{compactNumber(max * .33)}</text><text x="20" y="198">0</text><polyline className="series-total" points={points(point => point.totalTokens)}/><polyline className="series-input" points={points(point => point.inputTokens)}/><polyline className="series-output" points={points(point => point.outputTokens)}/>{data.trend.map((point, index) => <circle key={`${point.period}-${index}`} cx={42 + index * (716 / Math.max(1, data.trend.length - 1))} cy={194 - (point.totalTokens ?? 0) / max * 164} r="3"><title>{time(point.period)} · {tokenText(point.totalTokens)} tokens</title></circle>)}</svg><div className="chart-period-labels"><span>{time(data.trend[0].period).split(',')[0]}</span><span>{data.trend.length > 2 ? time(data.trend[Math.floor(data.trend.length / 2)].period).split(',')[0] : ''}</span><span>{time(data.trend[data.trend.length - 1].period).split(',')[0]}</span></div></div> : <div className="empty compact">No hay consumo de modelos en este período.</div>}</article>
         <article className="agent-share-card"><div className="model-card-heading"><div><h3>Distribución por origen</h3><p>{data.agents.length} orígenes</p></div></div><div className="agent-share-content"><div className="agent-donut" style={donutStyle}><div><b>{tokenCompact(data.totals.totalTokens)}</b><small>tokens</small></div></div><div className="agent-share-legend">{data.agents.map((agent, index) => <div key={agent.name}><i style={{ background: agentColors[index % agentColors.length] }}/><span>{agent.name}</span><b>{agent.share == null ? 'Sin dato' : `${(agent.share * 100).toFixed(1)}%`}</b></div>)}</div></div></article></div>
-      <article className="model-breakdown-card"><div className="model-card-heading"><div><h3>Uso por modelo</h3><p>Tokens, fallos y datos de costo disponibles para cada modelo.</p></div></div>{data.models.length ? <div className="table-wrap"><table className="model-breakdown-table"><thead><tr><th>MODELO</th><th>LLAMADAS</th><th>TOKENS</th><th>ENTRADA</th><th>SALIDA</th><th>CACHÉ LEÍDA</th><th>ERRORES</th><th>COSTO REPORTADO</th><th>CUOTA GO</th></tr></thead><tbody>{data.models.map(item => <tr key={item.name}><td><b>{item.name}</b><small>{item.share == null ? 'Sin dato' : `${(item.share * 100).toFixed(1)}% del total`}</small></td><td>{item.calls.toLocaleString()}</td><td>{tokenText(item.tokens)}</td><td>{tokenText(item.inputTokens)}</td><td>{tokenText(item.outputTokens)}</td><td>{tokenText(item.cacheReadTokens)}</td><td>{item.errorCount.toLocaleString()}</td><td>{money(item.reportedCost)}</td><td>{money(item.quotaEstimate, 'Sin dato')}</td></tr>)}</tbody></table></div> : <div className="empty compact">No hay datos de modelo para mostrar.</div>}</article>
+      <article className="model-breakdown-card"><div className="model-card-heading"><div><h3>Uso por modelo</h3><p>Tokens, velocidad, fallos y datos de costo disponibles para cada modelo.</p></div></div>{data.models.length ? <div className="table-wrap"><table className="model-breakdown-table"><thead><tr><th>MODELO</th><th>LLAMADAS</th><th>TOKENS</th><th>LATENCIA</th><th>TOK/S</th><th>CACHÉ</th><th>ERRORES</th><th>COSTO REPORTADO</th><th>CUOTA GO</th><th>CUOTA / LLAMADA</th></tr></thead><tbody>{data.models.map(item => <tr key={item.name}><td><b title={item.name}>{item.name}</b><small>{item.share == null ? 'Sin dato' : `${(item.share * 100).toFixed(1)}% del total`}</small></td><td>{item.calls.toLocaleString()}</td><td>{tokenText(item.tokens)}</td><td>{spanDuration(item.averageDurationMs)}</td><td>{speedText(item.outputTokensPerSec)}</td><td>{pct(item.cacheEfficiency)}</td><td>{item.errorCount.toLocaleString()}</td><td>{money(item.reportedCost)}</td><td>{money(item.quotaEstimate, 'Sin dato')}</td><td>{money(item.quotaPerCall, 'Sin dato')}</td></tr>)}</tbody></table></div> : <div className="empty compact">No hay datos de modelo para mostrar.</div>}</article>
       <p className="analytics-footnote">Los tokens se suman desde spans de inferencia observados. El costo reportado y la cuota Go estimada son métricas distintas; los valores ausentes no se calculan ni se sustituyen por precios hipotéticos.</p>
+    </> : <>
+      <div className="efficiency-toolbar">
+        <div className="analytics-section-label">DESTACADOS AUTOMÁTICOS</div>
+        <div className="efficiency-min-calls">
+          {hiddenByMinCalls > 0 && <span className="min-calls-note">Ocultos {hiddenByMinCalls} modelo(s) con &lt; {minCalls} llamadas <button type="button" className="text-button" onClick={() => setMinCalls(1)}>Ver todos</button></span>}
+          <label>Mín. llamadas
+            <select value={minCalls} onChange={e => setMinCalls(Number(e.target.value))}>
+              <option value={1}>Todos (1+)</option>
+              <option value={5}>≥ 5 llamadas</option>
+              <option value={10}>≥ 10 llamadas</option>
+              <option value={25}>≥ 25 llamadas</option>
+              <option value={50}>≥ 50 llamadas</option>
+              <option value={100}>≥ 100 llamadas</option>
+              <option value={500}>≥ 500 llamadas</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      {highlights.length ? <div className="efficiency-highlights">{highlights.map(item => <article className="efficiency-highlight-card" key={item.id}><span>{item.label}</span><b title={item.model}>{item.model}</b><strong>{item.metricText}</strong><small>{item.sampleNote}</small></article>)}</div> : <div className="empty compact">Se necesitan al menos dos modelos con datos comparables en una misma métrica para destacar ganadores.</div>}
+      <article className="model-chart-card scatter-card">
+        <div className="model-card-heading">
+          <div><h3>Costo y consumo vs rendimiento</h3><p>{valueAxis === 'latency' ? 'Abajo a la izquierda: menor espera a menor costo o consumo.' : 'Arriba a la izquierda: mayor rendimiento a menor costo o consumo.'}</p></div>
+          <div className="scatter-controls">
+            <label>Eje X<select value={costAxis} onChange={e => setCostAxis(e.target.value as CostAxisMetric)}><option value="quotaPerCall">Cuota Go / llamada</option><option value="quotaPer1M">Cuota Go / 1M tokens</option><option value="tokensPerCall">Tokens / llamada</option></select></label>
+            <label>Eje Y<select value={valueAxis} onChange={e => setValueAxis(e.target.value as ValueAxisMetric)}><option value="speed">Velocidad (tok/s)</option><option value="latency">Latencia promedio (s)</option><option value="cache">Ahorro de caché (%)</option><option value="benchmarkPass">% aprobado en Pruebas</option><option value="benchmarkJudge">Nota del juez (1–5)</option></select></label>
+          </div>
+        </div>
+        {scatter.points.length ? <div className="model-chart-wrap scatter-wrap">
+          <div className="scatter-stage">
+            <svg className="scatter-svg" viewBox="0 0 920 380" role="img" aria-label="Dispersión de costo contra rendimiento de modelos">
+              <line x1="84" y1="28" x2="876" y2="28"/><line x1="84" y1="125" x2="876" y2="125"/><line x1="84" y1="222" x2="876" y2="222"/><line x1="84" y1="318" x2="876" y2="318"/>
+              <line x1="84" y1="28" x2="84" y2="318"/><line x1="348" y1="28" x2="348" y2="318"/><line x1="612" y1="28" x2="612" y2="318"/><line x1="876" y1="28" x2="876" y2="318"/>
+              <text x="10" y="33">{formatYValue(scatter.yMax)}</text><text x="10" y="130">{formatYValue(scatter.yMax * 0.67)}</text><text x="10" y="227">{formatYValue(scatter.yMax * 0.33)}</text><text x="10" y="322">{formatYValue(0)}</text>
+              <text x="84" y="346">{formatXValue(0)}</text><text x="328" y="346">{formatXValue(scatter.xMax * 0.33)}</text><text x="592" y="346">{formatXValue(scatter.xMax * 0.67)}</text><text x="820" y="346">{formatXValue(scatter.xMax)}</text>
+              {scatterLabels.map((lbl, idx) => {
+                const color = scatterColors[idx % scatterColors.length];
+                const isHovered = hoveredModel === lbl.name;
+                return <g key={lbl.name} opacity={hoveredModel && !isHovered ? 0.25 : 1}>
+                  {lbl.needsLeader && <line className="scatter-leader" x1={lbl.cx} y1={lbl.cy} x2={lbl.leaderX} y2={lbl.leaderY} />}
+                  <circle
+                    cx={lbl.cx} cy={lbl.cy} r={isHovered ? 11 : 8}
+                    style={{ fill: color }}
+                    tabIndex={0}
+                    onMouseEnter={() => setHoveredModel(lbl.name)}
+                    onMouseLeave={() => setHoveredModel(null)}
+                    onFocus={() => setHoveredModel(lbl.name)}
+                    onBlur={() => setHoveredModel(null)}
+                  />
+                  {!isHovered && <text className="scatter-label" x={lbl.x} y={lbl.y} textAnchor={lbl.anchor}>{lbl.label}</text>}
+                </g>;
+              })}
+            </svg>
+            {(() => {
+              const pt = scatter.points.find(p => p.name === hoveredModel);
+              if (!pt) return null;
+              const idx = scatter.points.findIndex(p => p.name === pt.name);
+              const color = scatterColors[idx % scatterColors.length];
+              const leftPct = (84 + pt.xNorm * 792) / 920 * 100;
+              const topPct = (318 - pt.yNorm * 290) / 380 * 100;
+              return <div className={`scatter-tooltip ${pt.xNorm > 0.62 ? 'flip-x' : ''} ${pt.yNorm > 0.72 ? 'flip-y' : ''}`} style={{ left: `${leftPct}%`, top: `${topPct}%` }} role="status">
+                <div className="scatter-tooltip-title"><i style={{ background: color }} /><b>{pt.name}</b></div>
+                <div><span>{formatXValue(pt.x)}</span> · <span>{formatYValue(pt.y)}</span></div>
+                <small>{pt.calls.toLocaleString()} llamadas{pt.errorCount ? ` · ${pt.errorCount} errores` : ''}</small>
+              </div>;
+            })()}
+          </div>
+          <div className="scatter-legend">{scatter.points.map((pt, idx) => <button type="button" className={`scatter-legend-item ${hoveredModel === pt.name ? 'active' : ''}`} key={pt.name} onMouseEnter={() => setHoveredModel(pt.name)} onMouseLeave={() => setHoveredModel(null)}><i style={{ background: scatterColors[idx % scatterColors.length] }}/><b title={pt.name}>{pt.name}</b><small>{formatXValue(pt.x)} · {formatYValue(pt.y)}</small></button>)}</div>
+          {scatter.excludedCount > 0 && <small className="scatter-note">Se omitieron {scatter.excludedCount} modelo(s) sin dato en el eje X o Y elegido.</small>}
+        </div> : <div className="empty compact">No hay modelos con ambos ejes disponibles para esta combinación.</div>}
+      </article>
+      <article className="model-breakdown-card"><div className="model-card-heading"><div><h3>Matriz comparativa de eficiencia y calidad automática</h3><p>Velocidad, eficiencia unitaria, estabilidad en sesiones reales y resultados de Pruebas sin puntajes inventados.</p></div></div>{efficiencyModels.length ? <div className="table-wrap"><table className="model-breakdown-table efficiency-table"><thead><tr><th>MODELO</th><th>LATENCIA</th><th>TOK/S</th><th>CACHÉ</th><th>TOKENS / LLAMADA</th><th>CUOTA / LLAMADA</th><th>CUOTA / 1M TOK</th><th>COSTO REPORTADO</th><th>SESIONES OK</th><th>PRUEBAS</th></tr></thead><tbody>{efficiencyModels.map(item => <tr key={item.name}><td><b title={item.name}>{item.name}</b><small>{item.calls.toLocaleString()} llamadas · {item.sessionCount ?? 0} sesiones</small></td><td>{spanDuration(item.averageDurationMs)}</td><td>{speedText(item.outputTokensPerSec)}</td><td>{pct(item.cacheEfficiency)}</td><td>{item.tokens != null && item.calls > 0 ? Math.round(item.tokens / item.calls).toLocaleString() : 'Sin dato'}</td><td>{money(item.quotaPerCall, 'Sin dato')}</td><td>{item.quotaPer1MTokens == null ? 'Sin dato' : `US$ ${item.quotaPer1MTokens.toFixed(2)}`}</td><td>{money(item.reportedCost)}</td><td>{pct(item.completedSessionRate)}</td><td>{item.benchmarkCases ? `${pct(item.benchmarkPassRate)} (${item.benchmarkCases})${item.benchmarkJudgeAvg != null ? ` · Juez ${item.benchmarkJudgeAvg.toFixed(1)}/5` : ''}` : 'Sin dato'}</td></tr>)}</tbody></table></div> : <div className="empty compact">No hay modelos con al menos {minCalls} llamadas en este período.</div>}</article>
+      <p className="analytics-footnote">Todas las métricas provienen de spans reales y resultados automáticos de Pruebas. Cada dimensión se muestra por separado; si falta duración, costo, cuota o corridas, se indica “Sin dato”.</p>
     </>}
   </section>;
 }

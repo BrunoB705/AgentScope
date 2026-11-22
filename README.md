@@ -38,7 +38,7 @@ Trabajar con un agente de código suele ser una caja negra: cuesta saber en qué
 - **Observabilidad:** listado filtrable de sesiones y detalle del trace con waterfall proporcional, inspección de spans, herramientas, tokens, errores (con salto al span) y evaluación manual.
 - **Herramientas:** uso, duración promedio y tasa de fallo por herramienta.
 - **Comportamiento:** detector de sesiones que requieren atención (bucles de herramientas, ráfagas de errores, sesiones largas o interrumpidas).
-- **Modelos:** consumo de tokens, eficiencia de caché, costo reportado por OpenCode y cuota Go estimada por origen y modelo.
+- **Modelos:** consumo de tokens, eficiencia de caché, costo reportado por OpenCode y cuota Go estimada por origen y modelo, más subvista de **Eficiencia y valor** (latencia, tok/s, dispersión costo vs rendimiento, filtro por muestra mínima y cruce con **Pruebas**).
 - **Comparar:** agrupación de sesiones por etiqueta de tarea para contrastar modelo, calificación, costo, duración, tokens y herramientas.
 - **Pruebas:** ejecución de suites contra varios modelos (con verificación automática o juez ciego independiente), variantes, historial y recomendación final.
 

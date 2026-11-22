@@ -205,7 +205,7 @@ app.MapGet("/api/v1/analytics/models", async (TelemetryDb db, DateTimeOffset? fr
     var query = from span in db.Spans.AsNoTracking()
                 join session in ApplyScope(db.Sessions.AsNoTracking(), scope) on span.SessionId equals session.Id
                 where span.Kind == "inference"
-                select new { Model = span.Name, Source = session.Source, span.Status, span.StartedAt, span.InputTokens, span.OutputTokens, span.ReasoningTokens, span.CacheReadTokens, span.CacheWriteTokens, span.Cost, span.QuotaCostEstimate };
+                select new { Model = span.Name, Source = session.Source, span.Status, span.StartedAt, span.DurationMs, span.SessionId, SessionStatus = session.Status, span.InputTokens, span.OutputTokens, span.ReasoningTokens, span.CacheReadTokens, span.CacheWriteTokens, span.Cost, span.QuotaCostEstimate };
     if (start.HasValue) query = query.Where(row => row.StartedAt >= start.Value);
     if (end.HasValue) query = query.Where(row => row.StartedAt <= end.Value);
     var allRows = await query.ToListAsync();
@@ -240,11 +240,72 @@ app.MapGet("/api/v1/analytics/models", async (TelemetryDb db, DateTimeOffset? fr
         var tokens = TotalTokensOf(SumOrNull(group, row => row.InputTokens), SumOrNull(group, row => row.OutputTokens), SumOrNull(group, row => row.CacheReadTokens), SumOrNull(group, row => row.CacheWriteTokens));
         return new { name = group.Key, calls = group.Count(), tokens, share = totalTokens is > 0 && tokens.HasValue ? (double?)tokens.Value / totalTokens.Value : null };
     }).ToArray();
+    var benchmarksByModel = new Dictionary<string, (int Cases, double? PassRate, double? JudgeAvg)>(StringComparer.Ordinal);
+    if (!string.Equals(scope, "real", StringComparison.OrdinalIgnoreCase))
+    {
+        var benchQuery = db.BenchmarkResults.AsNoTracking().Where(r => r.Status != "pending" && r.Status != "running");
+        if (start.HasValue) benchQuery = benchQuery.Where(r => (r.CompletedAt ?? r.StartedAt) >= start.Value);
+        if (end.HasValue) benchQuery = benchQuery.Where(r => (r.CompletedAt ?? r.StartedAt) <= end.Value);
+        var benchRows = await benchQuery.Select(r => new { r.Model, r.VerifyPassed, r.JudgeScore }).ToListAsync();
+        foreach (var bGroup in benchRows.GroupBy(r => r.Model))
+        {
+            var passed = bGroup.Where(r => r.VerifyPassed.HasValue).ToArray();
+            var judges = bGroup.Where(r => r.JudgeScore.HasValue).ToArray();
+            benchmarksByModel[bGroup.Key] = (
+                bGroup.Count(),
+                passed.Length == 0 ? null : (double)passed.Count(r => r.VerifyPassed!.Value) / passed.Length,
+                judges.Length == 0 ? null : judges.Average(r => (double)r.JudgeScore!.Value));
+        }
+    }
+    static double? Per1MTokens<T>(IEnumerable<T> items, Func<T, double?> amountOf, Func<T, long?> tokensOf)
+    {
+        double totalAmount = 0;
+        long totalTok = 0;
+        foreach (var item in items)
+        {
+            var amount = amountOf(item);
+            var tok = tokensOf(item);
+            if (!amount.HasValue || tok is not > 0) continue;
+            totalAmount += amount.Value;
+            totalTok += tok.Value;
+        }
+        return totalTok > 0 ? totalAmount / (totalTok / 1_000_000d) : null;
+    }
     var models = rows.GroupBy(row => row.Model).OrderByDescending(group => TotalTokensOf(SumOrNull(group, row => row.InputTokens), SumOrNull(group, row => row.OutputTokens), SumOrNull(group, row => row.CacheReadTokens), SumOrNull(group, row => row.CacheWriteTokens)) ?? -1).Select(group => {
-        var tokens = TotalTokensOf(SumOrNull(group, row => row.InputTokens), SumOrNull(group, row => row.OutputTokens), SumOrNull(group, row => row.CacheReadTokens), SumOrNull(group, row => row.CacheWriteTokens));
+        var mIn = SumOrNull(group, row => row.InputTokens);
+        var mOut = SumOrNull(group, row => row.OutputTokens);
+        var mCacheR = SumOrNull(group, row => row.CacheReadTokens);
+        var mCacheW = SumOrNull(group, row => row.CacheWriteTokens);
+        var tokens = TotalTokensOf(mIn, mOut, mCacheR, mCacheW);
         var costs = group.Where(row => row.Cost.HasValue).ToArray();
         var quotas = group.Where(row => row.QuotaCostEstimate.HasValue).ToArray();
-        return new { name = group.Key, calls = group.Count(), inputTokens = SumOrNull(group, row => row.InputTokens), outputTokens = SumOrNull(group, row => row.OutputTokens), cacheReadTokens = SumOrNull(group, row => row.CacheReadTokens), cacheWriteTokens = SumOrNull(group, row => row.CacheWriteTokens), tokens, share = totalTokens is > 0 && tokens.HasValue ? (double?)tokens.Value / totalTokens.Value : null, reportedCost = costs.Length == 0 ? (double?)null : costs.Sum(row => row.Cost!.Value), quotaEstimate = quotas.Length == 0 ? (double?)null : quotas.Sum(row => row.QuotaCostEstimate!.Value), errorCount = group.Count(row => row.Status == "error" || row.Status == "failed") };
+        var durations = group.Where(row => row.DurationMs is > 0).ToArray();
+        var speedRows = group.Where(row => row.DurationMs is > 0 && row.OutputTokens.HasValue).ToArray();
+        var mCacheBase = (mIn ?? 0) + (mCacheR ?? 0);
+        var sessions = group.GroupBy(row => row.SessionId).Select(sg => sg.First().SessionStatus).ToArray();
+        var errors = group.Count(row => row.Status == "error" || row.Status == "failed");
+        var totalCalls = group.Count();
+        benchmarksByModel.TryGetValue(group.Key, out var bench);
+        return new {
+            name = group.Key, calls = totalCalls, inputTokens = mIn, outputTokens = mOut, cacheReadTokens = mCacheR, cacheWriteTokens = mCacheW, tokens,
+            share = totalTokens is > 0 && tokens.HasValue ? (double?)tokens.Value / totalTokens.Value : null,
+            reportedCost = costs.Length == 0 ? (double?)null : costs.Sum(row => row.Cost!.Value),
+            quotaEstimate = quotas.Length == 0 ? (double?)null : quotas.Sum(row => row.QuotaCostEstimate!.Value),
+            errorCount = errors,
+            averageDurationMs = durations.Length == 0 ? (double?)null : durations.Average(row => (double)row.DurationMs!.Value),
+            outputTokensPerSec = speedRows.Length == 0 ? (double?)null : (double)speedRows.Sum(row => (long)row.OutputTokens!.Value) / (speedRows.Sum(row => row.DurationMs!.Value) / 1000d),
+            cacheEfficiency = (mIn.HasValue || mCacheR.HasValue) && mCacheBase > 0 ? (double?)(mCacheR ?? 0) / mCacheBase : null,
+            reportedCostPerCall = costs.Length == 0 ? (double?)null : costs.Average(row => row.Cost!.Value),
+            reportedCostPer1MTokens = Per1MTokens(costs, r => r.Cost, r => TotalTokensOf(r.InputTokens, r.OutputTokens, r.CacheReadTokens, r.CacheWriteTokens)),
+            quotaPerCall = quotas.Length == 0 ? (double?)null : quotas.Average(row => row.QuotaCostEstimate!.Value),
+            quotaPer1MTokens = Per1MTokens(quotas, r => r.QuotaCostEstimate, r => TotalTokensOf(r.InputTokens, r.OutputTokens, r.CacheReadTokens, r.CacheWriteTokens)),
+            sessionCount = sessions.Length,
+            callSuccessRate = totalCalls == 0 ? 1d : (double)(totalCalls - errors) / totalCalls,
+            completedSessionRate = sessions.Length == 0 ? (double?)null : (double)sessions.Count(st => st == "completed") / sessions.Length,
+            benchmarkCases = bench.Cases,
+            benchmarkPassRate = bench.PassRate,
+            benchmarkJudgeAvg = bench.JudgeAvg,
+        };
     }).ToArray();
     return Results.Ok(new {
         bucket = bucketType, availableSources, availableModels,

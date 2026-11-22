@@ -912,6 +912,64 @@ public sealed class TelemetryApiTests : IDisposable
         Assert.Equal("partial", quality.GetProperty("status").GetString());
     }
 
+    [Fact]
+    public async Task ModelAnalyticsComputesSpeedUnitCostReliabilityAndIgnoresMissingDurations()
+    {
+        await Post(Fixture("ma-s1", "sess-ma-1", "session.created"));
+        await Post(Fixture("ma-1", "sess-ma-1", "model.completed") with { Name = "opencode-go/fast", DurationMs = 2000, InputTokens = 300, OutputTokens = 100, CacheReadTokens = 100, QuotaCostEstimate = 0.02, Cost = 0.01 });
+        await Post(Fixture("ma-2", "sess-ma-1", "model.completed") with { Name = "opencode-go/fast", DurationMs = null, InputTokens = 50, OutputTokens = 50, QuotaCostEstimate = null, Cost = null });
+        await Post(Fixture("ma-e1", "sess-ma-1", "session.execution.succeeded"));
+        await Post(Fixture("ma-z1", "sess-ma-zero", "model.completed") with { Name = "opencode-go/zero-dur", DurationMs = 0, InputTokens = 10, OutputTokens = 10 });
+
+        using var doc = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/analytics/models"));
+        var models = doc.RootElement.GetProperty("models").EnumerateArray().ToDictionary(m => m.GetProperty("name").GetString()!);
+
+        var fast = models["opencode-go/fast"];
+        Assert.Equal(2000, fast.GetProperty("averageDurationMs").GetDouble(), 6);
+        Assert.Equal(50, fast.GetProperty("outputTokensPerSec").GetDouble(), 6);
+        Assert.Equal(100d / 450d, fast.GetProperty("cacheEfficiency").GetDouble(), 6);
+        Assert.Equal(0.02, fast.GetProperty("quotaPerCall").GetDouble(), 6);
+        Assert.Equal(0.01, fast.GetProperty("reportedCostPerCall").GetDouble(), 6);
+        Assert.Equal(40, fast.GetProperty("quotaPer1MTokens").GetDouble(), 2);
+        Assert.Equal(1, fast.GetProperty("sessionCount").GetInt32());
+        Assert.Equal(1.0, fast.GetProperty("callSuccessRate").GetDouble(), 6);
+        Assert.Equal(1.0, fast.GetProperty("completedSessionRate").GetDouble(), 6);
+
+        var zero = models["opencode-go/zero-dur"];
+        Assert.Equal(JsonValueKind.Null, zero.GetProperty("averageDurationMs").ValueKind);
+        Assert.Equal(JsonValueKind.Null, zero.GetProperty("outputTokensPerSec").ValueKind);
+    }
+
+    [Fact]
+    public async Task ModelAnalyticsIncludesBenchmarkPassRateAndRespectsRealScope()
+    {
+        await Post(Fixture("mb-1", "sess-mb-real", "model.completed") with { Name = "opencode-go/m1#high", DurationMs = 1000, InputTokens = 100, OutputTokens = 20 });
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TelemetryDb>();
+            db.BenchmarkRuns.Add(new BenchmarkRunEntity { Id = "run-ma", Suite = "demo", JudgeModel = "j", Status = "completed", Total = 2, Completed = 2, CreatedAt = DateTime.UtcNow });
+            db.BenchmarkResults.AddRange(
+                new BenchmarkResultEntity { Id = "res-ma-1", RunId = "run-ma", TestName = "t1", TestType = "code", Model = "opencode-go/m1#high", Status = "completed", VerifyPassed = true, JudgeScore = 4, CompletedAt = DateTime.UtcNow },
+                new BenchmarkResultEntity { Id = "res-ma-2", RunId = "run-ma", TestName = "t2", TestType = "code", Model = "opencode-go/m1#high", Status = "completed", VerifyPassed = false, CompletedAt = DateTime.UtcNow });
+            await db.SaveChangesAsync();
+        }
+
+        using (var allDoc = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/analytics/models")))
+        {
+            var m1 = allDoc.RootElement.GetProperty("models").EnumerateArray().First(m => m.GetProperty("name").GetString() == "opencode-go/m1#high");
+            Assert.Equal(2, m1.GetProperty("benchmarkCases").GetInt32());
+            Assert.Equal(0.5, m1.GetProperty("benchmarkPassRate").GetDouble(), 6);
+            Assert.Equal(4.0, m1.GetProperty("benchmarkJudgeAvg").GetDouble(), 6);
+        }
+
+        using (var realDoc = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/analytics/models?scope=real")))
+        {
+            var m1 = realDoc.RootElement.GetProperty("models").EnumerateArray().First(m => m.GetProperty("name").GetString() == "opencode-go/m1#high");
+            Assert.Equal(0, m1.GetProperty("benchmarkCases").GetInt32());
+            Assert.Equal(JsonValueKind.Null, m1.GetProperty("benchmarkPassRate").ValueKind);
+        }
+    }
+
     private async Task<HttpResponseMessage> Post(TestTelemetryEventDto dto)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/telemetry/events") { Content = JsonContent.Create(dto) };

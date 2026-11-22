@@ -19,7 +19,19 @@ public sealed class ModelCatalogTests
         fake.Results.Enqueue(new ProcessResult(1, "", "boom", false, 10));
         var result = await new ModelCatalog(fake).ListAsync();
         Assert.Empty(result.Models);
-        Assert.Contains("boom", result.Error);
+        Assert.Equal("boom", result.Error);
+        Assert.Null(result.Code);
+    }
+
+    [Fact]
+    public async Task ListAsync_ReturnsExitCodeWhenProcessFailsWithoutStderr()
+    {
+        var fake = new FakeProcessRunner();
+        fake.Results.Enqueue(new ProcessResult(1, "", "", false, 10));
+        var result = await new ModelCatalog(fake).ListAsync();
+        Assert.Empty(result.Models);
+        Assert.Equal("opencode models exited with code 1.", result.Error);
+        Assert.Equal("model_catalog_exit", result.Code);
     }
 
     [Fact]
@@ -29,7 +41,8 @@ public sealed class ModelCatalogTests
         fake.Results.Enqueue(new ProcessResult(-1, "", "", true, 15000));
         var result = await new ModelCatalog(fake).ListAsync();
         Assert.Empty(result.Models);
-        Assert.NotNull(result.Error);
+        Assert.Equal("opencode models timed out.", result.Error);
+        Assert.Equal("model_catalog_timeout", result.Code);
     }
 
     [Fact]

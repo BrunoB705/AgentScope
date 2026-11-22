@@ -14,7 +14,7 @@ public static class BenchmarkEndpoints
         app.MapGet("/api/v1/benchmarks/models", async (ModelCatalog models, CancellationToken cancellationToken) =>
         {
             var result = await models.ListAsync(cancellationToken);
-            return Results.Ok(new { models = result.Models, error = result.Error });
+            return Results.Ok(new { models = result.Models, error = result.Error, code = result.Code });
         });
 
         app.MapPost("/api/v1/benchmarks/runs", async (
@@ -65,7 +65,7 @@ public static class BenchmarkEndpoints
 
             var available = await models.ListAsync(cancellationToken);
             if (available.Error is not null)
-                return Results.Json(new { error = available.Error, code = "model_catalog_unavailable" }, statusCode: StatusCodes.Status409Conflict);
+                return Results.Json(new { error = available.Error, code = available.Code ?? "model_catalog_unavailable" }, statusCode: StatusCodes.Status409Conflict);
             var catalogModels = new HashSet<string>(available.Models, StringComparer.Ordinal);
             if (!specs.All(spec => catalogModels.Contains(spec.Base)))
                 return Results.BadRequest(new { error = "One of the models is not in the opencode catalog.", code = "model_not_in_catalog" });

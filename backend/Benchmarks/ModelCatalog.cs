@@ -1,4 +1,4 @@
-public sealed record ModelCatalogResult(string[] Models, string? Error);
+public sealed record ModelCatalogResult(string[] Models, string? Error, string? Code);
 
 public sealed class ModelCatalog
 {
@@ -23,15 +23,15 @@ public sealed class ModelCatalog
                 cancellationToken);
 
             if (result.TimedOut)
-                return new(Array.Empty<string>(), "opencode models tardó demasiado.");
+                return new(Array.Empty<string>(), "opencode models timed out.", "model_catalog_timeout");
             if (result.ExitCode != 0)
-                return new(Array.Empty<string>(), string.IsNullOrWhiteSpace(result.StandardError)
-                    ? $"opencode models terminó con código {result.ExitCode}."
-                    : result.StandardError.Trim());
+                return string.IsNullOrWhiteSpace(result.StandardError)
+                    ? new(Array.Empty<string>(), $"opencode models exited with code {result.ExitCode}.", "model_catalog_exit")
+                    : new(Array.Empty<string>(), result.StandardError.Trim(), null);
 
             return new(Parse(result.StandardOutput)
                 .Where(model => !ExcludedPrefixes.Any(prefix => model.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
-                .ToArray(), null);
+                .ToArray(), null, null);
         }
         catch (OperationCanceledException)
         {
@@ -39,7 +39,7 @@ public sealed class ModelCatalog
         }
         catch (Exception ex)
         {
-            return new(Array.Empty<string>(), ex.Message);
+            return new(Array.Empty<string>(), ex.Message, null);
         }
     }
 

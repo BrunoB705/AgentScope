@@ -54,6 +54,34 @@ public sealed class SchemaMigratorTests : IDisposable
         command.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// Base en la versión 3: ya tiene las tablas de benchmark creadas sin
+    /// `OutputLanguage`, y una corrida terminada con antigüedad. Es el estado que
+    /// deja la versión anterior del producto en una instalación real.
+    /// </summary>
+    private void CreateVersion3Database()
+    {
+        CreateLegacyDatabase();
+        using var connection = new SqliteConnection($"Data Source={_path};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE TABLE "SchemaVersion" ("Version" INTEGER NOT NULL PRIMARY KEY, "AppliedAt" TEXT NOT NULL);
+            INSERT INTO "SchemaVersion" ("Version","AppliedAt") VALUES
+              (1,'2026-11-01T00:00:00Z'),(2,'2026-11-01T00:00:00Z'),(3,'2026-11-02T00:00:00Z');
+            CREATE TABLE "BenchmarkRuns" (
+              "Id" TEXT NOT NULL PRIMARY KEY, "Suite" TEXT NOT NULL, "JudgeModel" TEXT NOT NULL,
+              "Status" TEXT NOT NULL, "Total" INTEGER NOT NULL, "Completed" INTEGER NOT NULL DEFAULT 0,
+              "CreatedAt" TEXT NOT NULL, "StartedAt" TEXT NULL, "CompletedAt" TEXT NULL,
+              "BaselineJson" TEXT NULL, "RequestVerdict" INTEGER NOT NULL DEFAULT 1,
+              "Verdict" TEXT NULL, "Error" TEXT NULL
+            );
+            INSERT INTO "BenchmarkRuns" ("Id","Suite","JudgeModel","Status","Total","Completed","CreatedAt","RequestVerdict")
+              VALUES ('run-version-3','demo','provider/model-c','completed',2,2,'2026-11-02T00:00:00Z',1);
+            """;
+        command.ExecuteNonQuery();
+    }
+
     private int ColumnNotNull(string table, string column)
     {
         using var connection = new SqliteConnection($"Data Source={_path};Pooling=False");
@@ -64,6 +92,15 @@ public sealed class SchemaMigratorTests : IDisposable
         while (reader.Read())
             if (reader.GetString(1) == column) return reader.GetInt32(3);
         return -1;
+    }
+
+    private object? Scalar(string sql)
+    {
+        using var connection = new SqliteConnection($"Data Source={_path};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return command.ExecuteScalar();
     }
 
     [Fact]
@@ -113,6 +150,24 @@ public sealed class SchemaMigratorTests : IDisposable
         await SchemaMigrator.ApplyAsync(db);
         Assert.Equal(SchemaMigrator.LatestVersion, await SchemaMigrator.CurrentVersionAsync(db));
         Assert.Equal(1, await db.Spans.AsNoTracking().CountAsync());
+    }
+
+    [Fact]
+    public async Task UpgradeFromVersion3AddsNullableOutputLanguageAndKeepsRuns()
+    {
+        CreateVersion3Database();
+        await using var db = Context();
+        await SchemaMigrator.ApplyAsync(db);
+
+        // 0 = la columna existe y acepta NULL; -1 = no existe.
+        Assert.Equal(0, ColumnNotNull("BenchmarkRuns", "OutputLanguage"));
+        Assert.Equal(4, SchemaMigrator.LatestVersion);
+        Assert.Equal(SchemaMigrator.LatestVersion, await SchemaMigrator.CurrentVersionAsync(db));
+
+        // La corrida previa sigue ahí y sin idioma guardado: el valor por defecto
+        // (`es`) se resuelve al leer, no se escribe historia.
+        Assert.Equal(1, Convert.ToInt32(Scalar("SELECT COUNT(*) FROM \"BenchmarkRuns\" WHERE \"Id\" = 'run-version-3'")));
+        Assert.Equal(DBNull.Value, Scalar("SELECT \"OutputLanguage\" FROM \"BenchmarkRuns\" WHERE \"Id\" = 'run-version-3'"));
     }
 
     [Fact]

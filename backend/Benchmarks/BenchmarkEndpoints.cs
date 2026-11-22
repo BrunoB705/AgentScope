@@ -52,6 +52,11 @@ public static class BenchmarkEndpoints
             if (string.IsNullOrWhiteSpace(judge))
                 return Results.BadRequest(new { error = "Choose a judge.", code = "judge_missing" });
 
+            // El idioma de salida se fija al crear la corrida: el worker la ejecuta
+            // después y no ve la pantalla. Sólo se aceptan los idiomas soportados.
+            if (dto.Language is not (null or "es" or "en"))
+                return Results.BadRequest(new { error = "Language must be 'es' or 'en'.", code = "invalid_language" });
+
             var specs = modelList.Select(model =>
             {
                 var parts = model.Split('#', 2);
@@ -81,6 +86,7 @@ public static class BenchmarkEndpoints
                 Total = modelList.Length * suite.Tests.Length,
                 CreatedAt = DateTime.UtcNow,
                 RequestVerdict = dto.RequestVerdict ?? true,
+                OutputLanguage = dto.Language ?? "es",
             };
             var results = new List<BenchmarkResultEntity>();
             foreach (var test in suite.Tests)
@@ -213,6 +219,7 @@ public static class BenchmarkEndpoints
             completedAt = run.CompletedAt,
             baselineJson = run.BaselineJson,
             requestVerdict = run.RequestVerdict,
+            language = run.OutputLanguage ?? "es",
             verdict = verdict.Error,
             verdictCode = verdict.Code,
             verdictParams = verdict.Parameters,

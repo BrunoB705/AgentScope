@@ -23,12 +23,76 @@ public sealed class BenchmarkApiTests : IDisposable
         return client;
     }
 
-    private static object RunBody(string[]? models = null, string? judge = "provider/model-c") => new
+    private static Dictionary<string, object?> RunBody(string[]? models = null, string? judge = "provider/model-c", string? language = null)
     {
-        suite = "demo",
-        models = models ?? new[] { "provider/model-a" },
-        judge,
-    };
+        var body = new Dictionary<string, object?>
+        {
+            ["suite"] = "demo",
+            ["models"] = models ?? new[] { "provider/model-a" },
+            ["judge"] = judge,
+        };
+        // Ausente por defecto: así los tests viejos siguen ejerciendo el camino
+        // "cliente que no manda idioma".
+        if (language is not null) body["language"] = language;
+        return body;
+    }
+
+    [Fact]
+    public async Task CreateRun_DefaultsLanguageToSpanish()
+    {
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody());
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("es", json.RootElement.GetProperty("language").GetString());
+    }
+
+    [Fact]
+    public async Task CreateRun_PersistsEnglishLanguage()
+    {
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(language: "en"));
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        using var created = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("en", created.RootElement.GetProperty("language").GetString());
+        var id = created.RootElement.GetProperty("id").GetString();
+
+        using var detail = JsonDocument.Parse(await client.GetStringAsync($"/api/v1/benchmarks/runs/{id}"));
+        Assert.Equal("en", detail.RootElement.GetProperty("language").GetString());
+
+        using var history = JsonDocument.Parse(await client.GetStringAsync("/api/v1/benchmarks/runs?suite=demo"));
+        Assert.Equal("en", history.RootElement.GetProperty("items")[0].GetProperty("language").GetString());
+    }
+
+    [Fact]
+    public async Task CreateRun_RejectsUnknownLanguage()
+    {
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(language: "fr"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("Language must be 'es' or 'en'.", body);
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("invalid_language", document.RootElement.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task GetRun_ReadsMissingLanguageAsSpanish()
+    {
+        using var client = Client();
+        using var created = JsonDocument.Parse(await (await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(language: "en"))).Content.ReadAsStringAsync());
+        var id = created.RootElement.GetProperty("id").GetString()!;
+
+        // Corrida anterior a la columna: sin idioma guardado.
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TelemetryDb>();
+            await db.Database.ExecuteSqlRawAsync("UPDATE \"BenchmarkRuns\" SET \"OutputLanguage\" = NULL WHERE \"Id\" = {0}", id);
+        }
+
+        using var detail = JsonDocument.Parse(await client.GetStringAsync($"/api/v1/benchmarks/runs/{id}"));
+        Assert.Equal("es", detail.RootElement.GetProperty("language").GetString());
+    }
 
     [Fact]
     public async Task Suites_ReturnsCodeAndOpenWithoutPrompts()

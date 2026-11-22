@@ -8,7 +8,7 @@ using Microsoft.EntityFrameworkCore;
 /// </summary>
 internal static class SchemaMigrator
 {
-    internal const int LatestVersion = 3;
+    internal const int LatestVersion = 4;
 
     internal static async Task ApplyAsync(TelemetryDb db)
     {
@@ -36,6 +36,12 @@ internal static class SchemaMigrator
         {
             await EnsureBenchmarkTablesAsync(db);
             await EnsureIndexesAsync(db);
+        }
+        // v4: el idioma de salida del juez viaja con la corrida. La columna es nullable
+        // y las filas anteriores se leen como `es` sin reescribirlas.
+        if (currentVersion < 4)
+        {
+            await AddColumnIfMissingAsync(db, "BenchmarkRuns", "OutputLanguage", "TEXT NULL");
         }
         await RecordAsync(db, LatestVersion);
     }
@@ -162,7 +168,8 @@ internal static class SchemaMigrator
               BaselineJson TEXT NULL,
               RequestVerdict INTEGER NOT NULL DEFAULT 1,
               Verdict TEXT NULL,
-              Error TEXT NULL
+              Error TEXT NULL,
+              OutputLanguage TEXT NULL
             );
             """);
         await db.Database.ExecuteSqlRawAsync("""
@@ -195,6 +202,7 @@ internal static class SchemaMigrator
             """);
         await AddColumnIfMissingAsync(db, "BenchmarkRuns", "RequestVerdict", "INTEGER NOT NULL DEFAULT 1");
         await AddColumnIfMissingAsync(db, "BenchmarkRuns", "Verdict", "TEXT NULL");
+        await AddColumnIfMissingAsync(db, "BenchmarkRuns", "OutputLanguage", "TEXT NULL");
         await AddColumnIfMissingAsync(db, "BenchmarkResults", "ReasoningTokens", "INTEGER NOT NULL DEFAULT 0");
     }
 
@@ -241,7 +249,7 @@ internal static class SchemaMigrator
         "Cost", "ReasoningTokens", "CacheReadTokens", "CacheWriteTokens", "QuotaCostEstimate",
         "QuotaCatalogFetchedAt", "QuotaRateSnapshot", "QuotaMissingReason",
         "Title", "Rating", "ReviewNote", "ReviewTask", "TitleAt", "ModelAt",
-        "RequestVerdict", "Verdict",
+        "RequestVerdict", "Verdict", "OutputLanguage",
     };
 
 #pragma warning disable EF1002 // identificadores validados contra KnownTables/KnownColumns

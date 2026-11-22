@@ -13,6 +13,8 @@ public sealed class BenchmarkRunEntity
     public bool RequestVerdict { get; set; } = true;
     public string? Verdict { get; set; }
     public string? Error { get; set; }
+    /// <summary>Idioma en que el juez escribió su prosa; null en filas anteriores a la v4, que se leen como «es».</summary>
+    public string? OutputLanguage { get; set; }
 }
 
 public sealed class BenchmarkResultEntity

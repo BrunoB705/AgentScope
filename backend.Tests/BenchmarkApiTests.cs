@@ -37,6 +37,21 @@ public sealed class BenchmarkApiTests : IDisposable
         return body;
     }
 
+    /// <summary>
+    /// El cuerpo de error es exactamente <c>{ error, code }</c>: sin campos extra y con la
+    /// prosa y el código exactos. Comparar un substring dejaba pasar una forma distinta.
+    /// </summary>
+    private static void AssertErrorBody(JsonDocument document, string error, string code)
+    {
+        var properties = document.RootElement.EnumerateObject()
+            .Select(item => item.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal(new[] { "code", "error" }, properties);
+        Assert.Equal(error, document.RootElement.GetProperty("error").GetString());
+        Assert.Equal(code, document.RootElement.GetProperty("code").GetString());
+    }
+
     [Fact]
     public async Task CreateRun_DefaultsLanguageToSpanish()
     {
@@ -70,10 +85,30 @@ public sealed class BenchmarkApiTests : IDisposable
         using var client = Client();
         var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(language: "fr"));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        var body = await response.Content.ReadAsStringAsync();
-        Assert.Contains("Language must be 'es' or 'en'.", body);
-        using var document = JsonDocument.Parse(body);
-        Assert.Equal("invalid_language", document.RootElement.GetProperty("code").GetString());
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        AssertErrorBody(document, "Language must be 'es' or 'en'.", "invalid_language");
+    }
+
+    [Fact]
+    public async Task CreateRun_RejectsRegionalLanguageVariant()
+    {
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", RunBody(language: "en-US"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        AssertErrorBody(document, "Language must be 'es' or 'en'.", "invalid_language");
+    }
+
+    [Fact]
+    public async Task CreateRun_ReportsInvalidLanguageBeforeInvalidVariant()
+    {
+        using var client = Client();
+        var response = await client.PostAsJsonAsync(
+            "/api/v1/benchmarks/runs",
+            RunBody(new[] { "provider/model-a#a&calc" }, language: "fr"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        AssertErrorBody(document, "Language must be 'es' or 'en'.", "invalid_language");
     }
 
     [Fact]

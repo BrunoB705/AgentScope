@@ -484,7 +484,7 @@ internal sealed class BenchmarkExecutor
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         var prefix = fullRoot.Length == 0 ? Path.DirectorySeparatorChar.ToString() : fullRoot + Path.DirectorySeparatorChar;
         if (fullCandidate.Length <= fullRoot.Length || !fullCandidate.StartsWith(prefix, comparison))
-            throw new InvalidOperationException($"La ruta '{candidate}' queda fuera de la raíz permitida '{root}'.");
+            throw new InvalidOperationException($"Path '{candidate}' is outside the allowed root '{root}'.");
         return fullCandidate;
     }
 

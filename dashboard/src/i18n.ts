@@ -169,6 +169,12 @@ function signalParams(evidence: Record<string, unknown>): Record<string, string 
   return params;
 }
 
+const signalPlurals: Record<string, Record<string, TranslationKey>> = {
+  tool_loop: { calls: 'signals.tool_loop.calls', errors: 'signals.tool_loop.errors' },
+  error_burst: { toolErrors: 'signals.error_burst.toolErrors', modelErrors: 'signals.error_burst.modelErrors' },
+  long_session: { modelSteps: 'signals.long_session.modelSteps', spans: 'signals.long_session.spans' },
+};
+
 /**
  * Traduce una señal por `kind` y `evidence`. Un `kind` que el diccionario no
  * conoce conserva el título y la explicación que mandó la API, nunca una clave.
@@ -176,6 +182,12 @@ function signalParams(evidence: Record<string, unknown>): Record<string, string 
 export function translateSignal(t: Translate, signal: BehaviorSignalText): { title: string; explanation: string } {
   if (!hasSignal(signal.kind)) return { title: signal.title, explanation: signal.explanation };
   const params = signalParams(signal.evidence);
+  for (const [field, pluralKey] of Object.entries(signalPlurals[signal.kind] ?? {})) {
+    const value = params[field];
+    if (typeof value === 'number') {
+      params[`${field}Text`] = t(pluralKey, { count: value, value });
+    }
+  }
   return {
     title: t(signalTextKey(signal.kind, 'title'), params),
     explanation: t(signalTextKey(signal.kind, 'explanation'), params),

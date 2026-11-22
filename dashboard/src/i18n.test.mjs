@@ -78,11 +78,33 @@ test('una clave inexistente devuelve la clave y nunca undefined', () => {
   assert.equal(translate('en', 'signals.unknown.title'), 'signals.unknown.title');
 });
 
-test('una señal conocida se traduce con la evidencia', () => {
+test('una señal conocida se traduce con la evidencia y pluraliza bien', () => {
   const signal = { kind: 'tool_loop', title: 'Tool loop: bash', explanation: 'text from the API', evidence: { tool: 'bash', calls: 9, maxConsecutive: 4, errors: 2 } };
   const text = translateSignal(translate.bind(null, 'es'), signal);
   assert.equal(text.title, 'Bucle de herramienta: bash');
   assert.equal(text.explanation, 'bash se llamó 9 veces; 2 fallaron y la racha máxima fue 4.');
+
+  const singular = { kind: 'tool_loop', title: 'Tool loop: bash', explanation: 'text from the API', evidence: { tool: 'bash', calls: 1, maxConsecutive: 1, errors: 1 } };
+  assert.equal(
+    translateSignal(translate.bind(null, 'es'), singular).explanation,
+    'bash se llamó 1 vez; 1 falló y la racha máxima fue 1.',
+  );
+
+  const burst = { kind: 'error_burst', title: 'Error burst', explanation: 'text', evidence: { toolErrors: 1, modelErrors: 1 } };
+  assert.equal(
+    translateSignal(translate.bind(null, 'es'), burst).explanation,
+    'Hubo 1 error de herramienta y 1 de modelo.',
+  );
+  assert.equal(
+    translateSignal(translate.bind(null, 'en'), burst).explanation,
+    '1 tool error and 1 model error were recorded.',
+  );
+
+  const longSession = { kind: 'long_session', title: 'Long session', explanation: 'text', evidence: { modelSteps: 1, spans: 1 } };
+  assert.equal(
+    translateSignal(translate.bind(null, 'es'), longSession).explanation,
+    'La sesión tiene 1 paso de modelo y 1 span.',
+  );
 });
 
 test('un kind de señal desconocido conserva el texto en inglés que mandó la API', () => {
@@ -98,7 +120,7 @@ test('un kind de señal desconocido conserva el texto en inglés que mandó la A
 test('una señal conocida sin un campo de evidencia deja el hueco vacío', () => {
   const signal = { kind: 'tool_loop', title: 'Tool loop: bash', explanation: 'text from the API', evidence: { tool: 'bash', calls: 9, maxConsecutive: 4 } };
   const text = translateSignal(translate.bind(null, 'es'), signal);
-  assert.equal(text.explanation, 'bash se llamó 9 veces;  fallaron y la racha máxima fue 4.');
+  assert.equal(text.explanation, 'bash se llamó 9 veces;  y la racha máxima fue 4.');
   assert.ok(!text.explanation.includes('undefined'));
 });
 

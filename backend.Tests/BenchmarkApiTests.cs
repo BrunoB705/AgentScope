@@ -85,7 +85,17 @@ public sealed class BenchmarkApiTests : IDisposable
         var body = await response.Content.ReadAsStringAsync();
         Assert.Contains("does not exist", body);
         using var document = JsonDocument.Parse(body);
-        Assert.Equal("suite_missing", document.RootElement.GetProperty("code").GetString());
+        Assert.Equal("suite_not_found", document.RootElement.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task CreateRun_RejectsInvalidSuiteId()
+    {
+        using var client = Client();
+        var response = await client.PostAsJsonAsync("/api/v1/benchmarks/runs", new { suite = "Bad Id", models = new[] { "provider/model-a" }, judge = "provider/model-c" });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("suite_id_invalid", document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]

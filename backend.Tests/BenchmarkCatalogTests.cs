@@ -95,7 +95,8 @@ public sealed class BenchmarkCatalogTests : IDisposable
         Assert.Empty(result.Suites);
         var error = Assert.Single(result.Errors);
         Assert.Equal("bad", error.Id);
-        Assert.Contains("tipo", error.Error);
+        Assert.Equal("test_type_invalid", error.Code);
+        Assert.Contains("invalid type", error.Error);
     }
 
     [Fact]
@@ -127,7 +128,8 @@ public sealed class BenchmarkCatalogTests : IDisposable
     {
         WriteSuite("bad", ValidSuite.Replace("\"code\"", "\"weird\""));
         var error = Assert.Throws<BenchmarkValidationException>(() => Catalog().Load("bad"));
-        Assert.Contains("tipo", error.Message);
+        Assert.Equal("test_type_invalid", error.Code);
+        Assert.Contains("invalid type", error.Message);
     }
 
     [Fact]
@@ -142,6 +144,7 @@ public sealed class BenchmarkCatalogTests : IDisposable
         }
         """);
         var error = Assert.Throws<BenchmarkValidationException>(() => Catalog().Load("bad"));
+        Assert.Equal("code_test_verify_missing", error.Code);
         Assert.Contains("verify", error.Message);
     }
 
@@ -150,6 +153,7 @@ public sealed class BenchmarkCatalogTests : IDisposable
     {
         WriteSuite("bad", ValidSuite.Replace("[\"Claridad\", \"Correctitud\"]", "[]"));
         var error = Assert.Throws<BenchmarkValidationException>(() => Catalog().Load("bad"));
+        Assert.Equal("open_test_rubric_missing", error.Code);
         Assert.Contains("rubric", error.Message);
     }
 
@@ -158,6 +162,7 @@ public sealed class BenchmarkCatalogTests : IDisposable
     {
         WriteSuite("bad", ValidSuite.Replace("\"rubric\": [\"Claridad\", \"Correctitud\"]", "\"rubric\": [\"Claridad\"], \"judge\": true"));
         var error = Assert.Throws<BenchmarkValidationException>(() => Catalog().Load("bad"));
+        Assert.Equal("open_test_judge_forbidden", error.Code);
         Assert.Contains("judge", error.Message);
     }
 
@@ -166,7 +171,8 @@ public sealed class BenchmarkCatalogTests : IDisposable
     {
         WriteSuite("bad", ValidSuite.Replace("prompts/code.md", "../secret.md"));
         var error = Assert.Throws<BenchmarkValidationException>(() => Catalog().Load("bad"));
-        Assert.Contains("sale del directorio", error.Message);
+        Assert.Equal("path_outside_suite", error.Code);
+        Assert.Contains("leaves the suite directory", error.Message);
     }
 
     [Fact]
@@ -174,7 +180,8 @@ public sealed class BenchmarkCatalogTests : IDisposable
     {
         WriteSuite("bad", ValidSuite.Replace("\"name\": \"open-test\"", "\"name\": \"code-test\""));
         var error = Assert.Throws<BenchmarkValidationException>(() => Catalog().Load("bad"));
-        Assert.Contains("duplicad", error.Message);
+        Assert.Equal("test_duplicated", error.Code);
+        Assert.Contains("duplicated", error.Message);
     }
 
     [Fact]
@@ -195,6 +202,7 @@ public sealed class BenchmarkCatalogTests : IDisposable
     {
         WriteSuite("bad", ValidSuite.Replace("\"modelTimeoutMs\": 300000", "\"modelTimeoutMs\": 5"));
         var error = Assert.Throws<BenchmarkValidationException>(() => Catalog().Load("bad"));
+        Assert.Equal("suite_timeout_out_of_range", error.Code);
         Assert.Contains("timeout", error.Message);
     }
 
@@ -202,6 +210,8 @@ public sealed class BenchmarkCatalogTests : IDisposable
     public void Load_UnknownId_Throws()
     {
         var error = Assert.Throws<BenchmarkValidationException>(() => Catalog().Load("missing"));
+        Assert.Equal("suite_not_found", error.Code);
+        Assert.Equal("missing", error.Parameters!["suite"]);
         Assert.Contains("does not exist", error.Message);
     }
 
@@ -220,8 +230,9 @@ public sealed class BenchmarkCatalogTests : IDisposable
         var json = ValidSuite.Replace("node --test", command.Replace("\\", "\\\\").Replace("\n", "\\n"));
         WriteSuite("bad", json);
         var error = Assert.Throws<BenchmarkValidationException>(() => Catalog().Load("bad"));
+        Assert.Equal("verify_command_unsafe", error.Code);
         Assert.Contains("verify", error.Message);
-        Assert.Contains("no está permitido", error.Message);
+        Assert.Contains("not allowed", error.Message);
     }
 
     [Theory]

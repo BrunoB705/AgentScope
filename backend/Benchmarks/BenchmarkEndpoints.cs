@@ -35,9 +35,9 @@ public static class BenchmarkEndpoints
             }
             catch (BenchmarkValidationException ex)
             {
-                return ex.Message.Contains("does not exist", StringComparison.OrdinalIgnoreCase)
-                    ? Results.NotFound(new { error = ex.Message, code = "suite_missing" })
-                    : Results.BadRequest(new { error = ex.Message, code = "suite_missing" });
+                return ex.Code == "suite_not_found"
+                    ? Results.NotFound(new { error = ex.Message, code = ex.Code })
+                    : Results.BadRequest(new { error = ex.Message, code = ex.Code });
             }
 
             var modelList = (dto.Models ?? Array.Empty<string>())

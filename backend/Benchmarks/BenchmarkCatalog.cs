@@ -39,11 +39,11 @@ public sealed class BenchmarkCatalog
             }
             catch (BenchmarkValidationException ex)
             {
-                errors.Add(new(id, ex.Message));
+                errors.Add(new(id, ex.Message, ex.Code));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                errors.Add(new(id, $"No se pudo leer la suite: {ex.Message}"));
+                errors.Add(new(id, $"Could not read the suite: {ex.Message}", "suite_unreadable"));
             }
         }
         return new(suites.ToArray(), errors.ToArray());
@@ -54,12 +54,14 @@ public sealed class BenchmarkCatalog
     private BenchmarkSuite Load(string id, bool readPrompt)
     {
         if (string.IsNullOrWhiteSpace(id) || id.Length > 60 || !IdPattern.IsMatch(id))
-            throw new BenchmarkValidationException($"La suite '{id}' tiene un id inválido.");
+            throw new BenchmarkValidationException(
+                $"The suite '{id}' has an invalid id.", "suite_id_invalid", Params(("suite", id)));
 
         var directory = Path.Combine(_rootPath, id);
         var file = Path.Combine(directory, "suite.json");
         if (!Directory.Exists(directory) || !File.Exists(file))
-            throw new BenchmarkValidationException($"The suite '{id}' does not exist.");
+            throw new BenchmarkValidationException(
+                $"The suite '{id}' does not exist.", "suite_not_found", Params(("suite", id)));
 
         SuiteFile? parsed;
         try
@@ -68,24 +70,34 @@ public sealed class BenchmarkCatalog
         }
         catch (JsonException ex)
         {
-            throw new BenchmarkValidationException($"No se pudo leer suite.json de '{id}': {ex.Message}");
+            throw new BenchmarkValidationException(
+                $"Could not read suite.json of '{id}': {ex.Message}",
+                "suite_unreadable",
+                Params(("suite", id), ("detail", ex.Message)));
         }
         if (parsed is null)
-            throw new BenchmarkValidationException($"La suite '{id}' no tiene contenido válido.");
+            throw new BenchmarkValidationException(
+                $"The suite '{id}' has no valid content.", "suite_invalid", Params(("suite", id)));
 
         var name = parsed.Name?.Trim();
         if (string.IsNullOrWhiteSpace(name))
-            throw new BenchmarkValidationException($"La suite '{id}' requiere un name.");
+            throw new BenchmarkValidationException(
+                $"The suite '{id}' requires a name.", "suite_name_missing", Params(("suite", id)));
         if (name.Length > 120)
-            throw new BenchmarkValidationException($"El name de la suite '{id}' supera los 120 caracteres.");
+            throw new BenchmarkValidationException(
+                $"The name of suite '{id}' exceeds 120 characters.", "suite_name_too_long", Params(("suite", id)));
 
         var modelTimeout = parsed.ModelTimeoutMs ?? DefaultModelTimeoutMs;
         if (modelTimeout < MinTimeoutMs || modelTimeout > MaxTimeoutMs)
-            throw new BenchmarkValidationException($"El timeout de la suite '{id}' debe estar entre 10 segundos y 30 minutos.");
+            throw new BenchmarkValidationException(
+                $"The timeout of suite '{id}' must be between 10 seconds and 30 minutes.",
+                "suite_timeout_out_of_range",
+                Params(("suite", id)));
 
         var tests = parsed.Tests ?? Array.Empty<SuiteTestFile>();
         if (tests.Length == 0)
-            throw new BenchmarkValidationException($"La suite '{id}' requiere al menos una prueba.");
+            throw new BenchmarkValidationException(
+                $"The suite '{id}' requires at least one test.", "suite_tests_missing", Params(("suite", id)));
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var result = new List<BenchmarkTest>();
@@ -93,48 +105,78 @@ public sealed class BenchmarkCatalog
         {
             var testName = test.Name?.Trim();
             if (string.IsNullOrWhiteSpace(testName))
-                throw new BenchmarkValidationException($"Una prueba de la suite '{id}' no tiene name.");
+                throw new BenchmarkValidationException(
+                    $"A test in suite '{id}' has no name.", "test_name_missing", Params(("suite", id)));
             if (testName.Length > 80)
-                throw new BenchmarkValidationException($"La prueba '{testName}' supera los 80 caracteres.");
+                throw new BenchmarkValidationException(
+                    $"The test '{testName}' exceeds 80 characters.", "test_name_too_long", Params(("test", testName)));
             if (!seen.Add(testName))
-                throw new BenchmarkValidationException($"La prueba '{testName}' está duplicada en la suite '{id}'.");
+                throw new BenchmarkValidationException(
+                    $"The test '{testName}' is duplicated in suite '{id}'.",
+                    "test_duplicated",
+                    Params(("suite", id), ("test", testName)));
 
             var type = test.Type?.Trim().ToLowerInvariant();
             if (type is not ("code" or "open"))
-                throw new BenchmarkValidationException($"La prueba '{testName}' tiene un tipo inválido: '{test.Type}'.");
+                throw new BenchmarkValidationException(
+                    $"The test '{testName}' has an invalid type: '{test.Type}'.",
+                    "test_type_invalid",
+                    Params(("test", testName), ("type", test.Type ?? "")));
 
             if (string.IsNullOrWhiteSpace(test.PromptFile))
-                throw new BenchmarkValidationException($"La prueba '{testName}' requiere promptFile.");
+                throw new BenchmarkValidationException(
+                    $"The test '{testName}' requires promptFile.", "test_prompt_missing", Params(("test", testName)));
             var promptPath = ResolveInside(directory, test.PromptFile, testName);
             if (!File.Exists(promptPath))
-                throw new BenchmarkValidationException($"La prueba '{testName}' apunta a un prompt que no existe.");
+                throw new BenchmarkValidationException(
+                    $"The test '{testName}' points to a prompt that does not exist.",
+                    "test_prompt_not_found",
+                    Params(("test", testName)));
             var prompt = readPrompt ? File.ReadAllText(promptPath) : "";
 
             if (type == "open")
             {
                 if (test.Judge == true)
-                    throw new BenchmarkValidationException($"La prueba '{testName}' de tipo open no admite judge.");
+                    throw new BenchmarkValidationException(
+                        $"The open test '{testName}' does not allow judge.",
+                        "open_test_judge_forbidden",
+                        Params(("test", testName)));
                 var rubric = (test.Rubric ?? Array.Empty<string>())
                     .Select(value => value?.Trim())
                     .Where(value => !string.IsNullOrWhiteSpace(value))
                     .ToArray();
                 if (rubric.Length == 0)
-                    throw new BenchmarkValidationException($"La prueba '{testName}' de tipo open requiere al menos un criterio en rubric.");
+                    throw new BenchmarkValidationException(
+                        $"The open test '{testName}' requires at least one rubric criterion.",
+                        "open_test_rubric_missing",
+                        Params(("test", testName)));
                 result.Add(new(testName, "open", prompt, null, null, 0, rubric!, true));
                 continue;
             }
 
             if (string.IsNullOrWhiteSpace(test.Fixture))
-                throw new BenchmarkValidationException($"La prueba '{testName}' de tipo code requiere fixture y verify.command.");
+                throw new BenchmarkValidationException(
+                    $"The code test '{testName}' requires fixture and verify.command.",
+                    "code_test_verify_missing",
+                    Params(("test", testName)));
             var fixturePath = ResolveInside(directory, test.Fixture, testName);
             if (!Directory.Exists(fixturePath))
-                throw new BenchmarkValidationException($"La prueba '{testName}' apunta a un fixture que no existe.");
+                throw new BenchmarkValidationException(
+                    $"The test '{testName}' points to a fixture that does not exist.",
+                    "test_fixture_not_found",
+                    Params(("test", testName)));
             if (string.IsNullOrWhiteSpace(test.Verify?.Command))
-                throw new BenchmarkValidationException($"La prueba '{testName}' de tipo code requiere fixture y verify.command.");
+                throw new BenchmarkValidationException(
+                    $"The code test '{testName}' requires fixture and verify.command.",
+                    "code_test_verify_missing",
+                    Params(("test", testName)));
             ValidateVerifyCommand(test.Verify!.Command, testName);
             var verifyTimeout = test.Verify!.TimeoutMs ?? DefaultVerifyTimeoutMs;
             if (verifyTimeout < MinTimeoutMs || verifyTimeout > MaxTimeoutMs)
-                throw new BenchmarkValidationException($"El timeout de verify de '{testName}' debe estar entre 10 segundos y 30 minutos.");
+                throw new BenchmarkValidationException(
+                    $"The verify timeout of '{testName}' must be between 10 seconds and 30 minutes.",
+                    "verify_timeout_out_of_range",
+                    Params(("test", testName)));
 
             result.Add(new(testName, "code", prompt, fixturePath, test.Verify.Command, verifyTimeout, Array.Empty<string>(), test.Judge == true));
         }
@@ -147,7 +189,9 @@ public sealed class BenchmarkCatalog
         var offending = command.FirstOrDefault(character => ShellMetacharacters.Contains(character));
         if (offending != default)
             throw new BenchmarkValidationException(
-                $"El comando verify de '{testName}' contiene el carácter de shell '{offending}'; no está permitido porque se ejecuta dentro de un shell.");
+                $"The verify command of '{testName}' contains the shell character '{offending}', which is not allowed because it runs inside a shell.",
+                "verify_command_unsafe",
+                Params(("test", testName), ("character", offending.ToString())));
     }
 
     private string ResolveInside(string directory, string relative, string testName)
@@ -155,9 +199,15 @@ public sealed class BenchmarkCatalog
         var full = Path.GetFullPath(Path.Combine(directory, relative));
         var prefix = Path.GetFullPath(directory) + Path.DirectorySeparatorChar;
         if (!full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            throw new BenchmarkValidationException($"La ruta '{relative}' de la prueba '{testName}' sale del directorio de la suite.");
+            throw new BenchmarkValidationException(
+                $"The path '{relative}' of test '{testName}' leaves the suite directory.",
+                "path_outside_suite",
+                Params(("test", testName), ("path", relative)));
         return full;
     }
+
+    private static IReadOnlyDictionary<string, string> Params(params (string Key, string Value)[] values) =>
+        values.ToDictionary(value => value.Key, value => value.Value);
 
     private static BenchmarkSuiteSummary ToSummary(BenchmarkSuite suite) => new(
         suite.Id,

@@ -65,7 +65,7 @@ La pestaña **Pruebas** ejecuta una suite definida en `benchmarks/` contra los m
 
 El juez se elige por separado y no puede ser uno de los modelos evaluados. Corre a ciegas, con `--archived`, y devuelve una nota de 1 a 5 con una justificación breve. Las respuestas de los modelos no se guardan: sólo métricas, pass/fail, nota y justificación.
 
-Las corridas usan la telemetría existente para tokens y costo, y quedan como sesiones normales con proyecto `benchmark` o `benchmark-judge`. El costo de las pruebas se cuenta como uso real y puede separarse con el selector de alcance (`Todo el tráfico`, `Trabajo real`, `Solo pruebas`). La contención es best-effort: el proceso corre con tu usuario y `--auto`, sin sandbox, aunque limpia las claves del host del entorno de los subprocesos y valida rutas temporales. Docker desactiva el worker de benchmarks (`Benchmarks__WorkerEnabled=false`) y monta `./benchmarks` en solo lectura.
+Las corridas usan la telemetría existente para tokens y costo, y quedan como sesiones normales con proyecto `benchmark` o `benchmark-judge`. El costo de las pruebas se cuenta como uso real y puede separarse con el selector de alcance (`Todo el tráfico`, `Trabajo real`, `Solo pruebas`). La contención es best-effort: el proceso corre con tu usuario y `--auto`, sin sandbox, aunque quita del entorno de los subprocesos las claves de la propia plataforma (`TELEMETRY_API_KEY`, `Telemetry__ApiKey`, `ConnectionStrings__Telemetry`, `OPENCODE_OBSERVABILITY_KEY`, `OPENCODE_OBSERVABILITY_URL`), entrega la de telemetría sólo a los procesos de OpenCode y valida rutas temporales. Las credenciales de otros proveedores que tengas exportadas en la sesión sí llegan al subproceso: no las dejes activas mientras corrés pruebas. Docker desactiva el worker de benchmarks (`Benchmarks__WorkerEnabled=false`) y monta `./benchmarks` en solo lectura.
 
 En la pestaña podés filtrar modelos por nombre y elegir una variante (`low`, `high`, `max`, `thinking` o escribir otra). La tabla usa la cuota Go estimada de cada resultado. El historial se carga de a 20 corridas con “Cargar más”. Si activás la recomendación final, un juicio extra —una llamada más al mismo juez— sugiere qué modelo conviene para la suite. Una corrida terminada se puede eliminar junto con sus sesiones; deja de contar como uso real.
 
@@ -111,13 +111,16 @@ Todas las rutas exigen la cabecera `X-Telemetry-Key`, salvo `GET /api/v1/health`
 - `GET /api/v1/overview?days=1|7|30|90&scope=all|real|benchmarks` (sin `days`, consulta todo el historial)
 - `GET /api/v1/sessions?status=&model=&project=&tool=&search=&error=&from=&to=&page=&pageSize=&scope=all|real|benchmarks`
 - `GET /api/v1/sessions/{id}`, `DELETE /api/v1/sessions/{id}` y `GET /api/v1/traces/{id}`
+- `PUT /api/v1/sessions/{id}/review` (cuerpo `{ "rating": 1..5, "note": "texto", "taskLabel": "etiqueta" }`; normaliza la etiqueta de tarea y emite `telemetry.updated`)
+- `GET /api/v1/comparisons` (sesiones con etiqueta de tarea, agrupadas por etiqueta)
+- `GET /api/v1/budgets`, `PUT /api/v1/budgets` (cuerpo `{ "project": "…", "monthlyLimit": número, "metric": "cost"|"quota" }`) y `DELETE /api/v1/budgets?project=`
 - `GET /api/v1/analytics/tools?days=1|7|30|90&scope=all|real|benchmarks` (sin `days`, consulta todo el historial)
 - `GET /api/v1/analytics/models?from=&to=&source=&model=&bucket=day|week|month&scope=all|real|benchmarks`
 - `GET /api/v1/behavior?days=1|7|30|90&scope=all|real|benchmarks`
 - `GET /api/v1/export?from=&to=&scope=all|real|benchmarks` (exporta sesiones, spans y eventos filtrados en JSON Lines)
 - `DELETE /api/v1/data?before=<ISO>&dryRun=true|false` (purga sesiones anteriores a `before`; también configurable al arranque mediante `Telemetry:RetentionDays`)
 - `GET /api/v1/benchmarks/suites` y `GET /api/v1/benchmarks/models`
-- `POST /api/v1/benchmarks/runs`, `GET /api/v1/benchmarks/runs?suite=` y `GET /api/v1/benchmarks/runs/{id}`
+- `POST /api/v1/benchmarks/runs`, `GET /api/v1/benchmarks/runs?suite=&page=&pageSize=` y `GET /api/v1/benchmarks/runs/{id}`
 - `POST /api/v1/benchmarks/runs/{id}/cancel` y `DELETE /api/v1/benchmarks/runs/{id}`
 - SignalR `/hubs/telemetry`, eventos `telemetry.updated` y `benchmark.updated`
 

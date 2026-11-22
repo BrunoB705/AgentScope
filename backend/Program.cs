@@ -346,16 +346,16 @@ app.MapGet("/api/v1/behavior", async (TelemetryDb db, int? days, string? scope) 
             var errors = group.Count(s => s.Status is "error" or "failed");
             var maxConsecutive = maxRuns.GetValueOrDefault(group.Key);
             if (calls >= 4 || maxConsecutive >= 3)
-                signals.Add(new BehaviorSignalDto("tool_loop", "warning", $"Bucle de herramienta: {group.Key}", $"{group.Key} se llamó {calls} veces; {errors} fallaron y la racha máxima fue {maxConsecutive}.", new { tool = group.Key, calls, maxConsecutive, errors }));
+                signals.Add(new BehaviorSignalDto("tool_loop", "warning", $"Tool loop: {group.Key}", $"{group.Key} was called {calls} times; {errors} failed and the longest streak was {maxConsecutive}.", new { tool = group.Key, calls, maxConsecutive, errors }));
         }
         var toolErrors = toolSpans.Count(s => s.Status is "error" or "failed");
         var modelErrors = modelSpans.Count(s => s.Status is "error" or "failed");
         if (toolErrors >= 3 || modelErrors >= 2)
-            signals.Add(new BehaviorSignalDto("error_burst", "alert", "Ráfaga de errores", $"Se registraron {toolErrors} errores de herramientas y {modelErrors} de modelo.", new { toolErrors, modelErrors }));
+            signals.Add(new BehaviorSignalDto("error_burst", "alert", "Error burst", $"{toolErrors} tool errors and {modelErrors} model errors were recorded.", new { toolErrors, modelErrors }));
         if (modelSpans.Count >= 20 || sessionSpans.Count >= 30)
-            signals.Add(new BehaviorSignalDto("long_session", "warning", "Sesión larga", $"La sesión tiene {modelSpans.Count} pasos de modelo y {sessionSpans.Count} spans.", new { modelSteps = modelSpans.Count, spans = sessionSpans.Count }));
+            signals.Add(new BehaviorSignalDto("long_session", "warning", "Long session", $"The session has {modelSpans.Count} model steps and {sessionSpans.Count} spans.", new { modelSteps = modelSpans.Count, spans = sessionSpans.Count }));
         if (session.Status == "interrupted")
-            signals.Add(new BehaviorSignalDto("interrupted", "alert", "Sesión interrumpida", "La ejecución quedó interrumpida.", new { endedAt = session.EndedAt }));
+            signals.Add(new BehaviorSignalDto("interrupted", "alert", "Interrupted session", "The run was left interrupted.", new { endedAt = session.EndedAt }));
         if (signals.Count == 0) continue;
         rows.Add(new BehaviorSessionDto(session.Id, session.Title, session.Project, session.Model, session.Status, session.StartedAt, session.UpdatedAt, signals.OrderBy(s => s.Severity == "alert" ? 0 : 1).ThenBy(s => s.Kind).ToArray()));
     }

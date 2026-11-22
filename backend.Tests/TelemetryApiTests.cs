@@ -350,6 +350,9 @@ public sealed class TelemetryApiTests : IDisposable
         var signal = session.GetProperty("signals").EnumerateArray().Single(item => item.GetProperty("kind").GetString() == "tool_loop");
         Assert.Equal(4, signal.GetProperty("evidence").GetProperty("calls").GetInt32());
         Assert.Equal(4, signal.GetProperty("evidence").GetProperty("maxConsecutive").GetInt32());
+        Assert.StartsWith("Tool loop", signal.GetProperty("title").GetString());
+        Assert.Contains("was called 4 times", signal.GetProperty("explanation").GetString());
+        Assert.Contains("longest streak was 4", signal.GetProperty("explanation").GetString());
     }
 
     [Fact]
@@ -363,6 +366,8 @@ public sealed class TelemetryApiTests : IDisposable
         var signals = json.RootElement.GetProperty("sessions").EnumerateArray().Single().GetProperty("signals").EnumerateArray().ToArray();
         Assert.Single(signals);
         Assert.Equal("error_burst", signals[0].GetProperty("kind").GetString());
+        Assert.Equal("Error burst", signals[0].GetProperty("title").GetString());
+        Assert.Contains("tool errors", signals[0].GetProperty("explanation").GetString());
     }
 
     [Fact]
@@ -404,6 +409,8 @@ public sealed class TelemetryApiTests : IDisposable
         var signal = json.RootElement.GetProperty("sessions").EnumerateArray().Single().GetProperty("signals").EnumerateArray().Single();
         Assert.Equal("long_session", signal.GetProperty("kind").GetString());
         Assert.Equal(30, signal.GetProperty("evidence").GetProperty("spans").GetInt32());
+        Assert.Equal("Long session", signal.GetProperty("title").GetString());
+        Assert.Contains("model steps and 30 spans", signal.GetProperty("explanation").GetString());
     }
 
     [Fact]
@@ -443,7 +450,9 @@ public sealed class TelemetryApiTests : IDisposable
 
         using var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/behavior"));
         var signals = json.RootElement.GetProperty("sessions").EnumerateArray().Single().GetProperty("signals");
-        Assert.Contains(signals.EnumerateArray(), item => item.GetProperty("kind").GetString() == "interrupted");
+        var signal = signals.EnumerateArray().Single(item => item.GetProperty("kind").GetString() == "interrupted");
+        Assert.Equal("Interrupted session", signal.GetProperty("title").GetString());
+        Assert.Equal("The run was left interrupted.", signal.GetProperty("explanation").GetString());
     }
 
     [Fact]

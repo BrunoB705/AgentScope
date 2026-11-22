@@ -68,3 +68,17 @@ test('un kind de señal desconocido conserva el texto en inglés que mandó la A
     explanation: 'Something the dictionary does not know yet.',
   });
 });
+
+test('una señal conocida sin un campo de evidencia deja el hueco vacío', () => {
+  const signal = { kind: 'tool_loop', title: 'Tool loop: bash', explanation: 'text from the API', evidence: { tool: 'bash', calls: 9, maxConsecutive: 4 } };
+  const text = translateSignal(translate.bind(null, 'es'), signal);
+  assert.equal(text.explanation, 'bash se llamó 9 veces;  fallaron y la racha máxima fue 4.');
+  assert.ok(!text.explanation.includes('undefined'));
+});
+
+test('el plural usa count y el número mostrado conserva el separador', () => {
+  const text = translate('es', 'models.totals.calls', { count: 9999, value: formatNumber('es', 9999) });
+  assert.equal(text, '9.999 llamadas de modelo');
+  const one = translate('en', 'models.totals.calls', { count: 1, value: formatNumber('en', 1) });
+  assert.equal(one, '1 model call');
+});

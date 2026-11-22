@@ -36,8 +36,8 @@ public static class BenchmarkEndpoints
             catch (BenchmarkValidationException ex)
             {
                 return ex.Code == "suite_not_found"
-                    ? Results.NotFound(new { error = ex.Message, code = ex.Code })
-                    : Results.BadRequest(new { error = ex.Message, code = ex.Code });
+                    ? Results.NotFound(new { error = ex.Message, code = ex.Code, @params = ex.Parameters })
+                    : Results.BadRequest(new { error = ex.Message, code = ex.Code, @params = ex.Parameters });
             }
 
             var modelList = (dto.Models ?? Array.Empty<string>())

@@ -39,11 +39,15 @@ public sealed class BenchmarkCatalog
             }
             catch (BenchmarkValidationException ex)
             {
-                errors.Add(new(id, ex.Message, ex.Code));
+                errors.Add(new(id, ex.Message, ex.Code, ex.Parameters));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                errors.Add(new(id, $"Could not read the suite: {ex.Message}", "suite_unreadable"));
+                errors.Add(new(
+                    id,
+                    $"Could not read the suite: {ex.Message}",
+                    "suite_unreadable",
+                    Params(("suite", id), ("detail", ex.Message))));
             }
         }
         return new(suites.ToArray(), errors.ToArray());

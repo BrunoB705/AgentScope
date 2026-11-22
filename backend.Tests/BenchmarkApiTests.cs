@@ -142,6 +142,19 @@ public sealed class BenchmarkApiTests : IDisposable
     }
 
     [Fact]
+    public async Task Suites_ReturnsErrorParams()
+    {
+        _factory.WriteBrokenSuite();
+        using var client = Client();
+        using var json = JsonDocument.Parse(await client.GetStringAsync("/api/v1/benchmarks/suites"));
+        var error = json.RootElement.GetProperty("errors")[0];
+        Assert.Equal("broken", error.GetProperty("id").GetString());
+        Assert.Equal("test_type_invalid", error.GetProperty("code").GetString());
+        Assert.Equal("code-test", error.GetProperty("params").GetProperty("test").GetString());
+        Assert.Equal("weird", error.GetProperty("params").GetProperty("type").GetString());
+    }
+
+    [Fact]
     public async Task Models_ReturnsCatalog()
     {
         using var client = Client();
@@ -185,6 +198,7 @@ public sealed class BenchmarkApiTests : IDisposable
         Assert.Contains("does not exist", body);
         using var document = JsonDocument.Parse(body);
         Assert.Equal("suite_not_found", document.RootElement.GetProperty("code").GetString());
+        Assert.Equal("missing", document.RootElement.GetProperty("params").GetProperty("suite").GetString());
     }
 
     [Fact]
@@ -510,6 +524,21 @@ public class BenchmarkApiFactory : WebApplicationFactory<Program>
     public FakeSessionReader Sessions { get; } = new();
 
     protected virtual bool WorkerEnabled => false;
+
+    /// <summary>Agrega una suite inválida para que el listado devuelva un error con parámetros.</summary>
+    public void WriteBrokenSuite()
+    {
+        var suite = Path.Combine(_root, "broken");
+        Directory.CreateDirectory(suite);
+        File.WriteAllText(Path.Combine(suite, "suite.json"), """
+        {
+          "name": "Broken",
+          "tests": [
+            { "name": "code-test", "type": "weird", "promptFile": "prompts/code.md" }
+          ]
+        }
+        """);
+    }
 
     public BenchmarkApiFactory()
     {

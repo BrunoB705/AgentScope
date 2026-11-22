@@ -97,6 +97,7 @@ public sealed class BenchmarkCatalogTests : IDisposable
         Assert.Equal("bad", error.Id);
         Assert.Equal("test_type_invalid", error.Code);
         Assert.Contains("invalid type", error.Error);
+        Assert.Equal("code-test", error.Parameters!["test"]);
     }
 
     [Fact]

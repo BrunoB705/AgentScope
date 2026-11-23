@@ -2,6 +2,8 @@
 
 **AgentScope** es una plataforma local de observabilidad y evaluación para sesiones de **OpenCode**. Permite ver qué pasó dentro de una sesión de agente —tiempos, spans, herramientas, errores, tokens y costos— y comparar el rendimiento de distintos modelos con evidencia real.
 
+![AgentScope — Observabilidad y trace waterfall](assets/observability.png)
+
 ---
 
 ## ¿Qué problema resuelve?
@@ -42,6 +44,10 @@ Trabajar con un agente de código suele ser una caja negra: cuesta saber en qué
 - **Modelos:** consumo de tokens, eficiencia de caché, costo reportado por OpenCode y cuota Go estimada por origen y modelo, más subvista de **Eficiencia y valor** (latencia, tok/s, dispersión costo vs rendimiento, filtro por muestra mínima y cruce con **Pruebas**).
 - **Comparar:** agrupación de sesiones por etiqueta de tarea para contrastar modelo, calificación, costo, duración, tokens y herramientas.
 - **Pruebas:** ejecución de suites contra varios modelos (con verificación automática o juez ciego independiente), variantes, historial y recomendación final.
+
+| Inicio | Modelos — Consumo y contexto | Modelos — Eficiencia y valor |
+|---|---|---|
+| ![Inicio](assets/overview.png) | ![Modelos: Consumo y contexto](assets/models-consumption.png) | ![Modelos: Eficiencia y valor](assets/models-efficiency.png) |
 
 ---
 

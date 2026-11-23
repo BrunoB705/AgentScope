@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -6,6 +6,7 @@ $repo = Split-Path -Parent $MyInvocation.MyCommand.Path
 $runtime = Join-Path $env:LOCALAPPDATA 'AgentObservabilityPlatform'
 $targets = @(
     @{ Name = 'dashboard'; Port = 5173; Pattern = '(?i)(^|[\\/])vite(\.js)?(?:["\s]|$)' },
+    @{ Name = 'proxy'; Port = 5081; Pattern = '(?i)telemetry-proxy[\\/]src[\\/]index\.ts' },
     @{ Name = 'api'; Port = 5080; Pattern = '(?i)AgentObservability\.Api\.dll' }
 )
 $stopped = @{}
@@ -69,5 +70,5 @@ if ($docker) {
 }
 
 if (-not $foundService -and -not $portInUse) {
-    Write-Host 'No encontré servicios de Agent Observability activos en 5080/5173 ni contenedores de este proyecto.'
+    Write-Host 'No encontré servicios de Agent Observability activos en 5080/5081/5173 ni contenedores de este proyecto.'
 }

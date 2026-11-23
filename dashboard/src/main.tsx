@@ -92,20 +92,29 @@ function ScopeSelect({ scope, setScope }: { scope: ScopeFilter; setScope: (value
   return <select className="scope-select" aria-label={t('scope.label')} value={scope} onChange={event => setScope(event.target.value as ScopeFilter)}><option value="all">{t('scope.all')}</option><option value="real">{t('scope.real')}</option><option value="benchmarks">{t('scope.benchmarks')}</option></select>;
 }
 
+type Theme = 'dark' | 'light';
+const themeStorageKey = 'agentscope.theme';
+function readStoredTheme(): Theme {
+  try { return window.localStorage.getItem(themeStorageKey) === 'light' ? 'light' : 'dark'; }
+  catch { return 'dark'; }
+}
+
 function ModelAnalyticsPage(props: {
   data: ModelAnalytics | null; error: RequestError | null; bucket: 'day' | 'week' | 'month'; setBucket: (value: 'day' | 'week' | 'month') => void;
   from: string; to: string; setFrom: (value: string) => void; setTo: (value: string) => void;
   source: string; setSource: (value: string) => void; model: string; setModel: (value: string) => void;
-  scope: ScopeFilter; setScope: (value: ScopeFilter) => void; onRefresh: () => void;
+  scope: ScopeFilter; setScope: (value: ScopeFilter) => void; theme: Theme; onRefresh: () => void;
 }) {
-  const { data, error, bucket, setBucket, from, to, setFrom, setTo, source, setSource, model, setModel, scope, setScope, onRefresh } = props;
+  const { data, error, bucket, setBucket, from, to, setFrom, setTo, source, setSource, model, setModel, scope, setScope, theme, onRefresh } = props;
   const { language, t } = useLanguage();
   const [subView, setSubView] = React.useState<'consumption' | 'efficiency'>('consumption');
   const [costAxis, setCostAxis] = React.useState<CostAxisMetric>('quotaPerCall');
   const [valueAxis, setValueAxis] = React.useState<ValueAxisMetric>('speed');
   const [minCalls, setMinCalls] = React.useState<number>(10);
   const [hoveredModel, setHoveredModel] = React.useState<string | null>(null);
-  const scatterColors = ['#72a7ff', '#66d3a4', '#f0b65c', '#bd8cff', '#ff7e82', '#4fd1c5', '#f6ad55', '#fc8181', '#a3bffa', '#9ae6b4'];
+  const scatterColors = theme === 'light'
+    ? ['#2d63b8', '#1f7a5a', '#b87414', '#6d44b8', '#c73838', '#1a7a78', '#c46316', '#b83b5e', '#3b5ba5', '#2e7d32']
+    : ['#72a7ff', '#66d3a4', '#f0b65c', '#bd8cff', '#ff7e82', '#4fd1c5', '#f6ad55', '#fc8181', '#a3bffa', '#9ae6b4'];
   const decimals = (value: number, digits: number) => formatNumber(language, value, { minimumFractionDigits: digits, maximumFractionDigits: digits });
   const pct = (value?: number | null) => value == null ? t('common.noData') : t('models.metric.percent', { value: decimals(value * 100, 1) });
   const speedText = (value?: number | null) => value == null ? t('common.noData') : t('models.metric.tokensPerSecond', { value: decimals(value, 1) });
@@ -115,13 +124,15 @@ function ModelAnalyticsPage(props: {
     const y = 194 - (select(point) ?? 0) / max * 164;
     return `${x},${y}`;
   }).join(' ');
-  const agentColors = ['#72a7ff', '#66d3a4', '#f0b65c', '#bd8cff', '#ff7e82'];
+  const agentColors = theme === 'light'
+    ? ['#2d63b8', '#1f7a5a', '#b87414', '#6d44b8', '#c73838']
+    : ['#72a7ff', '#66d3a4', '#f0b65c', '#bd8cff', '#ff7e82'];
   let offset = 0;
   const slices = (data?.agents ?? []).map((agent, index) => {
     const start = offset; offset += (agent.share ?? 0) * 100;
     return `${agentColors[index % agentColors.length]} ${start}% ${offset}%`;
   });
-  const donutStyle = { background: slices.length ? `conic-gradient(${slices.join(', ')})` : '#252b33' };
+  const donutStyle = { background: slices.length ? `conic-gradient(${slices.join(', ')})` : 'var(--track-bg)' };
   const toggle = (current: string, next: string, set: (value: string) => void) => set(current === next ? '' : next);
   const efficiencyModels = React.useMemo(() => filterModelsByMinCalls(data?.models ?? [], minCalls), [data, minCalls]);
   const hiddenByMinCalls = (data?.models.length ?? 0) - efficiencyModels.length;
@@ -391,6 +402,14 @@ function App() {
   const [budgetMessage, setBudgetMessage] = React.useState<Message | null>(null);
   const [budgetSaving, setBudgetSaving] = React.useState(false);
   const [view, setView] = React.useState<'overview' | 'sessions' | 'compare' | 'tools' | 'models' | 'behavior' | 'benchmarks'>('overview');
+  const [theme, setTheme] = React.useState<Theme>(readStoredTheme);
+  React.useEffect(() => {
+    if (theme === 'light') document.documentElement.dataset.theme = 'light';
+    else delete document.documentElement.dataset.theme;
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', theme === 'light' ? '#f3ece1' : '#0b0d11');
+    try { window.localStorage.setItem(themeStorageKey, theme); } catch { /* Almacenamiento local no disponible. */ }
+  }, [theme]);
   const [benchmarkVersion, setBenchmarkVersion] = React.useState(0);
   const [taskLabel, setTaskLabel] = React.useState('');
   const [comparisonGroups, setComparisonGroups] = React.useState<ComparisonGroup[]>([]);
@@ -724,10 +743,10 @@ function App() {
   };
 
   return <main>
-    <header><div><span className="eyebrow">{t('header.eyebrow')}</span><h1>AgentScope</h1><p>{t('header.tagline')}</p></div><div className="header-actions"><div className="language-switch" role="group" aria-label={t('header.language')}><button type="button" aria-pressed={language === 'es'} className={language === 'es' ? 'active' : ''} onClick={() => setLanguage('es')}>ES</button><button type="button" aria-pressed={language === 'en'} className={language === 'en' ? 'active' : ''} onClick={() => setLanguage('en')}>EN</button></div><button className="install-button" disabled={installed} onClick={() => void installApplication()}>{installed ? t('header.installed') : t('header.install')}</button><span className={`live ${online ? 'connected' : ''}`}><i />{online ? t('header.live') : t('header.reconnecting')}</span>{installHelpVisible && <small className="install-help">{t('header.installHelp')}</small>}</div></header>
+    <header><div><span className="eyebrow">{t('header.eyebrow')}</span><h1>AgentScope</h1><p>{t('header.tagline')}</p></div><div className="header-actions"><div className="theme-switch" role="group" aria-label={t('header.theme')}><button type="button" aria-pressed={theme === 'dark'} className={theme === 'dark' ? 'active' : ''} onClick={() => setTheme('dark')}>{t('header.themeDark')}</button><button type="button" aria-pressed={theme === 'light'} className={theme === 'light' ? 'active' : ''} onClick={() => setTheme('light')}>{t('header.themeLight')}</button></div><div className="language-switch" role="group" aria-label={t('header.language')}><button type="button" aria-pressed={language === 'es'} className={language === 'es' ? 'active' : ''} onClick={() => setLanguage('es')}>ES</button><button type="button" aria-pressed={language === 'en'} className={language === 'en' ? 'active' : ''} onClick={() => setLanguage('en')}>EN</button></div><button className="install-button" disabled={installed} onClick={() => void installApplication()}>{installed ? t('header.installed') : t('header.install')}</button><span className={`live ${online ? 'connected' : ''}`}><i />{online ? t('header.live') : t('header.reconnecting')}</span>{installHelpVisible && <small className="install-help">{t('header.installHelp')}</small>}</div></header>
     <nav className="main-nav" aria-label={t('nav.label')}><button className={view === 'overview' ? 'active' : ''} onClick={() => setView('overview')}>{t('nav.overview')}</button><button className={view === 'sessions' ? 'active' : ''} onClick={() => setView('sessions')}>{t('nav.sessions')}</button><button className={view === 'tools' ? 'active' : ''} onClick={() => setView('tools')}>{t('nav.tools')}</button><button className={view === 'behavior' ? 'active' : ''} onClick={() => setView('behavior')}>{t('nav.behavior')}</button><button className={view === 'models' ? 'active' : ''} onClick={() => setView('models')}>{t('nav.models')}</button><button className={view === 'compare' ? 'active' : ''} onClick={() => setView('compare')}>{t('nav.compare')}</button><button className={view === 'benchmarks' ? 'active' : ''} onClick={() => setView('benchmarks')}>{t('nav.benchmarks')}</button></nav>
     {systemVersion && systemVersion.protocolVersion !== 1 && <div className="api-error" role="status">{t('header.protocolMismatch', { protocol: systemVersion.protocolVersion })}</div>}
-    {view === 'overview' ? <OverviewPage data={overview} error={overviewError} period={overviewPeriod} setPeriod={setOverviewPeriod} scope={scope} setScope={setScope} onRefresh={() => void loadOverview()} onOpenSession={id => openSession(id)} /> : view === 'behavior' ? <BehaviorPage data={behavior} error={behaviorError} period={behaviorPeriod} setPeriod={setBehaviorPeriod} scope={scope} setScope={setScope} onRefresh={() => void loadBehavior()} onOpenSession={id => openSession(id)} /> : view === 'models' ? <ModelAnalyticsPage data={modelAnalytics} error={modelError} bucket={modelBucket} setBucket={setModelBucket} from={modelFrom} to={modelTo} setFrom={setModelFrom} setTo={setModelTo} source={modelSource} setSource={setModelSource} model={modelName} setModel={setModelName} scope={scope} setScope={setScope} onRefresh={() => void loadModelAnalytics()} /> : view === 'tools' ? <section className="comparison-page">
+    {view === 'overview' ? <OverviewPage data={overview} error={overviewError} period={overviewPeriod} setPeriod={setOverviewPeriod} scope={scope} setScope={setScope} onRefresh={() => void loadOverview()} onOpenSession={id => openSession(id)} /> : view === 'behavior' ? <BehaviorPage data={behavior} error={behaviorError} period={behaviorPeriod} setPeriod={setBehaviorPeriod} scope={scope} setScope={setScope} onRefresh={() => void loadBehavior()} onOpenSession={id => openSession(id)} /> : view === 'models' ? <ModelAnalyticsPage data={modelAnalytics} error={modelError} bucket={modelBucket} setBucket={setModelBucket} from={modelFrom} to={modelTo} setFrom={setModelFrom} setTo={setModelTo} source={modelSource} setSource={setModelSource} model={modelName} setModel={setModelName} scope={scope} setScope={setScope} theme={theme} onRefresh={() => void loadModelAnalytics()} /> : view === 'tools' ? <section className="comparison-page">
       <SectionHeader icon="tools" eyebrow={t('tools.eyebrow')} title={t('tools.title')} description={t('tools.description')} actions={<div className="analytics-actions"><ScopeSelect scope={scope} setScope={setScope} /><select aria-label={t('common.period.label')} value={toolWindow} onChange={event => setToolWindow(event.target.value)}><option value="1">{t('common.period.lastDay')}</option><option value="7">{t('common.period.last7')}</option><option value="30">{t('common.period.last30')}</option><option value="90">{t('common.period.last90')}</option><option value="all">{t('common.period.all')}</option></select><button onClick={() => void loadToolAnalytics()}>{t('common.refresh')}</button></div>} />
       {toolError && <div className="api-error">{errorText(t, toolError)}</div>}
       {toolAnalytics && <>

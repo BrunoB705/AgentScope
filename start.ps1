@@ -72,6 +72,7 @@ Write-Host 'Compilando API…'
 dotnet build (Join-Path $repo 'backend/AgentObservability.Api.csproj') --configuration Release
 
 $apiUrl = 'http://127.0.0.1:5080'
+$proxyUrl = 'http://127.0.0.1:5081'
 $dashboardUrl = 'http://127.0.0.1:5173'
 if (-not (Test-Endpoint "$apiUrl/api/v1/health")) {
     if (Test-Port 5080) { throw 'El puerto 5080 ya está ocupado por otro proceso.' }
@@ -85,6 +86,17 @@ if (-not (Test-Endpoint "$apiUrl/api/v1/health")) {
     Wait-Endpoint "$apiUrl/api/v1/health" 30 'La API'
 } else { Write-Host 'API ya estaba activa.' }
 
+if (-not (Test-Endpoint "$proxyUrl/health")) {
+    if (Test-Port 5081) { throw 'El puerto 5081 ya está ocupado por otro proceso.' }
+    $env:OPENCODE_OBSERVABILITY_URL = $apiUrl
+    $env:AGENTSCOPE_PROXY_HOST = '127.0.0.1'
+    $env:AGENTSCOPE_PROXY_PORT = '5081'
+    $proxyEntry = Join-Path $repo 'telemetry-proxy/src/index.ts'
+    $proxy = Start-Process -FilePath 'node.exe' -ArgumentList @('--experimental-strip-types', "`"$proxyEntry`"") -WorkingDirectory $repo -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logs 'proxy.log') -RedirectStandardError (Join-Path $logs 'proxy-error.log')
+    Set-Content -Path (Join-Path $runtime 'proxy.pid') -Value $proxy.Id
+    Wait-Endpoint "$proxyUrl/health" 20 'El proxy de telemetría'
+} else { Write-Host 'Proxy de telemetría ya estaba activo.' }
+
 if (-not (Test-Endpoint $dashboardUrl)) {
     if (Test-Port 5173) { throw 'El puerto 5173 ya está ocupado por otro proceso.' }
     $viteCli = Join-Path $repo 'dashboard/node_modules/vite/bin/vite.js'
@@ -96,5 +108,6 @@ if (-not (Test-Endpoint $dashboardUrl)) {
 if (-not $NoBrowser) { Start-Process $dashboardUrl }
 Write-Host "Dashboard: $dashboardUrl"
 Write-Host "API: $apiUrl"
+Write-Host "Proxy OpenCode Go: $proxyUrl/v1 (o $proxyUrl/<app>/v1)"
 Write-Host "Base SQLite: $data"
 Write-Host 'Para apagar los procesos iniciados por este script, ejecuta .\stop.ps1.'

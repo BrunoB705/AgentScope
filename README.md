@@ -30,6 +30,7 @@ Trabajar con un agente de código suele ser una caja negra: cuesta saber en qué
 | `backend/` | ASP.NET Core (.NET 10), SQLite, SignalR | Ingesta de eventos, almacenamiento local de sesiones/traces/spans, analítica y ejecución de benchmarks. |
 | `dashboard/` | React, TypeScript, Vite (PWA) | Interfaz web en tiempo real conectada por REST y SignalR. |
 | `opencode-plugin/` | TypeScript (Plugin API v2) | Adaptador que captura eventos de OpenCode y envía metadatos seleccionados al backend. |
+| `telemetry-proxy/` | Node.js / TypeScript (sin deps en runtime) | Proxy HTTP local (`127.0.0.1:5081`) para capturar tráfico de apps externas que usan tu API key de OpenCode Go. |
 | `benchmarks/` | Suites multi-lenguaje | Cuatro suites (`refactor-pequeno`, `csharp-dotnet`, `react-typescript`, `python-fastapi`) con pruebas de código (`code`) y abiertas con juez (`open`). |
 
 ### Vistas del dashboard
@@ -63,6 +64,7 @@ opencode
 
 - Dashboard: `http://127.0.0.1:5173`
 - Healthcheck de la API: `http://127.0.0.1:5080/api/v1/health`
+- Proxy local para apps externas (OpenCode Go): `http://127.0.0.1:5081/v1` (o `http://127.0.0.1:5081/<app>/v1`, por ejemplo `http://127.0.0.1:5081/learnharness/v1`)
 - Detener servicios: `.\stop.ps1` (PowerShell) o `.\stop.cmd` (CMD).
 
 En el primer arranque, `start.ps1` genera una clave aleatoria y guarda base de datos, clave y logs fuera del repositorio (en `%LOCALAPPDATA%\AgentObservabilityPlatform\`).
@@ -70,6 +72,14 @@ En el primer arranque, `start.ps1` genera una clave aleatoria y guarda base de d
 ### Instalar como aplicación (PWA)
 
 Con `.\start.ps1` corriendo, abrí `http://127.0.0.1:5173` en Microsoft Edge o Chrome y elegí **Instalar aplicación** (o **Aplicaciones → Instalar AgentScope**). El acceso directo de escritorio **AgentScope** inicia los servicios en segundo plano, abre la ventana de la PWA y los detiene al cerrarla.
+
+### Proxy local para apps externas (LearnHarness, clientes BYOK, scripts)
+
+Al iniciar AgentScope (desde el ícono de escritorio o con `.\start.ps1`), también se levanta automáticamente el proxy en `http://127.0.0.1:5081` apuntando por defecto a OpenCode Go (`https://opencode.ai/zen/go/v1`):
+
+- Configurá la **Base URL** de la app externa en `http://127.0.0.1:5081/<nombre-app>/v1` (por ejemplo `http://127.0.0.1:5081/learnharness/v1`) y usá tu misma API key de OpenCode Go.
+- El proxy reenvía el tráfico (incluyendo streaming SSE) sin guardar prompts ni respuestas, agrupa las llamadas por sesión (15 min de inactividad por defecto) y reporta modelo, tokens, duración y errores a AgentScope etiquetados con `<nombre-app>`.
+- Variables opcionales: `AGENTSCOPE_PROXY_UPSTREAM` (default `https://opencode.ai/zen/go/v1`), `AGENTSCOPE_PROXY_PORT` (default `5081`) y `AGENTSCOPE_PROXY_SESSION_TIMEOUT_MS` (default `900000`).
 
 ### Plugin de OpenCode fuera del repositorio
 
@@ -114,6 +124,7 @@ Para correr las pruebas unitarias e integración de cada componente:
 ```sh
 dotnet test backend.Tests/AgentObservability.Api.Tests.csproj
 cd opencode-plugin && npm ci && npm run typecheck && npm test
+cd telemetry-proxy && npm ci && npm run typecheck && npm test
 cd dashboard && npm ci && npm test && npm run build
 ```
 

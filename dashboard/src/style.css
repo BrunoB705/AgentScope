@@ -292,8 +292,11 @@ main{max-width:1880px;padding-left:3.5vw;padding-right:3.5vw}
 .near-budget{border-color:var(--amber-near-border)}.over-budget{border-color:var(--red-border)}
 .text-button{border:0;background:transparent;color:var(--red-soft);cursor:pointer;font-size:11px}
 .budget-footnote,.form-message{font-size:11px;color:var(--text-muted);margin:14px 0 0;line-height:1.5}
-.review-box{margin:0 24px 20px;padding:16px;border:1px solid var(--border-card);border-radius:8px;background:var(--surface-subtle)}
-.review-box h3{margin:0 0 5px;font-size:14px}.review-box p{margin:0 0 10px;color:var(--text-muted);font-size:12px}
+.review-box{margin:0 24px 20px;border:1px solid var(--border-card);border-radius:8px;background:var(--surface-subtle)}
+.review-box summary{cursor:pointer;padding:13px 16px;font-size:14px;font-weight:600;list-style-position:inside}
+.review-box summary span{float:right;color:var(--text-muted);font:12px 'DM Mono',monospace}
+.review-content{padding:0 16px 16px}
+.review-box p{margin:0 0 10px;color:var(--text-muted);font-size:12px}
 .rating-input{display:flex;align-items:center;gap:4px;margin:8px 0 12px}
 .rating-input button{border:0;background:transparent;color:var(--star-empty);font-size:25px;line-height:1;cursor:pointer;padding:3px}
 .rating-input button.rated{color:var(--amber-star)}.rating-input .clear-rating{font-size:11px;color:var(--text-muted);margin-left:8px}

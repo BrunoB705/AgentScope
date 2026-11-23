@@ -160,6 +160,7 @@ export const es = {
   'detail.quality.completeTitle': 'Todos los pasos reportan inicio, duración y tokens',
   'detail.quality.partial': 'Traza parcial ({summary})',
   'detail.review.title': 'Evaluación de la sesión',
+  'detail.review.unrated': 'Sin evaluar',
   'detail.review.description': 'Califica el resultado. Usa la misma tarea en las sesiones que quieras comparar.',
   'detail.review.ratingLabel': 'Puntuación de 1 a 5',
   'detail.review.ratingValue': '{value} de 5',

@@ -161,6 +161,7 @@ export const en: Record<keyof typeof es, string> = {
   'detail.quality.completeTitle': 'Every step reports start, duration and tokens',
   'detail.quality.partial': 'Partial trace ({summary})',
   'detail.review.title': 'Session review',
+  'detail.review.unrated': 'Unrated',
   'detail.review.description': 'Rate the result. Use the same task label on the sessions you want to compare.',
   'detail.review.ratingLabel': 'Rating from 1 to 5',
   'detail.review.ratingValue': '{value} of 5',
